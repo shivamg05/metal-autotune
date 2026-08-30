@@ -7,6 +7,12 @@ This plan is the authority on HOW to build it: the stack, the module boundaries,
 formats, the build order, the platform facts you must verify before trusting them, and the
 decisions the spec leaves open. Where this plan and the spec disagree, the spec wins.
 
+One piece of history worth knowing: the spec's bind originally installed a runtime
+interception wrapper on the op stream. On 2026-08-30, after surveying how other
+kernel agents deliver kernels, the owner changed both documents to the current
+mechanism: generated replay wrappers installed by module swap. Section 5.2 records
+the mechanics and the reasoning. Spec and plan now agree on bind.
+
 Everything here assumes a fresh repository containing only the spec and this plan.
 
 ---
@@ -20,9 +26,10 @@ what fusing and specializing it could physically save. Then a loop opens the bes
 the harness builds a correct starting kernel, an LLM (the judge) proposes one small edit
 at a time, and the harness compiles, checks correctness, and times each edit out of
 process. A kernel that is correct and faster on the region clock gets bound into the
-model; a retrace and an end-to-end check confirm the bind is real; only then it ships.
-The job ends with an artifact (kernels, a bind table, an `apply()` installer, a report)
-that speeds up a freshly loaded model without any of the search machinery.
+model by swapping in a generated wrapper module that calls it; a retrace and an
+end-to-end check confirm the bind is real; only then it ships. The job ends with an
+artifact (kernels, a generated patch module, a swap table, an `apply()` installer, a
+report) that speeds up a freshly loaded model without any of the search machinery.
 
 Three components, kept strictly apart:
 
@@ -33,9 +40,10 @@ Three components, kept strictly apart:
   verdicts, roofline distance, kernel source it is editing). Never sees tensors, weights,
   or activations. Never overrides a failed check. Proposes one hypothesis at a time and
   writes one Metal kernel body for the front item of its queue.
-- **The artifact runtime**: a slim, dependency-light package that ships inside the
-  artifact. It contains the bind wrapper and `apply()`. The harness uses the same wrapper,
-  so the thing you measure is the thing you ship.
+- **The artifact runtime**: a tiny package that ships inside the artifact: `apply()`,
+  kernel loading, and the module-swap installer. The wrappers themselves are generated
+  per job as readable Python with explicit kernel calls, and the harness installs the
+  same generated code it measured, so the thing you measure is the thing you ship.
 
 Hard laws, repeated because everything else bends around them: dtypes and quantization
 are frozen. Faster-but-wrong is discarded. Correct-but-slower never ships. The judge
@@ -50,12 +58,21 @@ never grades its own work.
   verified on mlx 0.32.2), `pyyaml`, `pytest`, `anthropic` (judge client only).
 - Target: Apple Silicon Macs. Nothing may assume a specific chip; peaks are measured
   per job, never read from a table.
-- The harness never adds `mx.compile` to anything. The baseline is the model exactly as
-  `build()` hands it, run plain. (Motivating history: `mx.compile` measured ~4% slower
-  than plain on a small test net. An M0 spike re-checks this on the pinned version; if
-  it ever flips, the rule still stands, because the spec defines the baseline as the
-  model as handed. If the model's own code compiles internally, that is the model's
-  business and the tracer treats compiled sections as opaque calls.)
+- The baseline is chosen empirically at job start: measure the step clock both ways,
+  the model exactly as `build()` hands it and the same callable under harness-applied
+  `mx.compile`, paired and interleaved per Section 6, and the faster one is the
+  baseline every later number is scored against. Record both clocks and the choice in
+  the report. Tracing always records the plain model (a fully compiled model records
+  as one opaque call and yields no regions); the compile choice affects only what the
+  clocks and e2e compare against. If the compiled baseline wins, law 10 applies to it:
+  a freshly compiled callable after every bind, before any timed pass. (Motivating
+  history: `mx.compile` once measured ~4% slower than plain on a small test net, so
+  neither outcome is safe to assume; the M0 spike measures both on the pinned version.
+  If the model's own code compiles internally, that is the model's business and the
+  tracer treats compiled sections as opaque calls.) Known cost of a compiled baseline:
+  pricing replays plain ops, so a region `mx.compile` already fuses can price as
+  recoverable and then die at the e2e veto. That wastes attempts; it never falsely
+  ships.
 - No GPU-dependent logic gets a CPU fallback path. If the environment cannot measure,
   raise; a fallback that "runs while proving nothing" is worse than a crash.
 - Prior-measurement claims in this plan come in two kinds. Claims the build RELIES on
@@ -113,22 +130,25 @@ autotuner/
     client.py        # Anthropic API calls, strict JSON in/out
     scripted.py      # deterministic fake judge for tests
   bind/
-    wrapper.py       # re-export of autotuner_runtime.wrapper (implementation lives there)
-    verify.py        # retrace dataflow check (Section 7.10)
+    emit.py          # generate replay-wrapper classes from the trace (Section 5.2)
+    certify.py       # static replayability screen + identity certification
+    swap.py          # module-tree swap install/uninstall (thin over runtime.swap)
+    verify.py        # literal retrace check (Section 7.10)
   e2e.py             # orig-vs-orig floor, patched-vs-original (both assoc paths),
                      # step-time veto (Section 7.11)
   loop.py            # region open/close state machine, close rules, budgets
   artifact/
-    emit.py          # write kernels/, bind_table, report; package the runtime
+    emit.py          # write kernels/, patch/, swap_table, report; package the runtime
   report.py          # report.json schema and writers
   log.py             # append-only run log, sign conventions
   cli.py             # `autotune run manifest.yaml`
 
-autotuner_runtime/   # separate package, no imports from autotuner/
-  wrapper.py         # THE bind wrapper implementation: slim intercept layer,
-                     # instance-keyed arming, substitution map, step delimitation
-  apply.py           # load bind_table + kernels, resolve addresses to instances on a
-                     # fresh build() model, install the wrapper
+autotuner_runtime/   # tiny package, no imports from autotuner/
+  kernels.py         # rebuild mx.fast.metal_kernel objects from .metal + launch.json
+  swap.py            # resolve scope addresses on a fresh model, install/uninstall
+                     # wrapper instances, fallback-engagement logging
+  apply.py           # load swap_table + generated patch module + kernels, swap onto
+                     # a freshly loaded build() model
 
 tests/
   fixtures/          # toy model zoo (Section 12)
@@ -207,29 +227,32 @@ fails or ships; failed kernels are legal parents.
 rolled_back, failed_gate?: str, gate_detail?: {...}, region_ms?: float,
 samples?: [...], e2e?: {...}}`.
 
-**BindEntry**: `{region_fingerprint, kernel_id, launch,
-copies: [{member_addresses: [(module_address, position)],
-arm_address: (module_address, position),
-input_map: [kernel_input_role -> (member_address, position, arg_index)],
-substitutions: [(member_output_ref, kernel_output_index)]}],
-shape_dispatch: [(shape_predicate, kernel_id)], fallback: library}`.
-Each copy of the region has its own member set, its own arm point (the last op of that
-copy's sequence), and its own input map saying which argument of which member call
-supplies each kernel input. Addresses are serialization only: at install time (harness
-bind or artifact `apply()`), addresses are resolved against the concrete model to module
-instances, and the wrapper dispatches on instance identity (Section 5.3).
+**SwapEntry**: `{scope_address, wrapper_class: str (a name in the generated patch
+module), regions: [{region_fingerprint, copies: [member node span per copy],
+shape_dispatch: [(shape_predicate, kernel_id)], fallback: replay of the original op
+sequence}]}`. One entry per outermost shipped scope: every shipped region inside that
+scope splices into the scope's one generated wrapper (a wrapper replays its scope's
+whole recorded stream, so nested or sibling wrappers inside it would never run).
+Addresses are serialization only: at install time (harness bind or artifact
+`apply()`), each scope address is resolved against the concrete model to a live module
+instance and its parent, and the swap happens on instances (Section 5.3).
 
-**Artifact** on disk, per the spec:
+**Artifact** on disk:
 
 ```
 artifact/
   kernels/<id>.metal + <id>.launch.json
-  bind_table.json          # [BindEntry]
+  patch/wrappers.py        # generated replay-wrapper classes: readable Python,
+                           # explicit kernel calls, fallback path included
+  swap_table.json          # [SwapEntry]
   buffers/                 # reserved, empty in v1 (future precompute)
   runtime/                 # the autotuner_runtime package, vendored
   apply.py                 # thin shim calling runtime.apply
   report.json
 ```
+
+(This matches the spec's artifact block: kernels, wrappers, swap_table, apply(),
+report.)
 
 ---
 
@@ -276,8 +299,8 @@ stall on them. Each records why, and the risky ones have Milestone 0 spikes.
   then `attention(q, k, v)`) gives `k` a recorded consumer, but the model still holds a
   reference the wrapper can never swap. Per the spec this case has no fix: the region
   either ends before `k` or leaves `k`'s production to the library. Writing `k` out
-  would not help, because the cache's reference points at the library lazy that no
-  substitution map can reach. Both checks run; disagreement resolves toward retained.
+  would not help, because the cache's reference points at a lazy array nothing
+  installed later can reach. Both checks run; disagreement resolves toward retained.
 - `mx.compile` wrapping: a model that compiles part of itself gets that part recorded as
   one opaque call (op = `compiled_fn`, inputs and outputs recorded). Opaque calls can
   never be inside a region, but they anchor completeness.
@@ -286,65 +309,111 @@ stall on them. Each records why, and the risky ones have Milestone 0 spikes.
   The CLI enforces the ordering; the tracer refuses to install if the model module is
   already in `sys.modules`.
 
-### 5.2 The two intercept modes
+### 5.2 Bind by generated replay wrappers (the delivery mechanism)
 
-Record mode (fat, never timed) and bind mode (slim, always present in a patched model)
-are different installations of the same patch points. When both are needed (retrace of
-a patched model), record mode installs OUTSIDE bind mode: the recorder sees both the
-member calls and the custom dispatch the wrapper fires.
+**Design note.** The spec's bind originally installed a runtime interception wrapper
+on the op stream (arm at the last op, a substitution map redirecting consumers). By
+owner decision (2026-08-30) both documents now use this mechanism instead: the
+harness GENERATES Python source, wrapper classes whose `__call__` replays the
+enclosing module's recorded op sequence with the region's ops replaced by the kernel
+call, and installs them by swapping module instances on a freshly loaded model. This
+is the strategy other kernel agents use for model composition, done mechanically from
+the trace instead of by an LLM. The model's own source is still never parsed or
+modified; the generated code lives in the artifact, not in the model file. Everything
+bind must guarantee is unchanged: retrace proof, shape dispatch, library fallback,
+e2e promotion, an artifact that works without the harness.
 
-- Record mode captures everything and is Python overhead on every op. No timed number is
-  ever taken with it installed.
-- Bind mode is what ships. It wraps the same global op surface but does almost nothing
-  per call. Its state is an instance-keyed registry built at install time: addresses
-  from the bind table are resolved against the concrete model object, so the wrapper
-  fires only for the registered instances. A second, structurally identical model in
-  the same process passes through untouched; its calls hit only the cheap
-  not-registered fast path. (That isolation is what lets two arms coexist for retrace
-  and debugging. The TIMED baseline legs of e2e go further and run with the patch set
-  uninstalled entirely, per the overhead-charging rule below.)
-- Per registered copy of a region, the wrapper: captures input references at the member
-  calls named by the copy's `input_map` (letting the member call proceed into the
-  library, returning a lazy array); at the arm address, calls the custom kernel with the
-  captured inputs and enters (member_output -> kernel_output) pairs into the
-  substitution map; on every subsequent intercepted call, translates any argument found
-  in the map. Earlier members' library lazies are never evaluated once every consumer
-  reads the kernel's outputs instead, and MLX's laziness means never-evaluated is
-  never-computed.
-- The top-level wrapper delimits the step: it resets call counters on entry and, on
-  exit, translates the returned tree through the substitution map before clearing it.
-  Without that last translation, a region output that is also a step output would be
-  handed to the caller as the dead library lazy and the whole region would silently
-  compute through the library anyway. A fixture pins this case (Section 12).
-- Bind-mode overhead is charged to the candidate by construction: e2e times the patched
-  model with bind mode installed, and the artifact installs the same wrapper. For that
-  charge to be real, the baseline legs of the interleaved e2e run with the global patch
-  set UNINSTALLED (cheap setattr swaps around each leg; pairing is preserved),
-  otherwise the global-hook tax is common-mode across both arms and cancels out of the
-  veto, letting an overhead-eaten win pass. If overhead eats a win, the e2e veto then
-  rejects the ship, which is the correct outcome.
-  Spike the global-hook tax in Milestone 0 so you know it early. If it ever proves
-  intolerable, narrowing must keep consumer coverage total (dunders and module calls
-  stay wrapped; only unused free-function wrappers may drop), because any unwrapped
-  consumer of a substituted intermediate silently evaluates the dead library lazy: the
-  values stay right and only the win quietly evaporates.
+Why the change: zero runtime overhead (no global hooks anywhere, nothing intercepted
+at inference time), the artifact becomes readable Python with explicit kernel calls
+(the way every human integrates a kernel), and the spec's retrace check "the cut
+became one custom dispatch" becomes LITERALLY checkable, because the member ops are
+actually gone from the patched stream instead of present-but-dead.
 
-### 5.3 Address resolution
+Mechanics:
 
-Addresses are strings for serialization; execution always dispatches on object
-identity. `apply()` and harness bind both walk the fresh model, resolve every
-`module_address` in the bind table to a live module instance (erroring loudly on a miss,
-since an earlier shipped change or a model edit can restructure the tree), and register
-those instances with the wrapper. This is also what makes the interleaved e2e sound:
-identical address strings on two model instances never collide because registration is
-per instance.
+- **Delivery scope.** For each region, the scope is the smallest module (by enclosing
+  address) containing all its member ops; the top-level callable is the outermost
+  scope. The wrapper class for a scope is generated from the trace via the replay
+  name table (Section 5.4): it re-executes the scope's recorded ops in order, with
+  each shipped region's span replaced by the kernel invocation, shape dispatch
+  evaluated through the launch grammar, and the fallback path being the original op
+  sequence itself. Both paths live in the generated code, so fallback needs no
+  library magic. Generated source calls ops by live `mx.` attribute lookup
+  (patch-visible, so retraces record it) and calls kernels through a small runtime
+  shim, `autotuner_runtime.kernels.call`, which record mode also patches so the
+  custom dispatch appears as a node in retraces. Each wrapper also carries a span
+  map (which emitted op came from which baseline address and position); retrace
+  consumers align the flattened stream through it (see 7.10).
+- **Weights and state.** The wrapper holds a reference to the original module it
+  replaced and delegates attribute access to it, so model code reaching through
+  children keeps working and the weights used are the live model's own arrays, no
+  transplant. At freeze time, weight `array_id`s are resolved to parameter PATHS via
+  the model-attribute snapshot walk Section 5.1 already performs; generated code reads
+  each weight by path through the wrapped original, which is what makes the same
+  generated source valid on any fresh `build()` model. Scalar args recorded inside
+  the scope must be constants across the scope's recorded calls or derivable from the
+  scope's own call arguments (a decode step's rope offset varies per call and must
+  flow from the argument, not the recorded constant); the generator enforces this and
+  certification backstops it.
+- **Static replayability screen** (at region build): a scope qualifies only if its
+  recorded stream has no opaque compiled calls ANYWHERE in the scope (the wrapper
+  replays the whole scope, and an opaque call has no serializable callable to
+  re-invoke), no in-pass evaluation (data-dependent control flow), no
+  `python_retained` productions, scalar args passing the rule above, and one stream
+  that matches, node for node, everywhere the scope fires: every workload and every
+  sweep retrace. A scope whose stream differs anywhere it fires is branchy and fails.
+  A region with no qualifying enclosing scope is rejected with reason "no certified
+  delivery scope". That is this plan's concrete meaning for the spec's rejection rule
+  "there is no place to install a wrapper on it".
+- **Identity certification** (once per scope, off-clock, before its first ship; the
+  loop runs it between gate 9 and retrace on the first ship into a scope, and owns
+  the escalate-to-parent-or-strand handling): swap in an IDENTITY wrapper, one that
+  replays the scope's recorded ops with no kernel change. It must be invisible: the
+  retrace stream matches baseline under the span-map projection, outputs match
+  bitwise on every workload and sweep size, and repeated calls of a stateful step
+  match call by call. Replaying the same math must be a no-op; any divergence means
+  the scope is not actually replayable, and the region escalates to the parent scope
+  or strands. This one control converts "we believe the trace is faithful here" into a
+  measured fact.
+- **Wrapper versioning.** A scope has one wrapper covering all its shipped splices,
+  always generated around the PRISTINE original module. A new ship into an occupied
+  scope regenerates the wrapper with all current splices and replaces the occupant;
+  rollback restores the previous occupant, not the pristine module; an outer scope
+  shipping over an inner wrapper retires the inner one and merges its splices into
+  the outer wrapper.
+- **What this strands, on purpose.** Regions whose every enclosing scope fails the
+  screen: a region overlapping cache-mutation code, top-level glue inside a stateful
+  decode step, anything under data-dependent control flow at every available scope.
+  Stranded regions are reported with their p and the failing reason, never silently
+  dropped. If real runs show material wins stranded, the known escalation is the
+  runtime-interception layer this section replaced (hook the op surface, arm at the
+  last op, substitute consumers); it was cut for complexity and overhead, and would
+  return as a fallback tier only for stranded regions.
+
+### 5.3 Scope addresses and install
+
+Addresses are strings for serialization; install always operates on live objects.
+`apply()` and harness bind walk the fresh model, resolve each SwapEntry's
+`scope_address` to a module instance and its parent (erroring loudly on a miss, since
+an earlier shipped change or a model edit can restructure the tree), instantiate the
+generated wrapper around the original instance, and swap it in by parent attribute
+assignment (platform fact, re-verify in M0: `mlx.nn.Module.update_modules` rejects
+numeric path segments as dict keys and needs the list-form update spec; plain parent
+`setattr` works for named children). Uninstall is the reverse swap; rollback is
+uninstall. Two model instances in one process never collide because each install
+touches only its own model's tree, which is what makes the interleaved e2e arms sound
+with no further machinery.
 
 ### 5.4 Trace replay
 
 `trace/replay.py` is the one module that re-executes a recorded node sequence, and
-three consumers call it: region-clock pricing (run the region's ops on saved inputs),
-the fp32 golden (same ops, promoted dtypes), and sweep reference generation (library
-outputs at swept sizes). Contract: the op-string-to-callable resolver is a standalone
+four consumers depend on it: region-clock pricing (run the region's ops on saved
+inputs), the fp32 golden (same ops, promoted dtypes), sweep reference generation
+(library outputs at swept sizes), and the wrapper generator (`bind/emit.py` shares
+the same op NAME table, so replayed-in-process and generated-as-source are one
+semantics; but generated source calls ops via live `mx.` attribute lookup so retraces
+can see it, while in-process replay binds saved originals and stays patch-invisible).
+Contract: the op-string-to-callable resolver is a standalone
 table built by importing `mx` and resolving module attribute paths and `mx.array`
 dunder/method names (a slice read replays as `mx.array.__getitem__`); the patch
 installer consumes this same table rather than defining it, so replay works in a
@@ -353,7 +422,7 @@ and 9 use it). Replay folds over nodes in `seq` order,
 binding `array_id`s to live arrays (starting from provided bindings for region inputs
 and weights), invoking the saved originals with `scalar_args` verbatim, and returns the
 arrays for requested output ids. Hooks: a dtype-promotion transform and an op
-substitution table (for the golden, Section 7.8). Replay never goes through the patch
+substitution table (for the golden, Section 7 gate 8). Replay never goes through the patch
 surface, so it works identically whether or not any tracer is installed.
 
 ### 5.5 Region fingerprints (copy grouping)
@@ -382,9 +451,10 @@ module_address, position_in_module), ignoring shapes. Addresses are stable acros
 for the same model, which is what makes this sound. The matched span yields the correct
 shapes AND the correct shape-derived `scalar_args` (reshape targets, split sizes) at
 that size for free, because the model itself computed them. Store the result on the
-region as `sweep_instances`. A region whose sequence does not occur at some sweep size
-(a branch went the other way) has nothing to check at that size beyond the wrapper's
-fallback engaging, and the log says so. Boundary inputs and library references at swept
+region as `sweep_instances`. A scope whose stream diverges at some sweep size (a
+branch went the other way) fails the replayability screen (Section 5.2), so its
+regions strand before any kernel work is spent; divergence discovered here is
+reported as the screen's evidence. Boundary inputs and library references at swept
 sizes come from a boundary-capture pass (Section 5.7) run at that size, on demand, the
 first time a region reaches gate 7.
 
@@ -636,9 +706,9 @@ relies on have M0 spikes.
    unpaired.
 10. **Fresh callables after any swap.** `mx.compile` caches on callable identity and
     silently returns the pre-swap graph (every candidate then measures exactly 0.00%).
-    The harness never compiles, but a model whose own forward compiles internally must
-    get a freshly built callable after every bind before any timed pass. (M0 spike
-    pins the caching behavior.)
+    Any compiled callable, whether a harness-compiled baseline (Section 2) or a model
+    whose own forward compiles internally, must be freshly built after every bind
+    before any timed pass. (M0 spike pins the caching behavior.)
 11. **The measurement floor is real.** On the reference machine, ~1.5% end-to-end was
     reliably detectable and ~1% was a coin flip (M0 A/A spike re-establishes the
     floor). This is why the ship clock is the region clock (a 2x win on a 3% region is
@@ -731,20 +801,27 @@ launch).
 
 ### 7.10 Bind verification (retrace)
 
-A literal "the op stream now shows one call" check is impossible by the bind mechanics
-themselves: member ops still execute at Python level and still get recorded; only their
-outputs go unused. So `bind/verify.py` is a dataflow check on the frozen retrace
-(record mode installed outside bind mode):
+With replay-wrapper delivery, the spec's check is literal. Generated wrappers are
+ordinary Python calling live `mx.` attributes and the recorded kernel-call shim, so a
+record-mode retrace of the patched model sees exactly what runs. One alignment detail:
+a wrapper replays its scope's ops inside its own `__call__`, so ops the baseline
+recorded under nested child addresses now attribute to the scope address. Matching
+therefore runs under the wrapper's span map (Section 5.2): each replayed node is
+projected back to its baseline (address, position) before comparison, for both
+verification here and identity certification. `bind/verify.py` checks the frozen
+retrace:
 
-- the custom-kernel node is present at each copy's arm address, consumes the cut's
-  inputs, and its outputs reach every downstream consumer and live value the region's
-  outputs previously fed;
-- the member nodes' library outputs are unreachable from step outputs and retained
-  values (so laziness never evaluates them);
-- after deleting those dead member nodes, the remaining node sequence matches the
-  baseline trace under (op, specs, module_address) alignment: neighbors unchanged.
+- the region's member ops are GONE from the stream, replaced by one custom-kernel node
+  per copy;
+- that node consumes the cut's inputs, and its outputs feed every downstream consumer
+  and live value the region's outputs previously fed;
+- under the span-map projection, the node stream outside the cut matches the baseline
+  trace on (op, specs, projected address): neighbors unchanged.
 
-Any miss is a failed bind: roll back, tell the judge.
+Identity certification (Section 5.2) has already proven the scope's replay is
+invisible with no kernel change, so any retrace miss here is attributable to the
+kernel splice itself. Any miss is a failed bind: swap the original module back, tell
+the judge.
 
 ### 7.11 E2e
 
@@ -757,7 +834,9 @@ Any miss is a failed bind: roll back, tell the judge.
   weights stay quantized, activations run in fp32. Mechanism: reuse the patch surface
   as a dtype-promoting interceptor that casts floating array-producing op inputs to
   fp32 and routes quantized ops through the golden substitution table, and run the
-  ORIGINAL model under it, once, to produce the model-scale fp32 golden. Both arms are
+  ORIGINAL model under it, once, to produce the model-scale fp32 golden. The
+  interceptor always runs the PLAIN form of the original, whatever the baseline
+  choice, because the patch surface cannot see inside a compiled callable. Both arms are
   then compared in their normal dtypes against that golden: require
   err(patched) <= kappa * err(original) + floor at the model outputs, with the floor
   being the spread of original-vs-golden error across the k input sets, epsilon-floored
@@ -768,9 +847,15 @@ Any miss is a failed bind: roll back, tell the judge.
   decode) will exercise it, because any win there is almost certainly assoc-changing.
 - **Step-time veto**: patched vs original under the same interleaved paired discipline;
   patched must not be slower than max(0.5%, 3 sigma). A veto, not a detection gate.
-- Both arms live in one process, weights shared (law 9); the wrapper's instance keying
-  (Section 5.3) keeps the baseline arm clean, and M8's acceptance includes proving the
-  baseline arm fires zero custom dispatches.
+- Both arms live in one process, weights shared (law 9). The baseline arm is a fresh
+  untouched `build()`; the patched arm is a fresh `build()` with the generated
+  wrappers swapped into its tree. Under a compiled baseline (Section 2), both arms
+  are compiled: a fresh `mx.compile` of the untouched model, and a fresh `mx.compile`
+  of the swapped model built after install, per law 10. No hooks exist in either arm,
+  so there is no overhead-charging machinery to get right: the patched arm's only
+  added cost is the generated Python it actually runs, inherently included in its own
+  timing. M8's acceptance includes proving the baseline arm's retrace fires zero
+  custom dispatches.
 
 Failing bind or e2e rolls the ship back and the judge mutates the queue.
 
@@ -783,14 +868,16 @@ selected by environment at spawn:
 
 - **validate mode**: `MTL_SHADER_VALIDATION=1`. Runs gates 1-8.
 - **score mode**: clean env. Re-runs smoke + determinism, then gate 9. Also used for
-  the step clock, region pricing, bind retrace, and e2e once M5 lands (M3/M4 may
-  measure in-process with an asserted-clean environment; M5 migrates them and checks
-  the numbers agree).
+  the step clock, region pricing, certification and bind retraces, and e2e once M5
+  lands (M3/M4 may measure in-process with an asserted-clean environment; M5 migrates
+  them and checks the numbers agree).
 - **capture mode** (debug only, off the hot path): `MTL_CAPTURE_ENABLED=1`, wraps a
   single dispatch in `mx.metal.start_capture` for humans to replay in Xcode.
 
 Protocol: parent writes one JSON job spec (manifest ref, region fingerprint, boundary
-store paths, kernel source + launch expressions, gates to run, seed) to the child's
+store paths, kernel source + launch expressions, gates to run, seed; for
+certification, retrace, and e2e jobs also the generated patch-module source and the
+swap entries to install) to the child's
 stdin; child prints exactly one JSON verdict line to stdout as its last line; parent
 enforces the wall timeout and maps nonzero exit or timeout to a structured
 `{failed_gate: 'subprocess', detail: stderr tail}`. The child rebuilds everything from
@@ -821,12 +908,15 @@ where possible, graduating into a permanent pinned test ("tests that encode find
   pin it).
 - Weakref/GC probe on `mx.array` (verified once on 0.32.2, pin it), and the positive
   retention snapshot walk on a toy stateful model.
-- Bind mechanics micro-spike: on a three-op toy chain, hand-wrap the op surface, let
-  the first two ops return library lazies, fire a hand-written fused kernel at the
-  third, substitute its outputs into the consumer, and verify the library lazies are
-  never evaluated (laziness check: wrap them so evaluation would raise) while outputs
-  match. This is the whole bind idea in fifty lines; if it does not work, stop and
-  redesign before M1.
+- Delivery micro-spike: hand-write a replay wrapper for a two-child toy module (its
+  recorded ops re-executed in order, with a hand-fused kernel spliced over two of
+  them), swap it in by parent attribute assignment, and verify outputs match, a
+  retrace shows the member ops gone, and the identity form (no kernel, pure replay) is
+  bitwise invisible, including across repeated calls of a stateful toy. This is the
+  whole bind idea in fifty lines; if it does not work, stop and redesign before M1.
+- Module swap semantics: parent `setattr` swaps a named child; `update_modules`
+  rejects numeric path segments and needs the list-form spec; a wrapper delegating
+  `__getattr__` to the wrapped module survives model code reaching through children.
 - `metal_kernel`: construction/call signatures on the pinned version; grid semantics;
   probe-eval error surfacing and the line offset; `compile_options.math_mode`;
   `init_value=nan` poisons unwritten outputs (verified once on 0.32.2, pin it);
@@ -839,10 +929,8 @@ where possible, graduating into a permanent pinned test ("tests that encode find
 - Include flattener feasibility: absolute-path includes resolve; nested repo-relative
   includes fail; a flattened steel GEMM header compiles.
 - `mx.compile`: identity caching, state freezing, per-shape retrace; and
-  plain-vs-compiled step time on a small test net (informs nothing, but records the
-  baseline-is-plain rule's context on this machine).
-- Bind-mode overhead estimate: a do-nothing global wrapper on every op surface, cost
-  per op call and per decode-shaped step.
+  plain-vs-compiled step time on a small test net (a dry run of the per-job baseline
+  choice in Section 2).
 - Measurement: A/A nulls cool and after sustained load (the session floor);
   warm-until-stable convergence on a first-ever kernel; duty-cycle validation
   (blocked design); memory-pressure probe (A/A floor with extra GB resident);
@@ -898,7 +986,9 @@ exactly (identity checks on every patched attribute).
 ### M4: Regions (`regions/`)
 
 Builder (singletons, chain growth, view absorption, slice-write termination, the four
-rejection rules, per-stretch liveness derivation), fingerprint grouping, batched
+rejection rules, per-stretch liveness derivation), fingerprint grouping, the static
+replayability screen assigning each candidate its delivery scope (the "no certified
+delivery scope" rejection lands here; dynamic certification waits for M8), batched
 boundary capture with k input sets, region clock pricing, roofline, floor, ranking
 with tie-breaks, and sweep-instance matching (retrace at a second size, locate every
 region by address).
@@ -935,7 +1025,7 @@ routing in the sandbox, the ship clock.
 
 Done when: the ladder-catchable cheats in the zoo (Section 12, everything caught at
 gates 1 through 9) are fully caught, each at its intended gate; the two bind-level
-cheats (the live-output sabotage variant and the wrong-cut bind entry) wait for M8,
+cheats (the live-output sabotage variant and the wrong-scope swap entry) wait for M8,
 whose done-when covers them; a correct-but-slower hand-written kernel produces
 `correct_slower` with honest numbers; an assoc-changing kernel (a reduction reordered
 on purpose) passes only under the golden gate and not the preserving gate.
@@ -955,21 +1045,29 @@ never for authoring a kernel from a blank page.
 
 ### M8: Bind, retrace, e2e (`autotuner_runtime/`, `bind/`, `e2e.py`)
 
-The wrapper (instance registry, input capture, arm-and-substitute, step delimitation
-with returned-tree translation), address resolution, bind-table format, the retrace
-dataflow verification, e2e floor and both assoc paths and the veto, rollback.
+Wrapper generation from traces (`bind/emit.py`), the static replayability screen,
+identity certification, module-swap install and uninstall, the swap-table format, the
+literal retrace verification, e2e floor and both assoc paths and the veto, rollback
+(swap the originals back).
 
 This is the riskiest milestone after the M0 spike; do not let it slip. Done when: a
-hand-written correct kernel for a fixture region binds; retrace verification passes and
-is shown to check dataflow, not stream length; e2e sits on the orig-vs-orig floor with
-step time unchanged or better; the fixture whose region output is also a step output
-gets the kernel's output back from the top-level call; with both arms live in one
-process, the baseline arm's retrace shows zero custom dispatches; an assoc-changing
-hand kernel passes e2e only under the golden-relative path while an assoc-preserving
-one sits on the floor; sabotage cases roll back cleanly (kernel writing a wrong live
-output fails e2e; a bind entry pointing at the wrong position fails retrace); the
-runtime package alone (no `autotuner` import) applies a bind table to a fresh `build()`
-model, resolves addresses to instances, and reproduces the patched outputs.
+hand-written correct kernel for a fixture region ships through a generated wrapper;
+retrace shows the member ops gone, one custom dispatch per copy, neighbors unchanged;
+identity certification passes on replayable fixtures and correctly REJECTS the
+stateful-scope and branchy-scope fixtures, whose regions strand with named reasons;
+e2e sits on the orig-vs-orig floor with step time unchanged or better; the fixture
+whose region output is also a step output gets the kernel's output from the wrapper's
+return; with both arms live in one process, the baseline arm's retrace fires zero
+custom dispatches; an assoc-changing hand kernel passes e2e only under the
+golden-relative path while an assoc-preserving one sits on the floor; a stateful
+decode fixture with a per-call scalar (a rope-offset stand-in) certifies only when the
+scalar flows from the scope's call argument; a second ship into an occupied scope
+regenerates one wrapper with both splices, and rolling back the second ship restores
+the first ship's wrapper, not the pristine module; sabotage cases roll back cleanly
+(kernel writing a wrong live output fails e2e; a swap entry naming the wrong scope
+fails retrace); the runtime package plus the generated patch module alone (no
+`autotuner` import) applies to a fresh `build()` model and reproduces the patched
+outputs.
 
 ### M9: Judge (`judge/`)
 
@@ -985,10 +1083,12 @@ abandonment triggers on the 8th correct-but-slower and head resets correctly.
 
 ### M10: The region loop (`loop.py`)
 
-Open (scaffold, fix-or-skip), the hypothesis cycle wired to sandbox + ladder + bind,
-close rules, family bookkeeping, retrace-after-close with share updates and covered-
-region dropping, budgets, the final e2e plus the sweep-fallback pass through the real
-wrapper, full run logging.
+Open (scaffold, fix-or-skip), the hypothesis cycle wired to sandbox + ladder + bind
+(including identity certification on the first ship into each scope, with the loop
+owning escalate-to-parent-or-strand when certification fails), close rules, family
+bookkeeping, retrace-after-close with share updates and covered-region dropping
+(through span maps on patched models), budgets, the final e2e plus the sweep-fallback
+pass through the real installed wrappers, full run logging.
 
 Done when: with the scripted judge on the planted-win fixture, the whole job runs
 end to end: finds the region, ships a scripted winning kernel through bind + e2e,
@@ -998,7 +1098,8 @@ fixture ships nothing and says so.
 
 ### M11: Artifact (`artifact/`)
 
-Emit kernels + bind_table + vendored runtime + report; `apply()` in a fresh process.
+Emit kernels + the generated patch module + swap_table + vendored runtime + report;
+`apply()` in a fresh process.
 
 Done when: a fresh Python process with only `artifact/` and the model file loads the
 model, applies, matches outputs, and reproduces the step-time improvement within noise;
@@ -1070,7 +1171,10 @@ Two standing self-proofs, logged every job:
   clock. Overshoot of a few percent is launch overlap and fine; a large shortfall
   names the fraction of the step running outside every candidate.
 - After every close, the retrace updates every remaining region's p and drops regions
-  covered by a shipped larger cut, per the spec; the log records both.
+  covered by a shipped larger cut, per the spec; the log records both. On a patched
+  model this retrace locates remaining regions through the installed wrappers' span
+  maps (the same address projection as 7.10), so regions living inside an
+  already-shipped scope stay findable.
 
 ---
 
@@ -1082,9 +1186,12 @@ Two standing self-proofs, logged every job:
   views-only stretch; mid-stretch Python retention (a cache object, retained AND
   consumed); a region output that is also a step output; a plain-function model (no
   nn.Module anywhere); an eager model calling `.item()` mid-forward; data-dependent
-  branch; compiled submodule; repeated identical layers (copy grouping); a planted-win
-  model whose chain a naive fusion beats; a vendor-parity model. Fixtures are also the
-  M12 controls at larger scale.
+  branch; compiled submodule; repeated identical layers (copy grouping); a
+  stateful-scope model (cache mutated inside the scope) and a branchy-scope model,
+  both of which must fail certification and strand their regions with named reasons;
+  a stateful decode toy whose per-call scalar must flow from the call argument; a
+  planted-win model whose chain a naive fusion beats; a vendor-parity model. Fixtures
+  are also the M12 controls at larger scale.
 - **Cheat zoo** (`tests/cheats/`): the harness's job is rejecting bad kernels, so its
   tests ARE bad kernels, each asserting WHICH gate catches it: partial-write (gate 3
   poison via init_value); shape-hardcoded (gate 7 sweep); stride-lying (gate 7
@@ -1094,7 +1201,7 @@ Two standing self-proofs, logged every job:
   eps-dropping (gate 5 tiny-scale regime); atomic-racy (gate 8 determinism);
   live-output-dropping (gate 1 static, and e2e for the sabotage variant);
   fallback-missing (gate 1); fallback-declared-but-dead (gate 7 fallback log);
-  wrong-cut bind entry (retrace verification).
+  wrong-scope swap entry (retrace verification).
 - **Tests that encode findings**: every platform fact in `PLATFORM.md` gets a pinned
   test with a docstring naming the design argument it protects, so a future mlx
   upgrade fails loudly instead of silently invalidating the tracer or the sandbox.
