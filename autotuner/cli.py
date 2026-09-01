@@ -34,8 +34,10 @@ def main(argv=None) -> int:
         judge = AgentFileJudge(mailbox)
         print(f"agent judge: answer requests in {mailbox}/ (protocol in AGENT_JUDGE.md)")
 
+    judge.transcript = Path(args.work_dir) / "judge.jsonl"
     print(f"judge: {args.judge} ({args.model})")
     print(f"run log: {Path(args.work_dir) / 'run.jsonl'} (one JSON line per event; tail it)")
+    print(f"candidates: {Path(args.work_dir) / 'candidates.log'} (one line per attempt)")
     runner = JobRunner(
         args.manifest,
         args.work_dir,

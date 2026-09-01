@@ -15,7 +15,9 @@ the strict schema, the re-ask, and the run log, not from sampling.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
+from ..log import json_safe, wall_now
 from .schema import (
     JudgeBabble,
     MalformedResponse,
@@ -69,6 +71,8 @@ class JsonJudge:
     carrying the rejection reason, then JudgeBabble. Subclasses supply
     _ask(system, messages) -> the judge's raw reply text."""
 
+    transcript: Path | None = None  # every ask and reply, one JSON line each
+
     def seed(self, region_meta: dict) -> SeedResponse:
         return self._exchange({"region_state": region_meta},
                               _SEED_SCHEMA, SeedResponse)
@@ -83,6 +87,7 @@ class JsonJudge:
         reason = None
         for _attempt in range(2):  # the original ask, then the one re-ask
             text = self._ask(system, messages)
+            self._record(want.__name__, _attempt, system, messages, text)
             try:
                 obj = json.loads(text)
             except (json.JSONDecodeError, RecursionError) as e:
@@ -106,6 +111,15 @@ class JsonJudge:
 
     def _ask(self, system: str, messages: list[dict]) -> str:
         raise NotImplementedError
+
+    def _record(self, call: str, attempt: int, system: str, messages: list[dict], reply: str) -> None:
+        if self.transcript is None:
+            return
+        row = {"wall": wall_now(), "call": call, "attempt": attempt,
+               "system": system, "messages": messages, "reply": reply}
+        self.transcript.parent.mkdir(parents=True, exist_ok=True)
+        with self.transcript.open("a") as f:
+            f.write(json.dumps(json_safe(row), allow_nan=False) + "\n")
 
 
 class AnthropicJudge(JsonJudge):

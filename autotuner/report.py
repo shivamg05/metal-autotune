@@ -22,6 +22,23 @@ from .log import SIGN_CONVENTION
 _ENV_VARS = ("MLX_MAX_OPS_PER_BUFFER", "MLX_MAX_MB_PER_BUFFER", "MTL_SHADER_VALIDATION",
              "MTL_SHADER_VALIDATION_REPORT_TO_STDERR", "MTL_CAPTURE_ENABLED")
 
+# what the short field names mean; every millisecond figure on a hypothesis
+# is one pass of one copy of the region
+LEGEND = {
+    "p": "share of one step this region costs, all copies together, per workload",
+    "T_orig_ms": "library time for all copies, per workload, from pricing",
+    "T_rep_ms": "library time for one copy, per workload, from pricing",
+    "roofline_ms": "the physical limit for one copy: bytes over bandwidth, or flops over peak",
+    "s_max": "speedup ceiling: one copy's library time over its physical limit",
+    "bound": "the resource that limits the region: memory, compute, or launch",
+    "s": "speedup shipped: library time over the shipped kernel's time",
+    "region_ms": "the kernel's time for one pass of one copy, from the ship clock",
+    "library_ms": "the library's time for the same pass, measured beside it",
+    "win_ms": "library_ms minus region_ms; positive means the kernel is faster",
+    "sigma_ms": "uncertainty of win_ms; a ship needs a win past three of these",
+    "stranded": "regions dropped before the search, grouped by reason",
+}
+
 
 @dataclass
 class Report:
@@ -39,29 +56,52 @@ class Report:
     def add_region(self, *, fingerprint: str, ops: list[str], copies: int,
                    workloads: list[str], p: dict, t_orig_ms: dict, bound: str | None,
                    s_max: float | None, t_shipped_ms: dict | None = None,
-                   close_rule: str | None = None) -> None:
+                   close_rule: str | None = None, t_rep_ms: dict | None = None,
+                   roofline_ms: float | None = None, hypotheses: int = 0,
+                   head_ms: float | None = None) -> None:
         s = None
         if t_shipped_ms:
             s = {w: t_orig_ms[w] / t_shipped_ms[w] for w in t_shipped_ms if t_shipped_ms[w]}
+        tally: dict[str, int] = {}
+        for h in self.hypotheses:
+            if h["region"] == fingerprint:
+                tally[h["verdict"]] = tally.get(h["verdict"], 0) + 1
         self.regions.append({
             "fingerprint": fingerprint, "ops": ops, "copies": copies,
             "workloads": workloads, "p": p, "T_orig_ms": t_orig_ms,
+            "T_rep_ms": t_rep_ms or {}, "roofline_ms": roofline_ms,
             "bound": bound, "s_max": s_max, "T_shipped_ms": t_shipped_ms,
-            "s": s, "close_rule": close_rule,
+            "s": s, "head_ms": head_ms, "hypotheses": hypotheses,
+            "outcomes": tally, "close_rule": close_rule,
         })
 
     def add_hypothesis(self, *, hypothesis_id: str, region: str, kind: str,
                        parent: str | None, verdict: str, failed_gate: str | None,
-                       region_ms: float | None) -> None:
+                       region_ms: float | None, hypothesis_text: str = "",
+                       assoc_tag: str | None = None, kernel: str | None = None,
+                       library_ms: float | None = None, win_ms: float | None = None,
+                       sigma_ms: float | None = None) -> None:
         self.hypotheses.append({
-            "id": hypothesis_id, "region": region, "kind": kind, "parent": parent,
-            "verdict": verdict, "failed_gate": failed_gate, "region_ms": region_ms,
+            "id": hypothesis_id, "region": region, "kind": kind,
+            "hypothesis": hypothesis_text, "assoc_tag": assoc_tag, "parent": parent,
+            "kernel": kernel, "verdict": verdict, "failed_gate": failed_gate,
+            "region_ms": region_ms, "library_ms": library_ms, "win_ms": win_ms,
+            "sigma_ms": sigma_ms,
         })
+
+    def stranded_by_reason(self) -> list[dict]:
+        groups: dict[str, list] = {}
+        for row in self.stranded:
+            groups.setdefault(row["reason"], []).append(
+                {"fingerprint": row["fingerprint"], "ops": row.get("ops", [])})
+        return [{"reason": reason, "count": len(rows), "regions": rows}
+                for reason, rows in groups.items()]
 
     def to_dict(self) -> dict:
         return {
             "sign_convention": SIGN_CONVENTION,
-            "written_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "legend": LEGEND,
+            "written_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
             "machine": {
                 "chip": mx.device_info().get("device_name", "unknown"),
                 "memory_bytes": mx.device_info().get("memory_size"),
@@ -78,7 +118,7 @@ class Report:
             "step_ms": self.step_ms,
             "regions": self.regions,
             "hypotheses": self.hypotheses,
-            "stranded": self.stranded,
+            "stranded": self.stranded_by_reason(),
             "coverage": self.coverage,
         }
 

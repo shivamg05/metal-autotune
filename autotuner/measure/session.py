@@ -16,7 +16,7 @@ from typing import Callable, Sequence
 
 import mlx.core as mx
 
-from autotuner.log import wall_now
+from autotuner.log import json_safe, wall_now
 
 DUTY_IDLE_FACTOR = 3.0
 MAX_CHUNK_WORK_S = 0.25
@@ -70,7 +70,7 @@ class Session:
         row = {"t": round(time.perf_counter() - self._t0, 3), "wall": wall_now(),
                "kind": kind, **row}
         with self._log_path.open("a") as f:
-            f.write(json.dumps(row) + "\n")
+            f.write(json.dumps(json_safe(row), allow_nan=False) + "\n")
 
     def timed(self, fn: Callable[[], object]) -> float:
         t = time_once(fn)

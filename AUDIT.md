@@ -278,7 +278,7 @@ Left for you:
 Each step is one commit on the refactor branch, verified by the tests it
 names, in this order.
 
-- [ ] 1. Logging: hypothesis text and the ship clock's numbers in every
+- [x] 1. Logging: hypothesis text and the ship clock's numbers in every
       verdict row; a candidates log with one line per attempt; the judge's
       requests and replies on disk; every evaluated kernel on disk; a
       per-region summary at close; valid JSON.

@@ -646,3 +646,18 @@ def test_delete_that_strands_dependents_is_rejected():
     with pytest.raises(QueueError, match="strand"):
         q.apply_mutations([DeleteItem(item_id="a")])
     assert q.ids() == ("a", "b")
+
+
+def test_client_transcript_records_every_ask_and_reply(tmp_path):
+    """What the judge was told and what it answered must survive the run, for
+    every transport, including the re-ask after a rejected reply."""
+    sdk = FakeSDK(["not json", json.dumps({"queue": [witem()]})])
+    judge = AnthropicJudge(client=sdk)
+    judge.transcript = tmp_path / "judge.jsonl"
+    judge.seed({"stub": True})
+    rows = [json.loads(l) for l in (tmp_path / "judge.jsonl").read_text().splitlines()]
+    assert [(r["call"], r["attempt"]) for r in rows] == [("SeedResponse", 0), ("SeedResponse", 1)]
+    assert rows[0]["reply"] == "not json"
+    assert json.loads(rows[0]["messages"][0]["content"]) == {"region_state": {"stub": True}}
+    assert "rejected" in rows[1]["messages"][-1]["content"]
+    assert "Response schema (seed)" in rows[1]["system"]

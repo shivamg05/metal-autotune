@@ -26,7 +26,8 @@ from .judge.queue import FamilyBook, Queue, QueueError
 from .judge.schema import JudgeBabble
 from .ladder.gates import EvalSet, LadderJob, run_ladder
 from .ladder.static_checks import RegionContract
-from .log import RunLog
+from .artifact.emit import write_kernel
+from .log import RunLog, TextLog, wall_now
 from .measure.clocks import compare, step_clock
 from .measure.controls import aa_null
 from .measure.peaks import implausible as peaks_implausible, measure_peaks
@@ -86,6 +87,8 @@ class JobRunner:
         self.clock_pairs = clock_pairs
         self.session = session or Session(log_path=self.work_dir / "session.jsonl")
         self.log = RunLog(self.work_dir / "run.jsonl")
+        self.candidates = TextLog(self.work_dir / "candidates.log")
+        self.kernel_dir = self.work_dir / "kernels"
         self.report = Report(manifest_path=str(manifest_path))
         self.store = BoundaryStore(self.work_dir / "boundaries")
         self.tracer = Tracer()
@@ -231,7 +234,8 @@ class JobRunner:
         }
         for r in regions:
             if r.rejected:  # share floor and no-headroom cuts both belong in the report
-                self.report.stranded.append({"fingerprint": r.fingerprint, "reason": r.rejected})
+                self.report.stranded.append({"fingerprint": r.fingerprint, "ops": list(r.ops),
+                                             "reason": r.rejected})
         self.log.append("ranked", kept=len(kept))
         return kept
 
@@ -347,7 +351,10 @@ class JobRunner:
             self.log.append("region_skip", fingerprint=region.fingerprint, reason=run.close_rule)
             return run
         scaffold = self._rename(scaffold, region, "scaffold")
+        write_kernel(self.kernel_dir, scaffold)
         result = run_ladder(self._ladder_job(region, scaffold, "preserving", run_clock=False))
+        self._record_attempt(region, "scaffold", "scaffold", "the harness's starting kernel",
+                             "preserving", scaffold, None, result)
         if result.outcome == "failed":
             self.log.append("scaffold_failed", fingerprint=region.fingerprint,
                             gate=result.failed_gate, detail=result.detail)
@@ -388,7 +395,10 @@ class JobRunner:
             self.log.append("scaffold_fix", fingerprint=region.fingerprint, outcome="yield")
             return None
         fixed = self._kernel_from_proposal(region, resp.kernel, "scafix")
+        write_kernel(self.kernel_dir, fixed)
         check = run_ladder(self._ladder_job(region, fixed, "preserving", run_clock=False))
+        self._record_attempt(region, "scafix", "fix", "the judge's one fix of the starting kernel",
+                             "preserving", fixed, resp.kernel.parent_kernel_id, check)
         if check.outcome == "failed":
             self.log.append("scaffold_fix", fingerprint=region.fingerprint,
                             outcome="fix_failed_ladder", gate=check.failed_gate,
@@ -458,6 +468,8 @@ class JobRunner:
                                 latency_s=round(time.perf_counter() - t0, 1), action="babble")
                 run.hypotheses += 1
                 self.total_hypotheses += 1
+                self._record_attempt(region, item.id, item.kind, item.hypothesis,
+                                     item.assoc_tag, None, None, None, gate="judge_babble")
                 verdict_payload = {"outcome": "failed", "failed_gate": "judge_babble"}
                 queue.record_verdict(item.id, "failed")
                 continue
@@ -466,6 +478,11 @@ class JobRunner:
                                 latency_s=round(time.perf_counter() - t0, 1),
                                 action="error", reason=str(e)[:200])
                 judge_errors += 1
+                self._record_attempt(region, item.id, item.kind, item.hypothesis,
+                                     item.assoc_tag, None, None, None, gate="judge_error",
+                                     reason=str(e)[:200])
+                verdict_payload = {"outcome": "failed", "failed_gate": "judge_error",
+                                   "detail": {"reason": str(e)[:200]}}
                 queue.record_verdict(item.id, "failed")
                 if judge_errors >= 3:
                     run.close_rule = f"judge unavailable (3 straight transport errors, last {type(e).__name__})"
@@ -490,6 +507,7 @@ class JobRunner:
             self.total_hypotheses += 1
             kernel = self._kernel_from_proposal(region, resp.kernel, item.id)
             run.kernels[kernel.kernel_id] = kernel
+            write_kernel(self.kernel_dir, kernel)
             family = families.resolve(item, resp.kernel.parent_kernel_id)
             # without this, every child starts a fresh family and the spec's
             # 8-strike abandonment can never trip (audit finding F3)
@@ -535,15 +553,47 @@ class JobRunner:
                 "detail": _safe_detail(result.detail),
                 "region_ms": result.region_ms,
             }
-            self.report.add_hypothesis(
-                hypothesis_id=item.id, region=region.fingerprint, kind=item.kind,
-                parent=parent, verdict=outcome, failed_gate=result.failed_gate,
-                region_ms=result.region_ms,
-            )
-            self.log.append("verdict", fingerprint=region.fingerprint, hypothesis=item.id,
-                            hypothesis_kind=item.kind, parent=parent, outcome=outcome,
-                            gate=result.failed_gate, region_ms=result.region_ms,
-                            detail=result.detail)
+            self._record_attempt(region, item.id, item.kind, item.hypothesis, item.assoc_tag,
+                                 kernel, parent, result, outcome=outcome)
+
+    def _record_attempt(self, region: Region, hyp_id: str, kind: str, text: str,
+                        assoc_tag: str | None, kernel, parent: str | None, result,
+                        outcome: str | None = None, gate: str | None = None,
+                        reason: str | None = None) -> None:
+        """One attempt, written three ways: the report row, the run.jsonl
+        verdict row, and one line of candidates.log."""
+        if result is None:  # the judge produced nothing to evaluate
+            outcome, detail = "failed", {"reason": reason} if reason else {}
+            region_ms = library_ms = win_ms = sigma_ms = None
+        else:
+            outcome = outcome or result.outcome
+            gate, detail = result.failed_gate, result.detail
+            region_ms, library_ms = result.region_ms, result.library_ms
+            win_ms, sigma_ms = result.win_ms, result.sigma_ms
+        self.report.add_hypothesis(
+            hypothesis_id=hyp_id, region=region.fingerprint, kind=kind,
+            hypothesis_text=text, assoc_tag=assoc_tag, parent=parent,
+            kernel=kernel.kernel_id if kernel else None, verdict=outcome,
+            failed_gate=gate, region_ms=region_ms, library_ms=library_ms,
+            win_ms=win_ms, sigma_ms=sigma_ms,
+        )
+        self.log.append("verdict", fingerprint=region.fingerprint, hypothesis=hyp_id,
+                        hypothesis_kind=kind, hypothesis_text=text, assoc_tag=assoc_tag,
+                        kernel=kernel.kernel_id if kernel else None, parent=parent,
+                        outcome=outcome, gate=gate, region_ms=region_ms,
+                        library_ms=library_ms, win_ms=win_ms, sigma_ms=sigma_ms,
+                        detail=detail)
+        if gate:
+            how = f"{outcome} at {gate}: {_short_reason(detail)}"
+        elif region_ms is not None and library_ms is not None:
+            how = (f"{outcome}: {region_ms:.4f} ms vs library {library_ms:.4f} ms per copy "
+                   f"(win {win_ms:+.4f}, sigma {sigma_ms:.4f})")
+        elif outcome == "correct_slower":
+            how = "correct, not clocked"
+        else:
+            how = outcome
+        self.candidates.append(
+            f"{wall_now()}\t{region.fingerprint[:8]}\t{hyp_id}\t{kind}\t{how}\t{text}")
 
     def _meta(self, run: RegionRun) -> dict:
         region = run.region
@@ -745,13 +795,15 @@ class JobRunner:
             if any(covered_by(region, s) for s in shipped_regions):
                 self.log.append("region_covered", fingerprint=region.fingerprint)
                 continue
+            roof = region.roofline
             self.log.append(
-                "region_open", fingerprint=region.fingerprint, ops=len(region.ops),
-                copies=region.copies,
-                bound=region.roofline.bound if region.roofline else None,
-                s_max=region.roofline.s_max if region.roofline else None,
-                t_orig_ms=dict(region.t_orig_ms),
+                "region_open", fingerprint=region.fingerprint, ops=list(region.ops),
+                copies=region.copies, p=dict(region.p),
+                bound=roof.bound if roof else None, s_max=roof.s_max if roof else None,
+                roofline_ms=roof.t_roofline_ms if roof else None,
+                t_orig_ms=dict(region.t_orig_ms), t_rep_ms=dict(region.t_rep_ms),
             )
+            self.candidates.append(_region_line(region, "open"))
             judge = self.judge_factory(region)
             run = self.open_region(region, judge)
             if run.scaffold is not None and run.close_rule is None:
@@ -762,14 +814,19 @@ class JobRunner:
                 fingerprint=region.fingerprint, ops=list(region.ops),
                 copies=region.copies, workloads=list(region.workloads),
                 p=dict(region.p), t_orig_ms=dict(region.t_orig_ms),
-                bound=region.roofline.bound if region.roofline else None,
-                s_max=region.roofline.s_max if region.roofline else None,
+                t_rep_ms=dict(region.t_rep_ms),
+                roofline_ms=roof.t_roofline_ms if roof else None,
+                bound=roof.bound if roof else None, s_max=roof.s_max if roof else None,
                 t_shipped_ms={w: run.shipped_ms for w in region.workloads}
                     if run.shipped_ms else None,
-                close_rule=run.close_rule,
+                close_rule=run.close_rule, hypotheses=run.hypotheses, head_ms=run.head_ms,
             )
             self.log.append("region_closed", fingerprint=region.fingerprint,
-                            rule=run.close_rule, shipped=run.shipped is not None)
+                            rule=run.close_rule, shipped=run.shipped is not None,
+                            hypotheses=run.hypotheses, head_ms=run.head_ms,
+                            shipped_ms=run.shipped_ms,
+                            outcomes=self.report.regions[-1]["outcomes"])
+            self.candidates.append(_region_line(region, "closed", run))
             self.report.write(self.work_dir / "report.json")  # a crash still leaves the story so far
 
         # The job's headline number is a ratio, so law 4 applies to it too: the
@@ -817,6 +874,33 @@ class JobRunner:
 
 def _safe(path: str) -> str:
     return path.replace(".", "_") or "root"
+
+
+def _short_reason(detail: dict | None) -> str:
+    """The first thing worth reading in a failed gate's detail, on one line."""
+    if not detail:
+        return ""
+    if detail.get("failures"):
+        f = detail["failures"][0]
+        return f"{f.get('check')}: {f.get('detail')}"
+    if detail.get("diagnostics"):
+        d = detail["diagnostics"][0]
+        return f"line {d.get('body_line')}: {d.get('message')}"
+    parts = [str(detail[k]) for k in ("regime", "kind", "reason", "note") if detail.get(k)]
+    return "; ".join(parts)[:160]
+
+
+def _region_line(region: Region, event: str, run: "RegionRun | None" = None) -> str:
+    roof = region.roofline
+    rep = ", ".join(f"{w}={ms:.4f}" for w, ms in region.t_rep_ms.items())
+    if event == "open":
+        how = f"copies={region.copies}\tlibrary ms per copy: {rep}"
+        if roof:
+            how += f"\troofline ms per copy: {roof.t_roofline_ms:.4f}"
+    else:
+        shipped = run.shipped.kernel_id if run and run.shipped else "none"
+        how = f"{run.close_rule}\thypotheses={run.hypotheses}\tshipped={shipped}"
+    return f"{wall_now()}\t{region.fingerprint[:8]}\tregion_{event}\t{' > '.join(region.ops)}\t{how}"
 
 
 def _kernel_view(spec: KernelSpec) -> dict:
