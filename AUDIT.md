@@ -291,7 +291,7 @@ names, in this order.
 - [x] 4. The cycle: verdict first, then pop; close rules in one frame; a
       second win must beat the installed one; report and headline in the
       same window.
-- [ ] 5. Checks: stress regime never touches weights and picks the largest
+- [x] 5. Checks: stress regime never touches weights and picks the largest
       finite scale; output-shape mistakes fail a named gate; child timeout
       follows the region's size.
 - [ ] 6. Regions: opaque compiled calls with import-path replay; the

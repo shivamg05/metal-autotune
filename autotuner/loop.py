@@ -289,7 +289,7 @@ class JobRunner:
                               for i in range(k)],
                 reference_paths=[str(self.store._path(region.fingerprint, m.workload, i, "outputs"))
                                  for i in range(k)],
-                t_library_ms=region.t_orig_ms.get(m.workload),
+                t_library_ms=region.t_rep_ms.get(m.workload),
                 correctness_only=False,
                 nodes_json=None,
             ))
@@ -305,6 +305,7 @@ class JobRunner:
             (d for d in contract.output_dtypes if d in ("float16", "bfloat16", "float32")),
             "float32",
         )
+        one_copy_ms = region.t_rep_ms.get(rep.workload) or 0.0
         return LadderJob(
             kernel=kernel,
             contract=contract,
@@ -317,7 +318,10 @@ class JobRunner:
             min_win_ms=MIN_WIN_MS / max(region.copies, 1),
             run_clock=run_clock,
             clock_pairs=self.clock_pairs,
-            timeout_s=120.0,
+            # the timing child runs a few hundred passes under pacing; a region
+            # whose one pass takes hundreds of ms needs minutes, not a fixed cap
+            timeout_s=120.0 + 0.8 * one_copy_ms,
+            weight_inputs=tuple(a in trace.weights for a in rep.input_ids),
         )
 
     def _kernel_from_proposal(self, run: RegionRun, region: Region, proposal, hyp_id: str) -> KernelSpec:

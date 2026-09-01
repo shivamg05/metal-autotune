@@ -488,3 +488,21 @@ def test_ladder_numeric_uninstall_last():
     assert tr.verify_restored() == []
     global _tracer
     _tracer = None
+
+
+def test_regimes_leave_weights_alone():
+    """A weight is a constant of the frozen model; a regime that moved it
+    would test a model that does not exist."""
+    inputs = regime_inputs()
+    r = value_regimes(inputs, seed=7, weights=[False, True, False])
+    for name in REGIMES:
+        assert mx.array_equal(r[name][1], inputs[1]).item()
+    assert not mx.array_equal(r["scaled_up"][0], inputs[0]).item()
+
+
+def test_regimes_take_custom_magnitudes():
+    a = regime_inputs()[0]
+    r = value_regimes(regime_inputs(), seed=7, scale_up=10.0, outlier=100.0)
+    assert mx.allclose(r["scaled_up"][0].astype(mx.float32), a.astype(mx.float32) * 10,
+                       rtol=1e-2, atol=1e-2).item()
+    assert int(mx.sum(r["outliers"][0] == 100.0).item()) == OUTLIER_COUNT

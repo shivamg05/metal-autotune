@@ -64,6 +64,7 @@ class LadderJob:
     clock_pairs: int = 32             # ABBA pairs behind the ship clock
     timeout_s: float = 300.0
     seed: int = 0
+    weight_inputs: tuple[bool, ...] = ()  # per input id: a model weight, never perturbed
 
 
 @dataclass(frozen=True)
@@ -175,4 +176,5 @@ def _spec(job: LadderJob, phase: str) -> LadderSpec:
         phase=phase,
         clock_pairs=job.clock_pairs,
         seed=job.seed,
+        weight_inputs=tuple(job.weight_inputs),
     )

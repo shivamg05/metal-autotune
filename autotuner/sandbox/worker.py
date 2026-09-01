@@ -74,6 +74,10 @@ CLOCK_PAIRS = 32
 CLOCK_MAX_ITERS = 2000
 CLOCK_EST_ITERS = 10
 WATCHDOG_ITERS = 4
+# The magnitude regimes step down until the library's own output stays finite
+# wherever it was finite on the real data: past that point the reference
+# means nothing and no kernel could be written to match it.
+REGIME_MAGNITUDES = {"scaled_up": (1e3, 1e2, 1e1), "outliers": (1e4, 1e3, 1e2)}
 # A single evaluated pass is dominated by fixed submit-and-sync latency
 # (measured 5-9ms on the reference machine for microsecond-scale work), so
 # every per-pass time here comes from a small amortizing loop, both arms alike.
@@ -415,14 +419,31 @@ def evaluate_ladder(spec: LadderSpec) -> Verdict:
             if bad:
                 bad.update({"eval_set": es.label, "input_set": j, "kind": "stored_ref"})
                 return bad
-        regime_inputs = value_regimes([binds_list[0][i] for i in s_in], seed=spec.seed)
+        base_inputs = [binds_list[0][i] for i in s_in]
         for regime in REGIMES:
-            rbinds = dict(zip(s_in, regime_inputs[regime]))
+            found = None
+            for magnitude in REGIME_MAGNITUDES.get(regime, (None,)):
+                knobs = {} if magnitude is None else (
+                    {"scale_up": magnitude} if regime == "scaled_up" else {"outlier": magnitude})
+                rinputs = value_regimes(base_inputs, seed=spec.seed,
+                                        weights=spec.weight_inputs, **knobs)[regime]
+                rbinds = dict(zip(s_in, rinputs))
+                ref = library(nodes, rbinds, s_out)
+                if magnitude is None or all(_finite_where(r, b) for r, b in zip(ref, refs_list[0])):
+                    found = (rbinds, ref, magnitude)
+                    break
+            if found is None:
+                info.setdefault("regime_skipped", {})[regime] = \
+                    "the library's own output overflows at every magnitude tried"
+                continue
+            rbinds, ref, magnitude = found
+            if magnitude is not None:
+                info.setdefault("regime_magnitude", {})[regime] = magnitude
             kouts = launch(rbinds, s_in)
             if changing:
                 bad = changing_mismatch(nodes, rbinds, s_out, kouts)
             else:
-                bad = preserving_mismatch(kouts, library(nodes, rbinds, s_out), wobble)
+                bad = preserving_mismatch(kouts, ref, wobble)
             if bad:
                 bad.update({"eval_set": es.label, "regime": regime, "kind": "regime"})
                 return bad
@@ -565,6 +586,11 @@ def _project_ids(primary, other, ids: tuple[int, ...]) -> tuple[int, ...]:
         node = other[n]
         projected.append(node.in_arrays[s] if kind == "in" else node.out_arrays[s])
     return tuple(projected)
+
+
+def _finite_where(candidate: mx.array, base: mx.array) -> bool:
+    """candidate is finite everywhere base is."""
+    return bool(mx.all(mx.isfinite(candidate) | ~mx.isfinite(base)).item())
 
 
 def _bitwise_equal(a: mx.array, b: mx.array) -> bool:

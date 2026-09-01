@@ -145,6 +145,24 @@ def red16(tr, tmp_path_factory):
     return ctx
 
 
+def overflow_model(x):
+    return x * x * 20.0  # fp16: finite at ten times the data, infinite at a hundred
+
+
+def overflow_input(key: int, L: int = 64) -> mx.array:
+    return mx.random.uniform(low=0.5, high=1.5, shape=(L, 8),
+                             key=mx.random.key(key)).astype(mx.float16)
+
+
+@pytest.fixture(scope="module")
+def overflow16(tr, tmp_path_factory):
+    store = BoundaryStore(tmp_path_factory.mktemp("overflow_store"))
+    ctx, _, _ = build_ctx(
+        tr, store, "ovf", overflow_model,
+        [overflow_input(700 + j) for j in range(3)], ("x",), ("y",))
+    return ctx
+
+
 @pytest.fixture(scope="module")
 def red32(tr, tmp_path_factory):
     store = BoundaryStore(tmp_path_factory.mktemp("red32_store"))
@@ -258,6 +276,32 @@ def test_atomic_racy_dies_at_determinism(red32):
     assert (r.outcome, r.failed_gate) == ("failed", "determinism")
     assert r.detail["nondeterministic_output"] == "y"
     assert r.gates_passed == VALIDATE_GATES[:-1]  # everything up through sweep
+
+
+# the library rounds x*x to fp16 before the scale, so the kernel does too
+OVF_CORRECT = """uint i = thread_position_in_grid.x;
+float v = (float)x[i];
+float sq = (float)(half)(v * v);
+y[i] = (half)(sq * 20.0f);
+"""
+
+
+def test_stress_magnitude_steps_down_until_the_library_stays_finite(overflow16):
+    """Multiplying every input by a thousand overflows this fp16 region's own
+    library output, and no kernel can be written to match an overflowed
+    reference. The regime must step down to the largest magnitude the library
+    survives, and skip a regime it never survives, instead of failing a
+    correct kernel (five regions died this way in the 2254 run)."""
+    spec = KernelSpec(
+        kernel_id="ovf_ok", name="ovf_ok", input_names=("x",), output_names=("y",),
+        source=OVF_CORRECT, grid=("in0.shape[0] * in0.shape[1]", "1", "1"),
+        threadgroup=("32", "1", "1"), output_shapes=(("in0.shape[0]", "in0.shape[1]"),),
+        output_dtypes=("float16",),
+    )
+    r = run_ladder(make_job(overflow16, spec, tol=FP16_TOL))
+    assert r.outcome == "correct_slower" and r.failed_gate is None, r.detail
+    assert r.detail["regime_magnitude"]["scaled_up"] == 10.0
+    assert "outliers" in r.detail["regime_skipped"]
 
 
 # -- the tag is a claim: reordering passes only the changing gate -------------

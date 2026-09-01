@@ -124,6 +124,7 @@ class LadderSpec:
     phase: str                        # "validate" | "score"
     seed: int = 0
     clock_pairs: int = 32             # ABBA pairs behind the ship clock
+    weight_inputs: tuple[bool, ...] = ()  # per input: a model weight, never perturbed
     kind: str = "ladder"
 
     def to_json(self) -> str:
@@ -136,6 +137,7 @@ class LadderSpec:
             raise ValueError(f"not a ladder spec: kind={d.get('kind')!r}")
         d["input_ids"] = tuple(d["input_ids"])
         d["output_ids"] = tuple(d["output_ids"])
+        d["weight_inputs"] = tuple(d.get("weight_inputs", ()))
         d["eval_sets"] = tuple(
             EvalSetSpec(
                 label=e["label"],

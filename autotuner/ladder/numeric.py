@@ -97,33 +97,38 @@ def max_abs_diff(a: mx.array, b: mx.array) -> float:
     return float(mx.max(diff).item())
 
 
-def value_regimes(inputs: Sequence[mx.array], seed: int) -> dict[str, list[mx.array]]:
-    """Gate 5's adversarial regimes at the recorded shapes: scaled up 1e3,
-    scaled down 1e-4, outlier-injected (a few elements at 1e4), zeros, and
-    planted inf/NaN lanes. Deterministic for a given seed and input list."""
+def value_regimes(inputs: Sequence[mx.array], seed: int,
+                  weights: Sequence[bool] | None = None,
+                  scale_up: float = SCALE_UP,
+                  outlier: float = OUTLIER_VALUE) -> dict[str, list[mx.array]]:
+    """Gate 5's adversarial regimes at the recorded shapes: scaled up,
+    scaled down 1e-4, outlier-injected (a few elements at one large value),
+    zeros, and planted inf/NaN lanes. Weight inputs are constants of the
+    frozen model and pass through every regime untouched, as non-float inputs
+    do. Deterministic for a given seed and input list."""
     rng = _random.Random(seed)
     out: dict[str, list[mx.array]] = {name: [] for name in REGIMES}
-    for a in inputs:
-        if a.dtype not in FLOAT_DTYPES or a.size == 0:
+    for k, a in enumerate(inputs):
+        if a.dtype not in FLOAT_DTYPES or a.size == 0 or (weights and weights[k]):
             for name in REGIMES:
                 out[name].append(a)
             continue
-        out["scaled_up"].append(a * SCALE_UP)
+        out["scaled_up"].append(a * scale_up)
         out["scaled_down"].append(a * SCALE_DOWN)
-        out["outliers"].append(_with_outliers(a, rng))
+        out["outliers"].append(_with_outliers(a, rng, outlier))
         out["zeros"].append(mx.zeros_like(a))
         out["nonfinite"].append(_with_nonfinite_lanes(a, rng))
     return out
 
 
-def _with_outliers(a: mx.array, rng: _random.Random) -> mx.array:
+def _with_outliers(a: mx.array, rng: _random.Random, value: float) -> mx.array:
     k = min(OUTLIER_COUNT, a.size)
     positions = rng.sample(range(a.size), k)
     flat = mx.arange(a.size).reshape(a.shape)
     mask = mx.zeros(a.shape, dtype=mx.bool_)
     for p in positions:
         mask = mask | (flat == p)
-    return mx.where(mask, mx.array(OUTLIER_VALUE, dtype=a.dtype), a)
+    return mx.where(mask, mx.array(value, dtype=a.dtype), a)
 
 
 def _with_nonfinite_lanes(a: mx.array, rng: _random.Random) -> mx.array:
