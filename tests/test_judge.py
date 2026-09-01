@@ -320,6 +320,7 @@ def fixed_state():
             Stretch("prefill", 3, 4, (10,), (12,), ("", "block.0")),
         ],
         t_orig_ms={"decode": 0.5, "prefill": 1.25},
+        t_rep_ms={"decode": 0.5, "prefill": 1.25},
         p={"decode": 0.04, "prefill": 0.06},
         roofline=Roofline(t_mem_ms=0.125, t_compute_ms=0.0625, t_launch_ms=0.004,
                           t_roofline_ms=0.125, bound="memory", s_max=5.0),
@@ -328,6 +329,8 @@ def fixed_state():
         "decode": {"inputs": [((1, 64), "float16")], "outputs": [((1, 64), "float16")]},
         "prefill": {"inputs": [((32, 64), "float16")], "outputs": [((32, 64), "float16")]},
     }
+    ops = [{"op": "mx.exp", "args": ["in0"], "kwargs": {}, "outputs": ["t3"]},
+           {"op": "mx.sin", "args": ["t3"], "kwargs": {}, "outputs": ["out0"]}]
     book = FamilyBook()
     book.register_scaffold("scaffold")
     fam = book.resolve(item("h1"), "scaffold")
@@ -339,102 +342,95 @@ def fixed_state():
         item("h3", kind="launch", hypothesis="then grid 256x4",
              depends_on="h2", condition="shipped"),
     ])
-    parent = {
-        "kernel_id": "k1",
+    kernels = {"k1": {
         "source": "out0[i] = metal::precise::sin(metal::precise::exp(in0[i]));",
-        "grid": ["in0.shape[0]", "1", "1"],
-        "threadgroup": ["1", "1", "1"],
-        "output_shapes": [["in0.shape[0]"]],
-        "verdict": "correct_slower",
-    }
-    last_verdict = {"hypothesis_id": "h1", "outcome": "correct_slower", "region_ms": 0.625}
-    return dict(region=region, io_specs=io_specs, assoc_tag="preserving",
-                families=book, queue=queue, head_ms=0.625, shipped_ms=None,
-                parent=parent, last_verdict=last_verdict)
+        "header": "", "grid": ["in0.shape[0]", "1", "1"], "threadgroup": ["1", "1", "1"],
+        "output_shapes": [["in0.shape[0]"]], "output_dtypes": ["float16"], "template": [],
+        "input_names": ["in0"], "output_names": ["out0"],
+        "hypothesis_id": "h1", "verdict": "correct_slower", "failed_gate": None,
+        "region_ms": 0.625, "library_ms": 0.5, "win_ms": -0.125,
+    }}
+    last_verdict = {"hypothesis_id": "h1", "kernel_id": "k1", "outcome": "correct_slower",
+                    "failed_gate": None, "detail": {}, "region_ms": 0.625,
+                    "library_ms": 0.5, "win_ms": -0.125, "sigma_ms": 0.01}
+    writing_for = {"id": "h2", "kind": "retile", "assoc_tag": "changing",
+                   "hypothesis": "tile K, 8 per thread"}
+    return dict(region=region, io_specs=io_specs, ops=ops, kernels=kernels,
+                head="k1", shipped=None, head_ms=0.625, shipped_ms=None,
+                assoc_tag="preserving", families=book, queue=queue,
+                last_verdict=last_verdict, writing_for=writing_for)
 
 
 def test_prompt_snapshot():
+    """The whole contract, rendered: the spec's judge_sees block plus the
+    queue, the verdicts, the kernels in play, and a legend for every key."""
     state = fixed_state()
     rendered = prompts.render_region_state(**state)
-    assert rendered == {
-        "region": {
-            "io": {
-                "decode": {"inputs": [[[1, 64], "float16"]],
-                           "outputs": [[[1, 64], "float16"]]},
-                "prefill": {"inputs": [[[32, 64], "float16"]],
-                            "outputs": [[[32, 64], "float16"]]},
-            },
-            "p": {"decode": 0.04, "prefill": 0.06},
-            "copies": 2,
-            "bound": "memory",
-            "T_orig_ms": {"decode": 0.5, "prefill": 1.25},
-            "s_max": 5.0,
-            "roofline_ms": 0.125,
-            "head_minus_roofline_ms": 0.5,
-            "shipped_minus_roofline_ms": None,
+    assert rendered["region"] == {
+        "fingerprint": "fp-exp-sin",
+        "ops": state["ops"],
+        "io": {
+            "decode": {"inputs": [[[1, 64], "float16"]], "outputs": [[[1, 64], "float16"]]},
+            "prefill": {"inputs": [[[32, 64], "float16"]], "outputs": [[[32, 64], "float16"]]},
         },
-        "family": "assoc-preserving",
-        "families": {
-            "per_family": {"family1": {"strikes": 1, "beaten_library": False,
-                                       "abandoned": False}},
-            "climbing": "family1",
-        },
-        "parent": state["parent"],
-        "last_verdict": state["last_verdict"],
-        "queue": [
-            {"id": "h2", "kind": "retile", "assoc_tag": "changing", "family_id": None,
-             "hypothesis": "tile K, 8 per thread", "depends_on": None, "condition": None,
-             "satisfied": True},
-            {"id": "h3", "kind": "launch", "assoc_tag": "preserving", "family_id": None,
-             "hypothesis": "then grid 256x4", "depends_on": "h2", "condition": "shipped",
-             "satisfied": False},
-        ],
-        "menu": {
-            "on-chip": "keep intermediates in registers or threadgroup memory between stages",
-            "specialize": "specialize launch and tiles for this workload's shapes, without breaking other shapes",
-            "retile": "change tile sizes, work per thread, SIMD-group layout",
-            "re-layout": "re-lay data out, as long as the layout round-trips exactly",
-            "algorithm": "same math, different algorithm: split-K, one-pass vs two-pass attention, persistent kernel, loop order",
-            "launch": "grid, threadgroup size, threadgroup-memory budget",
-            "fix": "repair whatever just failed to compile or match; always legal",
-        },
-        "launch_grammar": grammar.__doc__,
-        "laws": [
-            "boundary dtypes are frozen",
-            "no new quantization or casts the recorded ops do not already contain",
-            "no approximate math",
-            "shape-specialized kernels declare a fallback predicate",
-            "fast-math is pinned by the harness; init_value, math_mode, and streams are not yours to set",
-        ],
+        "copies": 2,
+        "p": {"decode": 0.04, "prefill": 0.06},
+        "bound": "memory",
+        "T_orig_ms": {"decode": 0.5, "prefill": 1.25},
+        "T_rep_ms": {"decode": 0.5, "prefill": 1.25},
+        "roofline_ms": 0.125,
+        "s_max": 5.0,
+        "head_ms": 0.625,
+        "shipped_ms": None,
+        "head_minus_roofline_ms": 0.5,
+        "shipped_minus_roofline_ms": None,
     }
+    assert rendered["head"] == "k1" and rendered["shipped"] is None
+    assert rendered["kernels"] == state["kernels"]
+    assert rendered["family"] == "assoc-preserving"
+    assert rendered["families"] == {
+        "per_family": {"family1": {"strikes": 1, "beaten_library": False, "abandoned": False}},
+        "climbing": "family1",
+    }
+    assert rendered["last_verdict"] == state["last_verdict"]
+    assert rendered["writing_for"] == state["writing_for"]
+    assert [q["id"] for q in rendered["queue"]] == ["h2", "h3"]
+    assert rendered["queue"][0]["satisfied"] and not rendered["queue"][1]["satisfied"]
+    assert rendered["verdicts"] == {}
+    assert rendered["menu"] == prompts.MENU and rendered["laws"] == list(prompts.LAWS)
     # the grammar doc the judge reads is the evaluator's own contract
-    assert "ceil_div" in rendered["launch_grammar"]
-    assert "in0" in rendered["launch_grammar"]
+    assert rendered["launch_grammar"] == grammar.__doc__
+    assert "ceil_div" in rendered["launch_grammar"] and "in0" in rendered["launch_grammar"]
+    assert "out0" in rendered["body"] and "tmp0" in rendered["body"]
+    for key in ("p", "T_orig_ms", "T_rep_ms", "roofline_ms", "s_max", "head_ms",
+                "shipped_ms", "library_ms", "win_ms", "sigma_ms", "bound", "writing_for"):
+        assert key in rendered["legend"]
 
 
 def test_prompt_is_structurally_sealed():
     """The renderer's signature is the secrecy boundary: fixed keyword-only
     parameters, no tensor or tolerance parameter to pass."""
     params = inspect.signature(prompts.render_region_state).parameters
-    assert set(params) == {"region", "io_specs", "assoc_tag", "families", "queue",
-                           "head_ms", "shipped_ms", "parent", "last_verdict"}
+    assert set(params) == {"region", "io_specs", "ops", "kernels", "head", "shipped",
+                           "head_ms", "shipped_ms", "assoc_tag", "families", "queue",
+                           "last_verdict", "writing_for"}
     assert all(p.kind is inspect.Parameter.KEYWORD_ONLY for p in params.values())
 
 
 def test_prompt_refuses_tolerance_keys():
     state = fixed_state()
-    state["last_verdict"] = {"gate_detail": {"numeric": {"rtol": 1e-5}}}
+    state["last_verdict"] = {"detail": {"numeric": {"rtol": 1e-5}}}
     with pytest.raises(ValueError, match="rtol"):
         prompts.render_region_state(**state)
     state = fixed_state()
-    state["parent"] = {"verdict": [{"atol": 1e-6}]}
+    state["kernels"] = {"k1": {"verdict": [{"atol": 1e-6}]}}
     with pytest.raises(ValueError, match="atol"):
         prompts.render_region_state(**state)
 
 
 def test_prompt_refuses_non_json_data():
     state = fixed_state()
-    state["last_verdict"] = {"gate_detail": object()}
+    state["last_verdict"] = {"detail": object()}
     with pytest.raises(TypeError, match="plain JSON"):
         prompts.render_region_state(**state)
 

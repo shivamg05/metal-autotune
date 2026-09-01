@@ -22,6 +22,7 @@ from .bind.emit import EmittedWrapper, NotReplayable, Splice, emit_wrapper
 from .bind.swap import install as swap_install, uninstall as swap_uninstall
 from .bind.verify import verify_retrace
 from .e2e import run_e2e, share_weights
+from .judge.prompts import render_region_state
 from .judge.queue import FamilyBook, Queue, QueueError
 from .judge.schema import JudgeBabble
 from .ladder.gates import EvalSet, LadderJob, LadderResult, run_ladder
@@ -41,6 +42,7 @@ from .regions.store import BoundaryStore
 from .regions.types import Region, Stretch
 from .report import Report
 from .trace import Tracer
+from .trace.recorder import ArrayRef
 from .trace.serialize import nodes_to_json
 from .trace.types import Trace
 from .workload import materialize, workload_seeds
@@ -63,6 +65,10 @@ class RegionRun:
     shipped: KernelSpec | None = None
     head_ms: float | None = None
     shipped_ms: float | None = None
+    library_ms: float | None = None   # the library beside head, from head's own clock
+    head_tag: str = "preserving"      # assoc tag of the edit that produced head
+    last_kernel: str | None = None    # the kernel the latest verdict was about
+    attempts: dict[str, dict] = field(default_factory=dict)  # kernel id -> its verdict
     hypotheses: int = 0
     stale_streak: int = 0
     recent_ship_gains: list[float] = field(default_factory=list)
@@ -313,7 +319,8 @@ class JobRunner:
 
     def _kernel_from_proposal(self, run: RegionRun, region: Region, proposal, hyp_id: str) -> KernelSpec:
         kid = f"r{region.fingerprint[:6]}_{hyp_id}"
-        return kernel_from_proposal(self._contract(region), run.kernels, proposal, kid)
+        parent = resolve_parent(run, proposal.parent_kernel_id)
+        return kernel_from_proposal(self._contract(region), parent, proposal, kid)
 
     def open_region(self, region: Region, judge) -> RegionRun:
         from .scaffold import NoScaffold, build_scaffold
@@ -339,11 +346,12 @@ class JobRunner:
             self.log.append("region_skip", fingerprint=region.fingerprint, reason=run.close_rule)
             return run
         scaffold = self._rename(scaffold, region, "scaffold")
+        run.kernels[scaffold.kernel_id] = scaffold
         write_kernel(self.kernel_dir, scaffold)
-        result = run_ladder(self._ladder_job(region, scaffold, "preserving", run_clock=False))
-        self._record_attempt(region, "scaffold", "scaffold", "the harness's starting kernel",
-                             "preserving", scaffold, None, result)
+        result = run_ladder(self._ladder_job(region, scaffold, "preserving", run_clock=True))
         if result.outcome == "failed":
+            self._record_attempt(run, "scaffold", "scaffold", "the harness's starting kernel",
+                                 "preserving", scaffold, None, result)
             self.log.append("scaffold_failed", fingerprint=region.fingerprint,
                             gate=result.failed_gate, detail=result.detail)
             # one judge fix attempt, per the spec
@@ -351,11 +359,24 @@ class JobRunner:
             if fixed is None:
                 run.close_rule = f"scaffold failed {result.failed_gate} (the one judge fix attempt did not produce a passing kernel)"
                 return run
-            scaffold = fixed
+            scaffold, result = fixed
         run.scaffold = run.head = scaffold
-        run.kernels[scaffold.kernel_id] = scaffold
+        run.head_ms, run.library_ms = result.region_ms, result.library_ms
+        outcome = result.outcome
+        if outcome == "tentative_ship":
+            # the harness's own kernel beat the library on the region clock;
+            # it ships through the same install and whole-model checks as any edit
+            outcome = "shipped" if self._bind_and_promote(run, scaffold, result) else "rolled_back"
+            if outcome == "shipped":
+                run.shipped, run.shipped_ms = scaffold, result.region_ms
+        repaired = scaffold is not run.kernels.get(f"r{region.fingerprint[:6]}_scaffold")
+        self._record_attempt(
+            run, "scafix" if repaired else "scaffold", "fix" if repaired else "scaffold",
+            "the judge's one fix of the starting kernel" if repaired else "the harness's starting kernel",
+            "preserving", scaffold, None, result, outcome=outcome)
         self.log.append("scaffold_ok", fingerprint=region.fingerprint,
-                        kernel=scaffold.kernel_id)
+                        kernel=scaffold.kernel_id, region_ms=result.region_ms,
+                        library_ms=result.library_ms)
         return run
 
     def _rename(self, spec: KernelSpec, region: Region, tag: str) -> KernelSpec:
@@ -365,17 +386,16 @@ class JobRunner:
         d["name"] = f"at_{kid}"
         return KernelSpec(**d)
 
-    def _judge_fix(self, run: RegionRun, judge, scaffold, result) -> KernelSpec | None:
+    def _judge_fix(self, run: RegionRun, judge, scaffold, result):
+        """The spec's one repair attempt on a starting kernel that failed its
+        own checks. Returns (kernel, ladder result) or None."""
         region = run.region
-        # the judge needs the full region state plus the failing kernel to fix it
-        run.kernels[scaffold.kernel_id] = scaffold
-        meta = self._meta(run)
-        meta["scaffold_failure"] = True
-        meta["head"] = scaffold.kernel_id
-        meta["kernels"] = {scaffold.kernel_id: _kernel_view(scaffold)}
+        run.head, run.last_kernel = scaffold, scaffold.kernel_id
+        verdict = _verdict_payload("scaffold", scaffold.kernel_id, "failed", result)
+        writing_for = {"id": "scafix", "kind": "fix", "assoc_tag": "preserving",
+                       "hypothesis": "repair the starting kernel so it passes the checks"}
         try:
-            resp = judge.next(meta, {"outcome": "failed", "failed_gate": result.failed_gate,
-                                     "detail": _safe_detail(result.detail)})
+            resp = judge.next(self._meta(run, Queue(), FamilyBook(), writing_for), verdict)
         except Exception as e:
             self.log.append("scaffold_fix", fingerprint=region.fingerprint,
                             outcome="judge_error", reason=str(e)[:200])
@@ -384,17 +404,18 @@ class JobRunner:
             self.log.append("scaffold_fix", fingerprint=region.fingerprint, outcome="yield")
             return None
         fixed = self._kernel_from_proposal(run, region, resp.kernel, "scafix")
+        run.kernels[fixed.kernel_id] = fixed
         write_kernel(self.kernel_dir, fixed)
-        check = run_ladder(self._ladder_job(region, fixed, "preserving", run_clock=False))
-        self._record_attempt(region, "scafix", "fix", "the judge's one fix of the starting kernel",
-                             "preserving", fixed, resp.kernel.parent_kernel_id, check)
+        check = run_ladder(self._ladder_job(region, fixed, "preserving", run_clock=True))
         if check.outcome == "failed":
+            self._record_attempt(run, "scafix", "fix", "the judge's one fix of the starting kernel",
+                                 "preserving", fixed, resp.kernel.parent_kernel_id, check)
             self.log.append("scaffold_fix", fingerprint=region.fingerprint,
                             outcome="fix_failed_ladder", gate=check.failed_gate,
                             detail=check.detail)
             return None
         self.log.append("scaffold_fix", fingerprint=region.fingerprint, outcome="fixed")
-        return fixed
+        return fixed, check
 
     def hypothesis_cycle(self, run: RegionRun, judge) -> None:
         region = run.region
@@ -403,7 +424,7 @@ class JobRunner:
         families.register_scaffold(run.scaffold.kernel_id)
         t0 = time.perf_counter()
         try:
-            seed = judge.seed(self._meta(run))
+            seed = judge.seed(self._meta(run, queue, families, None))
         except JudgeBabble:
             self.log.append("judge", fingerprint=region.fingerprint, phase="seed",
                             latency_s=round(time.perf_counter() - t0, 1), action="babble")
@@ -440,15 +461,9 @@ class JobRunner:
                     run.close_rule = (f"no queued item is ready; {len(queue)} wait on "
                                       f"unsatisfied conditions ({', '.join(queue.ids())})")
                 return
-            # the queue and verdict log are the judge's only memory (spec);
-            # every next call carries them plus the item it must write for
-            meta = self._meta(run)
-            meta["queue"] = list(queue.snapshot())
-            meta["verdicts"] = queue.verdicts
-            meta["families"] = families.state()
-            meta["executing"] = {"id": item.id, "kind": item.kind,
-                                 "assoc_tag": item.assoc_tag,
-                                 "hypothesis": item.hypothesis}
+            # the queue and the verdicts are the judge's only memory; every
+            # call carries them plus the item it must write for
+            meta = self._meta(run, queue, families, _item_view(item))
             t0 = time.perf_counter()
             try:
                 resp = judge.next(meta, verdict_payload)
@@ -457,9 +472,10 @@ class JobRunner:
                                 latency_s=round(time.perf_counter() - t0, 1), action="babble")
                 run.hypotheses += 1
                 self.total_hypotheses += 1
-                self._record_attempt(region, item.id, item.kind, item.hypothesis,
+                self._record_attempt(run, item.id, item.kind, item.hypothesis,
                                      item.assoc_tag, None, None, None, gate="judge_babble")
-                verdict_payload = {"outcome": "failed", "failed_gate": "judge_babble"}
+                verdict_payload = {"hypothesis_id": item.id, "outcome": "failed",
+                                   "failed_gate": "judge_babble"}
                 queue.record_verdict(item.id, "failed")
                 continue
             except Exception as e:
@@ -467,10 +483,11 @@ class JobRunner:
                                 latency_s=round(time.perf_counter() - t0, 1),
                                 action="error", reason=str(e)[:200])
                 judge_errors += 1
-                self._record_attempt(region, item.id, item.kind, item.hypothesis,
+                self._record_attempt(run, item.id, item.kind, item.hypothesis,
                                      item.assoc_tag, None, None, None, gate="judge_error",
                                      reason=str(e)[:200])
-                verdict_payload = {"outcome": "failed", "failed_gate": "judge_error",
+                verdict_payload = {"hypothesis_id": item.id, "outcome": "failed",
+                                   "failed_gate": "judge_error",
                                    "detail": {"reason": str(e)[:200]}}
                 queue.record_verdict(item.id, "failed")
                 if judge_errors >= 3:
@@ -494,8 +511,8 @@ class JobRunner:
 
             run.hypotheses += 1
             self.total_hypotheses += 1
-            parent = resp.kernel.parent_kernel_id
-            known = parent in run.kernels
+            parent_spec = resolve_parent(run, resp.kernel.parent_kernel_id)
+            parent = parent_spec.kernel_id if parent_spec else resp.kernel.parent_kernel_id
             kernel = self._kernel_from_proposal(run, region, resp.kernel, item.id)
             run.kernels[kernel.kernel_id] = kernel
             write_kernel(self.kernel_dir, kernel)
@@ -503,15 +520,15 @@ class JobRunner:
             # a child joins its parent's family; a fresh one would never trip the
             # eight-strike abandonment rule
             families.register_kernel(kernel.kernel_id, family)
-            if known:
+            if parent_spec is not None:
                 result = run_ladder(self._ladder_job(region, kernel, item.assoc_tag, run_clock=True))
             else:
                 # the parent is the judge's own memory of what it edited; an
                 # unknown one is a mistake to name, not a kernel to measure
                 result = LadderResult("failed", "static", {"failures": [{
                     "check": "parent_kernel_id",
-                    "detail": f"{parent!r} is not a kernel of this region; "
-                              f"the kernels are {sorted(run.kernels)}"}]},
+                    "detail": f"{parent!r} names no kernel of this region; say head, "
+                              f"scaffold, shipped, a hypothesis id, or one of {sorted(run.kernels)}"}]},
                     None, None, None, None, [])
             if result.outcome == "failed":
                 outcome = "failed"
@@ -522,7 +539,8 @@ class JobRunner:
                 run.fail_streak_by_parent[parent] = 0
                 if result.outcome == "correct_slower":
                     outcome = "correct_slower"
-                    run.head, run.head_ms = kernel, result.region_ms
+                    run.head, run.head_ms, run.head_tag = kernel, result.region_ms, item.assoc_tag
+                    run.library_ms = result.library_ms
                     run.stale_streak += 1
                 else:  # tentative_ship: bind and e2e decide
                     if self._bind_and_promote(run, kernel, result):
@@ -530,7 +548,8 @@ class JobRunner:
                         gain = result.win_ms or 0.0
                         prev = run.shipped_ms
                         run.shipped, run.shipped_ms = kernel, result.region_ms
-                        run.head, run.head_ms = kernel, result.region_ms
+                        run.head, run.head_ms, run.head_tag = kernel, result.region_ms, item.assoc_tag
+                        run.library_ms = result.library_ms
                         run.recent_ship_gains.append(
                             gain / prev if prev else 1.0
                         )
@@ -545,21 +564,17 @@ class JobRunner:
                 run.head = run.shipped or run.scaffold
                 self.log.append("family_abandoned", fingerprint=region.fingerprint, family=family)
             queue.record_verdict(item.id, outcome)
-            verdict_payload = {
-                "outcome": outcome,
-                "failed_gate": result.failed_gate,
-                "detail": _safe_detail(result.detail),
-                "region_ms": result.region_ms,
-            }
-            self._record_attempt(region, item.id, item.kind, item.hypothesis, item.assoc_tag,
+            verdict_payload = _verdict_payload(item.id, kernel.kernel_id, outcome, result)
+            self._record_attempt(run, item.id, item.kind, item.hypothesis, item.assoc_tag,
                                  kernel, parent, result, outcome=outcome)
 
-    def _record_attempt(self, region: Region, hyp_id: str, kind: str, text: str,
+    def _record_attempt(self, run: RegionRun, hyp_id: str, kind: str, text: str,
                         assoc_tag: str | None, kernel, parent: str | None, result,
                         outcome: str | None = None, gate: str | None = None,
                         reason: str | None = None) -> None:
         """One attempt, written three ways: the report row, the run.jsonl
         verdict row, and one line of candidates.log."""
+        region = run.region
         if result is None:  # the judge produced nothing to evaluate
             outcome, detail = "failed", {"reason": reason} if reason else {}
             region_ms = library_ms = win_ms = sigma_ms = None
@@ -568,6 +583,12 @@ class JobRunner:
             gate, detail = result.failed_gate, result.detail
             region_ms, library_ms = result.region_ms, result.library_ms
             win_ms, sigma_ms = result.win_ms, result.sigma_ms
+        if kernel is not None:
+            run.last_kernel = kernel.kernel_id
+            run.attempts[kernel.kernel_id] = {
+                "hypothesis_id": hyp_id, "verdict": outcome, "failed_gate": gate,
+                "region_ms": region_ms, "library_ms": library_ms, "win_ms": win_ms,
+            }
         self.report.add_hypothesis(
             hypothesis_id=hyp_id, region=region.fingerprint, kind=kind,
             hypothesis_text=text, assoc_tag=assoc_tag, parent=parent,
@@ -593,37 +614,43 @@ class JobRunner:
         self.candidates.append(
             f"{wall_now()}\t{region.fingerprint[:8]}\t{hyp_id}\t{kind}\t{how}\t{text}")
 
-    def _meta(self, run: RegionRun) -> dict:
+    def _meta(self, run: RegionRun, queue: Queue, families: FamilyBook,
+              writing_for: dict | None) -> dict:
+        """Everything the judge gets on one call. The kernels it can name are
+        the scaffold, head, shipped, the one the last verdict was about, and
+        any a queued item depends on."""
         region = run.region
+        io_specs = {}
+        for m in region.members:
+            if m.workload in io_specs:
+                continue
+            specs = _spec_index(self.traces[m.workload], m)
+            io_specs[m.workload] = {
+                "inputs": [specs[a] for a in m.input_ids],
+                "outputs": [specs[a] for a in m.output_ids],
+            }
         rep = region.members[0]
-        trace = self.traces[rep.workload]
-        specs = {}
-        for n in trace.nodes[rep.start_seq:rep.end_seq + 1]:
-            for aid, s in zip(n.in_arrays, n.in_specs):
-                specs.setdefault(aid, s)
-            for aid, s in zip(n.out_arrays, n.out_specs):
-                specs[aid] = s
-        return {
-            "fingerprint": region.fingerprint,
-            "ops": list(region.ops),
-            "copies": region.copies,
-            "p": dict(region.p),
-            "bound": region.roofline.bound if region.roofline else None,
-            "io": {
-                "inputs": [[list(specs[a][0]), specs[a][1]] for a in rep.input_ids],
-                "outputs": [[list(specs[a][0]), specs[a][1]] for a in rep.output_ids],
-            },
-            "head_ms": run.head_ms,
-            "shipped_ms": run.shipped_ms,
-            "roofline_ms": region.roofline.t_roofline_ms if region.roofline else None,
-            # the judge edits a named parent, so it must see the lineage sources
-            "head": run.head.kernel_id if run.head else None,
-            "kernels": {
-                spec.kernel_id: _kernel_view(spec)
-                for spec in (run.scaffold, run.head, run.shipped)
-                if spec is not None
-            },
-        }
+        wanted = {k.kernel_id for k in (run.scaffold, run.head, run.shipped) if k}
+        wanted.add(run.last_kernel)
+        for item in queue.snapshot():
+            if item["depends_on"]:
+                wanted.add(f"r{region.fingerprint[:6]}_{item['depends_on']}")
+        kernels = {}
+        for kid in sorted(wanted - {None}):
+            spec = run.kernels.get(kid)
+            if spec is not None:
+                kernels[kid] = {**_kernel_view(spec), **run.attempts.get(kid, {})}
+        return render_region_state(
+            region=region, io_specs=io_specs,
+            ops=_ops_view(self.traces[rep.workload], rep),
+            kernels=kernels,
+            head=run.head.kernel_id if run.head else None,
+            shipped=run.shipped.kernel_id if run.shipped else None,
+            head_ms=run.head_ms, shipped_ms=run.shipped_ms, assoc_tag=run.head_tag,
+            families=families, queue=queue,
+            last_verdict=run.attempts.get(run.last_kernel) if run.last_kernel else None,
+            writing_for=writing_for,
+        )
 
     def _close_rule(self, run: RegionRun, queue: Queue) -> str | None:
         region = run.region
@@ -874,6 +901,61 @@ def _safe(path: str) -> str:
     return path.replace(".", "_") or "root"
 
 
+def _spec_index(trace: Trace, stretch: Stretch) -> dict[int, tuple]:
+    """array id -> (shape, dtype) for every array the stretch touches."""
+    specs: dict[int, tuple] = {}
+    for n in trace.nodes[stretch.start_seq:stretch.end_seq + 1]:
+        for aid, s in zip(n.in_arrays, n.in_specs):
+            specs.setdefault(aid, s)
+        for aid, s in zip(n.out_arrays, n.out_specs):
+            specs[aid] = s
+    return specs
+
+
+def _ops_view(trace: Trace, stretch: Stretch) -> list[dict]:
+    """The recorded calls of one copy, with arrays named by role (in0, out0,
+    t<seq> for intermediates) and every non-tensor argument spelled out."""
+    names = {aid: f"in{i}" for i, aid in enumerate(stretch.input_ids)}
+    names.update({aid: f"out{i}" for i, aid in enumerate(stretch.output_ids)})
+    view = []
+    for node in trace.nodes[stretch.start_seq:stretch.end_seq + 1]:
+        for aid in node.out_arrays:
+            names.setdefault(aid, f"t{node.seq}")
+
+        def name(obj, node=node):
+            if isinstance(obj, ArrayRef):
+                return names[node.in_arrays[obj.index]]
+            if isinstance(obj, (list, tuple)):
+                return [name(v) for v in obj]
+            if isinstance(obj, dict):
+                return {k: name(v) for k, v in obj.items()}
+            if isinstance(obj, slice):
+                return f"slice({obj.start}, {obj.stop}, {obj.step})"
+            return obj if isinstance(obj, (int, float, bool, str)) or obj is None else str(obj)
+
+        view.append({
+            "op": node.op,
+            "args": name(list(node.scalar_args["args"])),
+            "kwargs": name(dict(node.scalar_args["kwargs"])),
+            "outputs": [names[aid] for aid in node.out_arrays],
+        })
+    return view
+
+
+def _item_view(item) -> dict:
+    return {"id": item.id, "kind": item.kind, "assoc_tag": item.assoc_tag,
+            "hypothesis": item.hypothesis}
+
+
+def _verdict_payload(hyp_id: str, kernel_id: str, outcome: str, result) -> dict:
+    return {
+        "hypothesis_id": hyp_id, "kernel_id": kernel_id, "outcome": outcome,
+        "failed_gate": result.failed_gate, "detail": _safe_detail(result.detail),
+        "region_ms": result.region_ms, "library_ms": result.library_ms,
+        "win_ms": result.win_ms, "sigma_ms": result.sigma_ms,
+    }
+
+
 def _short_reason(detail: dict | None) -> str:
     """The first thing worth reading in a failed gate's detail, on one line."""
     if not detail:
@@ -904,10 +986,21 @@ def _region_line(region: Region, event: str, run: "RegionRun | None" = None) -> 
 HEADER_SHOWN_CHARS = 8000  # a judge-written header fits; a library header does not
 
 
-def kernel_from_proposal(contract: RegionContract, kernels: dict, proposal, kernel_id: str) -> KernelSpec:
+def resolve_parent(run: RegionRun, name: str) -> KernelSpec | None:
+    """The kernel a proposal edits: head, scaffold, shipped, a hypothesis id,
+    or a kernel id; None when the name matches nothing in this region."""
+    by_role = {"head": run.head, "scaffold": run.scaffold, "shipped": run.shipped}
+    if name in by_role:
+        return by_role[name]
+    if name in run.kernels:
+        return run.kernels[name]
+    return run.kernels.get(f"r{run.region.fingerprint[:6]}_{name}")
+
+
+def kernel_from_proposal(contract: RegionContract, parent: KernelSpec | None, proposal,
+                         kernel_id: str) -> KernelSpec:
     """The harness owns names, dtypes, and the call site; the judge supplies
     the body and the launch. A header or template left out means the parent's."""
-    parent = kernels.get(proposal.parent_kernel_id)
     scratch = tuple(proposal.scratch)
     return KernelSpec(
         kernel_id=kernel_id,

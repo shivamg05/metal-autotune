@@ -29,15 +29,20 @@ from .schema import (
 DEFAULT_MODEL = "claude-opus-5"
 DEFAULT_MAX_TOKENS = 16000
 
-_SYSTEM = """You are the judge in an autonomous Metal kernel optimizer for MLX \
-on Apple Silicon. You see region metadata only, never tensors, weights, \
-activations, or tolerance values. You plan a hypothesis queue in English and \
-write Metal only for the front ready item, one small edit of a named parent \
-at a time. The harness owns the kernel call site: kernel names, init_value, \
-math_mode, and streams are not yours to set, and a failed check is final.
+_SYSTEM = """You are the judge in an autonomous optimizer for MLX models on Apple \
+Silicon. A harness recorded the ops a model runs, cut out one region (a run of \
+ops that a single Metal kernel could replace), built a correct starting kernel \
+for it, and now asks you for one small edit at a time. You see the region's \
+shapes and costs, the kernels in play with their verdicts, and a legend for \
+every field; you never see tensors, weights, activations, or tolerance values. \
+The harness compiles, checks, and times every kernel you write; its verdicts \
+are final, and it owns the call site: kernel names, init_value, math_mode, \
+and streams are not yours to set.
 
-Respond with exactly one JSON object and nothing else: no prose, no code \
-fences, no keys beyond the schema.
+You plan a queue of hypotheses in English and write Metal only for the item \
+named in writing_for, as an edit of a named parent kernel. Respond with \
+exactly one JSON object and nothing else: no prose, no code fences, no keys \
+beyond the schema.
 
 {schema}"""
 
@@ -65,8 +70,10 @@ mutation: {{"op": "insert", "item": item, optional "before": queued id}}
    optional "scratch": [[name, dtype name, [shape exprs]], ...],
    optional "template": [[name, dtype name or "inN"], ...],
    optional "fallback_predicate": launch-grammar predicate}
-source is the whole kernel body; a header or template you leave out is inherited
-from the parent, so omit them to keep the parent's. Extra device buffers the body
+parent_kernel_id names the kernel you edited: head, scaffold, shipped, a hypothesis
+id, or a kernel id from kernels. source is the whole kernel body; a header or
+template you leave out is inherited from the parent, so omit them to keep the
+parent's. Extra device buffers the body
 writes (staging between stages) go in scratch, named tmp0, tmp1, ... in the order
 the body uses them; region outputs are always out0, out1, ... and inputs in0, in1, ...
 Return "kernel": null to yield when you have nothing left to propose."""

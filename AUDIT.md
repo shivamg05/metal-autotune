@@ -285,7 +285,7 @@ names, in this order.
 - [x] 2. Proposals: scratch outputs; ids sanitized and validated; parent
       resolved, header and template inherited, the library header kept on
       the harness side; output shapes checked statically.
-- [ ] 3. Briefing: one renderer with the whole contract, shapes per workload,
+- [x] 3. Briefing: one renderer with the whole contract, shapes per workload,
       the failed kernel's source, a legend for every key; the starting kernel
       timed.
 - [ ] 4. The cycle: verdict first, then pop; close rules in one frame; a
