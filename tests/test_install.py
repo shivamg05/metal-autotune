@@ -38,7 +38,7 @@ def runner(tmp_path):
             name: main
     """))
     r = JobRunner(manifest, tmp_path / "work", judge_factory=lambda region: None,
-                  clock_pairs=4, session=Session(sleep=lambda s: None))
+                  clock_pairs=4, refuse_degraded=False, session=Session(sleep=lambda s: None))
     r.load_model()
     r.trace_workloads()
     regions = r.build_regions()

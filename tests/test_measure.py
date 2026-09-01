@@ -158,3 +158,40 @@ def test_implausible_peaks_are_named():
     assert "fp32" in implausible(slow_fp)
     no_fp32 = Peaks(bandwidth_gbps=92.8, flops_gflops={})
     assert implausible(no_fp32) is None
+
+
+def test_fresh_chunk_ramp_warm_stops_once_enough_work_ran():
+    """After an idle the clocks ramp back up within a few tens of ms of work;
+    a sample longer than that warms them by itself, so a slow model step must
+    not pay two unmeasured full steps per timed one."""
+    import time as _time
+
+    s = Session(sleep=lambda x: None, max_chunk_work_s=0.0)
+    calls = {"n": 0}
+
+    def slow():
+        calls["n"] += 1
+        _time.sleep(0.06)
+        return mx.zeros(1)
+
+    s.timed(slow)
+    s.fresh_chunk((slow,))
+    assert calls["n"] == 2  # one timed sample, one ramp sample
+
+
+def test_best_of_peaks_keeps_the_higher_reading():
+    from autotuner.measure.peaks import Peaks, best_of
+
+    a = Peaks(90.0, {"float32": 2000.0, "float16": 3000.0}, 7.0)
+    b = Peaks(95.0, {"float32": 1800.0}, 6.0)
+    m = best_of(a, b)
+    assert (m.bandwidth_gbps, m.launch_us) == (95.0, 6.0)
+    assert m.flops_gflops == {"float32": 2000.0, "float16": 3000.0}
+
+
+def test_gpu_utilization_parses_what_macos_reports():
+    from autotuner.measure.peaks import gpu_utilization
+
+    text = '"PerformanceStatistics" = {"Tiler Utilization %"=98,"Device Utilization %"=37,"x"=1}'
+    assert gpu_utilization(text) == 37.0
+    assert gpu_utilization("nothing about the GPU here") is None

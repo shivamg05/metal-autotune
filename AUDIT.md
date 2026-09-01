@@ -300,7 +300,7 @@ names, in this order.
 - [x] 7. Installing: verification against every installed cut; same-scope
       copies in one wrapper; superseded kernels dropped; whole-model check
       and an artifact load at job end.
-- [ ] 8. Measurement: pricing at eight pairs with the step warmed once;
+- [x] 8. Measurement: pricing at eight pairs with the step warmed once;
       ramp-warm bounded by work; peaks and the null before the step clock,
       raising on a machine that cannot measure; the null judged; weight
       sharing verified.

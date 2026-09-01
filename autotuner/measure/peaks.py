@@ -8,7 +8,9 @@ Recalibration may only raise a peak.
 
 from __future__ import annotations
 
+import re
 import statistics
+import subprocess
 from dataclasses import dataclass, field
 
 import mlx.core as mx
@@ -39,6 +41,35 @@ class Peaks:
 # (seen live: work-2026-08-31-halted, a 10x-degraded GPU within one boot)
 PLAUSIBLE_MIN_GBPS = 30.0
 PLAUSIBLE_MIN_FP32_GFLOPS = 500.0
+
+
+def best_of(a: Peaks, b: Peaks) -> Peaks:
+    """Two readings of the same chip: throttling, contention, and cold
+    start only push a reading down, so the higher one is the truer peak and
+    the lower launch cost the truer floor."""
+    flops = {d: max(a.flops_gflops.get(d, 0.0), b.flops_gflops.get(d, 0.0))
+             for d in set(a.flops_gflops) | set(b.flops_gflops)}
+    return Peaks(bandwidth_gbps=max(a.bandwidth_gbps, b.bandwidth_gbps),
+                 flops_gflops=flops, launch_us=min(a.launch_us, b.launch_us))
+
+
+_UTILIZATION = re.compile(r'"Device Utilization %"=(\d+)')
+BUSY_GPU_PERCENT = 50.0
+
+
+def gpu_utilization(text: str | None = None) -> float | None:
+    """How busy macOS says the GPU is right now, in percent, before this
+    process has issued any work of its own; None when it cannot be read. A
+    background process holding the GPU shows here and nowhere else: it is
+    invisible to the load average and to every peak probe's pairing."""
+    if text is None:
+        try:
+            text = subprocess.run(["ioreg", "-r", "-c", "IOAccelerator", "-d", "4"],
+                                  capture_output=True, text=True, timeout=10).stdout
+        except (OSError, subprocess.SubprocessError):
+            return None
+    m = _UTILIZATION.search(text)
+    return float(m.group(1)) if m else None
 
 
 def implausible(peaks: Peaks) -> str | None:

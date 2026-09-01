@@ -21,7 +21,7 @@ from .bind.certify import certify_identity, find_scope_call, screen_scope
 from .bind.emit import EmittedWrapper, NotReplayable, Splice, emit_wrapper
 from .bind.swap import install as swap_install, uninstall as swap_uninstall
 from .bind.verify import verify_retrace
-from .e2e import _flatten as flatten_outputs, run_e2e, share_weights
+from .e2e import _flatten as flatten_outputs, _flatten_params, run_e2e, share_weights
 from .judge.prompts import render_region_state
 from .judge.queue import FamilyBook, Queue, QueueError
 from .judge.schema import JudgeBabble
@@ -31,11 +31,11 @@ from .artifact.emit import check_apply, emit_artifact, write_kernel
 from .log import RunLog, TextLog, wall_now
 from .measure.clocks import compare, step_clock
 from .measure.controls import aa_null
-from .measure.peaks import implausible as peaks_implausible, measure_peaks
+from .measure.peaks import BUSY_GPU_PERCENT, best_of, gpu_utilization, implausible as peaks_implausible, measure_peaks
 from .measure.session import Session
 from .regions.build import build_stretches
 from .regions.fingerprint import group_copies
-from .regions.price import capture_boundaries, price_region
+from .regions.price import PRICE_PAIRS, capture_boundaries, price_region
 from .regions.rank import apply_floor, free_members, rank
 from .regions.roofline import stretch_roofline
 from .regions.store import BoundaryStore
@@ -84,7 +84,7 @@ class RegionRun:
 class JobRunner:
     def __init__(self, manifest_path: str | Path, work_dir: str | Path,
                  judge_factory, session: Session | None = None,
-                 clock_pairs: int = CLOCK_PAIRS):
+                 clock_pairs: int = CLOCK_PAIRS, refuse_degraded: bool = True):
         self.manifest = manifest_mod.load(manifest_path)
         self.work_dir = Path(work_dir)
         self.work_dir.mkdir(parents=True, exist_ok=True)
@@ -95,6 +95,7 @@ class JobRunner:
                 "pass a fresh --work-dir or move the old one aside")
         self.judge_factory = judge_factory
         self.clock_pairs = clock_pairs
+        self.refuse_degraded = refuse_degraded  # a machine that cannot measure stops the job
         self.session = session or Session(log_path=self.work_dir / "session.jsonl")
         self.log = RunLog(self.work_dir / "run.jsonl")
         self.candidates = TextLog(self.work_dir / "candidates.log")
@@ -124,7 +125,13 @@ class JobRunner:
         self.baseline_model = module.build()
         shared = share_weights(self.model, self.baseline_model)
         mx.clear_cache()  # return the freed second weight copy to the OS
-        self.log.append("model", shared_weights=shared)
+        total = len(_flatten_params(self.baseline_model.parameters())) \
+            if hasattr(self.baseline_model, "parameters") else 0
+        self.log.append("model", shared_weights=shared, parameters=total)
+        if shared < total:
+            self._env_warning(f"only {shared} of {total} parameters could be shared between "
+                              "the two model copies; both stay resident, which adds noise "
+                              "to the whole-model checks")
 
     def trace_workloads(self):
         for w in self.manifest.workloads:
@@ -192,6 +199,7 @@ class JobRunner:
         # the recorder must be fully removed before any timing (law: pass 2)
         self.tracer.uninstall()
         mx.clear_cache()  # capture's activation buffers; warm-up refills what clocks need
+        self.measure_machine()
         for w in self.manifest.workloads:
             tensors = self.tensors[w.name]
             clock = step_clock(self.session, lambda t=tensors: self.model(*t))
@@ -199,21 +207,8 @@ class JobRunner:
             self.report.step_ms[w.name] = {"before": clock.median_ms}
             self.log.append("step_clock", workload=w.name, phase="before",
                             median_ms=clock.median_ms)
-        self.peaks = measure_peaks(self.session)
-        self.report.peaks = {"bandwidth_gbps": self.peaks.bandwidth_gbps,
-                             "flops_gflops": self.peaks.flops_gflops,
-                             "launch_us": self.peaks.launch_us}
-        floor = aa_null(self.session, pairs=8)
-        self.report.session["aa_floor_sigma_ms"] = floor.sigma_ms
-        self.log.append("peaks", **self.report.peaks, aa_floor_sigma_ms=floor.sigma_ms)
-        warn = peaks_implausible(self.peaks)
-        if warn:
-            # comparisons stay valid (paired), but the machine is degraded and
-            # every absolute number in this job is suspect; say so loudly
-            self.log.append("env_warning", detail=warn)
-            print(f"WARNING: {warn}; this machine is degraded, absolute clocks "
-                  "and rooflines from this job are not representative")
 
+        warmed_steps: set[str] = set()
         for r in regions:
             sets_for = {}
             weights = {}
@@ -230,7 +225,11 @@ class JobRunner:
             step_fns = {w.name: (lambda t=self.tensors[w.name]: self.model(*t))
                         for w in self.manifest.workloads}
             price_region(r, self.session, self.traces, sets_for, weights, step_fns,
-                         pairs=self.clock_pairs)
+                         pairs=PRICE_PAIRS, warmed_steps=warmed_steps)
+        # a second look at the peaks now that the chip has been working: only
+        # a higher reading can be truer, and the rooflines below use the best
+        self._record_peaks(best_of(self.peaks, measure_peaks(self.session)), "after_pricing")
+        for r in regions:
             rep = r.members[0]
             # One-copy cost against the one-copy floor; the all-copies total
             # would inflate s_max by the copy count. The cost is the measured
@@ -260,6 +259,46 @@ class JobRunner:
                                              "reason": r.rejected})
         self.log.append("ranked", kept=len(kept))
         return kept
+
+    def measure_machine(self) -> None:
+        """The chip's own limits, and whether this machine can measure at
+        all: a busy GPU or a reading no healthy chip gives stops the job when
+        refuse_degraded is set, since every roofline and every absolute clock
+        would describe a sick machine."""
+        busy = gpu_utilization()
+        self.report.session["gpu_utilization_at_start_pct"] = busy
+        if busy is not None and busy > BUSY_GPU_PERCENT:
+            self._cannot_measure(f"the GPU is {busy:.0f}% busy before this job has issued any "
+                                 "work; another process is using it")
+        self._record_peaks(measure_peaks(self.session), "job_start")
+        reason = peaks_implausible(self.peaks)
+        if reason:
+            self._cannot_measure(reason)
+        floor = aa_null(self.session, pairs=8)
+        self.report.session["aa_floor_sigma_ms"] = floor.sigma_ms
+        self.log.append("aa_floor", sigma_ms=floor.sigma_ms, median_delta_ms=floor.median_delta_ms,
+                        stability=round(floor.stability, 3))
+        if floor.wins_by(0.0) or floor.loses_by(0.0):
+            self._env_warning(f"the A/A control found a {floor.median_delta_ms:+.4f} ms difference "
+                              "between two runs of the same code; this session's noise is "
+                              "not symmetric and small wins will be missed")
+
+    def _record_peaks(self, peaks, when: str) -> None:
+        self.peaks = peaks
+        self.report.peaks = {"bandwidth_gbps": peaks.bandwidth_gbps,
+                             "flops_gflops": peaks.flops_gflops, "launch_us": peaks.launch_us}
+        self.log.append("peaks", when=when, **self.report.peaks)
+
+    def _cannot_measure(self, reason: str) -> None:
+        if self.refuse_degraded:
+            self.log.append("job_refused", reason=reason)
+            raise RuntimeError(f"this machine cannot measure right now: {reason}. Wait for it "
+                               "to go quiet and cool, then start a fresh run")
+        self._env_warning(reason)
+
+    def _env_warning(self, detail: str) -> None:
+        self.log.append("env_warning", detail=detail)
+        print(f"WARNING: {detail}")
 
     # -- stage 3: one region --------------------------------------------------
 

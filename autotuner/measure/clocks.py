@@ -89,13 +89,16 @@ def compare(
     baseline_fn: Callable[[], object],
     candidate_fn: Callable[[], object],
     pairs: int = 16,
+    warm_baseline: bool = True,
 ) -> PairedComparison:
     """Paired interleaved A/B. Each ABBA block yields two pairs with opposite
     order, so drift within a block cancels across the pair set. Both arms are
-    warmed first; the baseline is measured here, now, never reused."""
+    warmed first (a caller that just warmed the baseline may say so); the
+    baseline is measured here, now, never reused."""
     if pairs < 2 or pairs % 2:
         raise ValueError(f"pairs must be even and >= 2, got {pairs}")
-    session.warm_until_stable(baseline_fn)
+    if warm_baseline:
+        session.warm_until_stable(baseline_fn)
     session.warm_until_stable(candidate_fn)
     base: list[float] = []
     cand: list[float] = []

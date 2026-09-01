@@ -91,7 +91,7 @@ def test_planted_win_job_ships(tmp_path):
         return j
 
     runner = JobRunner(manifest, tmp_path / "work", judge_factory=factory, clock_pairs=8,
-                       session=Session())
+                       refuse_degraded=False, session=Session())
     report = runner.run()
 
     # the judge edits a named parent, so every next call must carry the
@@ -135,7 +135,7 @@ def test_planted_win_job_ships(tmp_path):
 def test_vendor_parity_job_ships_nothing(tmp_path):
     manifest = write_manifest(tmp_path, "vendor_parity.py", (256, 512))
     runner = JobRunner(manifest, tmp_path / "work", judge_factory=yielding_judge, clock_pairs=8,
-                       session=Session())
+                       refuse_degraded=False, session=Session())
     report = runner.run()
     shipped = [r for r in report.regions if r.get("s")]
     assert not shipped
@@ -176,7 +176,7 @@ def test_ship_crash_restores_model_and_continues(tmp_path, monkeypatch):
     monkeypatch.setattr(loop_mod, "run_e2e", exploding_e2e)
     manifest = write_manifest(tmp_path, "planted_win.py", (4096, 1024))
     runner = JobRunner(manifest, tmp_path / "work", judge_factory=winning_chain_judge, clock_pairs=8,
-                       session=Session())
+                       refuse_degraded=False, session=Session())
     report = runner.run()  # must complete, not raise
     assert not [r for r in report.regions if r.get("s")]
     from autotuner_runtime.swap import ReplayWrapper
@@ -201,7 +201,7 @@ def test_rolled_back_ship_leaves_artifact_clean(tmp_path, monkeypatch):
     monkeypatch.setattr(loop_mod, "run_e2e", lambda *a, **k: FailedE2E())
     manifest = write_manifest(tmp_path, "planted_win.py", (4096, 1024))
     runner = JobRunner(manifest, tmp_path / "work", judge_factory=winning_chain_judge, clock_pairs=8,
-                       session=Session())
+                       refuse_degraded=False, session=Session())
     runner.run()
     assert runner.emitted == {}
     art = runner.emit_artifact(tmp_path / "artifact")
@@ -221,7 +221,7 @@ def test_certification_failure_removes_patch_surface(tmp_path, monkeypatch):
     monkeypatch.setattr(loop_mod, "certify_identity", lambda **k: FailedCert())
     manifest = write_manifest(tmp_path, "planted_win.py", (4096, 1024))
     runner = JobRunner(manifest, tmp_path / "work", judge_factory=winning_chain_judge, clock_pairs=8,
-                       session=Session())
+                       refuse_degraded=False, session=Session())
     report = runner.run()
     assert not runner.tracer.patcher.installed
     assert not [r for r in report.regions if r.get("s")]
@@ -240,7 +240,7 @@ def test_judge_transport_error_costs_region_not_job(tmp_path):
     manifest = write_manifest(tmp_path, "planted_win.py", (64, 1024))
     runner = JobRunner(manifest, tmp_path / "work",
                        judge_factory=lambda region: DeadTransport(),
-                       session=Session())
+                       refuse_degraded=False, session=Session())
     report = runner.run()  # must complete
     assert all("judge unavailable" in (r.get("close") or r.get("close_rule") or "")
                or not r.get("s") for r in report.regions)
@@ -303,7 +303,7 @@ def test_failed_first_item_lets_the_judge_insert_a_fix(tmp_path, monkeypatch):
 
     manifest = write_manifest(tmp_path, "planted_win.py", (64, 1024))
     runner = JobRunner(manifest, tmp_path / "work", judge_factory=factory, clock_pairs=4,
-                       session=Session(sleep=lambda s: None))
+                       refuse_degraded=False, session=Session(sleep=lambda s: None))
     report = runner.run()
     chain = next(r for r in report.regions if len(r["ops"]) == 8)
     rows = {h["id"]: h for h in report.hypotheses if h["region"] == chain["fingerprint"]}
@@ -318,3 +318,27 @@ def test_failed_first_item_lets_the_judge_insert_a_fix(tmp_path, monkeypatch):
     # h2 still waits on h1 succeeding, so the judge's yield closes the region
     # with h2 named as the item left waiting, after the fix ran
     assert "h2" in chain["close_rule"], chain["close_rule"]
+
+
+def test_job_refuses_a_machine_that_cannot_measure(tmp_path, monkeypatch):
+    """Every roofline and every absolute clock would describe a sick machine,
+    so a busy GPU or a reading no healthy chip gives stops the job with the
+    reason, before any region is priced."""
+    import autotuner.loop as loop_mod
+    from autotuner.measure.peaks import Peaks
+
+    manifest = write_manifest(tmp_path, "planted_win.py", (64, 1024))
+    monkeypatch.setattr(loop_mod, "gpu_utilization", lambda: 100.0)
+    runner = JobRunner(manifest, tmp_path / "work", judge_factory=yielding_judge,
+                       session=Session(sleep=lambda s: None))
+    with pytest.raises(RuntimeError, match="busy"):
+        runner.run()
+    assert "job_refused" in [r["kind"] for r in runner.log.rows()]
+
+    monkeypatch.setattr(loop_mod, "gpu_utilization", lambda: 0.0)
+    monkeypatch.setattr(loop_mod, "measure_peaks",
+                        lambda session: Peaks(bandwidth_gbps=9.4, flops_gflops={"float32": 180.0}))
+    runner = JobRunner(manifest, tmp_path / "work2", judge_factory=yielding_judge,
+                       session=Session(sleep=lambda s: None))
+    with pytest.raises(RuntimeError, match="bandwidth"):
+        runner.run()

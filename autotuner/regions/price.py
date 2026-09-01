@@ -35,7 +35,7 @@ CLOCK_SAMPLES = 5
 CLOCK_EST_ITERS = 10      # same amortizing estimate the ship clock uses
 CLOCK_MIN_ITERS = 20      # enough passes that one sample's sync cost is a rounding error
 CLOCK_MAX_ITERS = 2000
-PRICE_PAIRS = 32          # shares are ratios: measured against the step, never divided
+PRICE_PAIRS = 8           # a share steers ranking and the floor; the ship clock decides wins
 
 
 class CaptureMismatch(RuntimeError):
@@ -205,6 +205,7 @@ def region_share(
     step_fn,
     target_ms: float = CLOCK_TARGET_MS,
     pairs: int = PRICE_PAIRS,
+    warm_step: bool = True,
 ) -> RegionPrice:
     """The region's cost as a fraction of one step, from a paired interleaved
     comparison against the step itself.
@@ -216,7 +217,7 @@ def region_share(
     """
     loop_fn, iters = _looped_replay(
         session, trace, stretch, input_sets, weight_bindings, target_ms)
-    comp = compare(session, step_fn, loop_fn, pairs=pairs)
+    comp = compare(session, step_fn, loop_fn, pairs=pairs, warm_baseline=warm_step)
     return RegionPrice(
         share=comp.median_ratio / iters,
         ms=statistics.median(comp.candidate_ms) / iters,
@@ -232,12 +233,16 @@ def price_region(
     weight_bindings: Mapping[str, dict[int, mx.array]],
     step_fns: Mapping[str, object],
     pairs: int = PRICE_PAIRS,
+    warmed_steps: set[str] | None = None,
 ) -> None:
     """Fill t_orig_ms, t_rep_ms and p per workload. Copies with distinct
     boundary shapes price separately; identical-shape copies share one price.
     step_fns maps a workload to a callable that runs one step of the model, so
     each region's share is measured against the step rather than divided by it.
-    input_sets_for is keyed by (workload, representative member start_seq)."""
+    input_sets_for is keyed by (workload, representative member start_seq).
+    warmed_steps remembers which workloads' steps are already warm across
+    regions, so a slow step is warmed once per job, not once per region."""
+    warmed = warmed_steps if warmed_steps is not None else set()
     per_workload_ms: dict[str, float] = {}
     per_workload_share: dict[str, float] = {}
     priced: dict[tuple, RegionPrice] = {}
@@ -256,8 +261,9 @@ def price_region(
             else:
                 priced[shape_key] = region_share(
                     session, trace, m, sets, weight_bindings[m.workload],
-                    step_fns[m.workload], pairs=pairs,
+                    step_fns[m.workload], pairs=pairs, warm_step=m.workload not in warmed,
                 )
+                warmed.add(m.workload)
         price = priced[shape_key]
         per_workload_ms[m.workload] = per_workload_ms.get(m.workload, 0.0) + price.ms
         per_workload_share[m.workload] = per_workload_share.get(m.workload, 0.0) + price.share

@@ -21,6 +21,7 @@ from autotuner.log import json_safe, wall_now
 DUTY_IDLE_FACTOR = 3.0
 MAX_CHUNK_WORK_S = 0.25
 RAMP_WARM_SAMPLES = 2
+RAMP_WARM_S = 0.05  # this much GPU work brings the clocks back up after an idle
 WARM_STABLE_RTOL = 0.01
 WARM_STABLE_ABS_S = 100e-6  # spike_10: 1% of a ~1ms kernel is under dispatch jitter
 WARM_CAP = 30
@@ -87,8 +88,14 @@ class Session:
         self._debt_s = 0.0
         self.idled_s += idle
         self._sleep(idle)
+        warmed = 0.0
         for i in range(RAMP_WARM_SAMPLES):
-            self._debt_s += time_once(fns[i % len(fns)])  # unmeasured, still GPU work
+            # unmeasured, still GPU work; a long sample warms the clocks by itself
+            t = time_once(fns[i % len(fns)])
+            warmed += t
+            self._debt_s += t
+            if warmed >= RAMP_WARM_S:
+                break
 
     def settle(self) -> None:
         """Pay any remaining debt at the end of a measured phase."""
