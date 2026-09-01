@@ -389,6 +389,70 @@ def test_multi_copy_pricing_separates_rep_from_total():
     assert 0 < region.stability["w"] <= 1
 
 
+def _fake(op_seq, weight_shapes):
+    """A trace of consecutive single-output ops on one activation; each op's
+    second input is a weight of the given shape (None for a plain unary op)."""
+    from autotuner.trace.recorder import ArrayRef
+    from autotuner.trace.types import Liveness, Retention, Trace, TraceNode
+
+    nodes, weights, aid = [], set(), 1
+    for seq, (op, wshape) in enumerate(zip(op_seq, weight_shapes)):
+        ins, specs, args = [aid - 1], [((4, 4), "float32")], [ArrayRef(0)]
+        if wshape is not None:
+            ins.append(100 + seq); specs.append((wshape, "float32")); args.append(ArrayRef(1))
+            weights.add(100 + seq)
+        nodes.append(TraceNode(seq=seq, op=op, in_arrays=tuple(ins), out_arrays=(aid,),
+                               in_specs=tuple(specs), out_specs=(((4, 4), "float32"),),
+                               scalar_args={"args": tuple(args), "kwargs": {}},
+                               module_address="@0", position_in_module=seq, module_stack=("@0",)))
+        aid += 1
+    liveness = {n.out_arrays[0]: Liveness(Retention.CONSUMED, (n.seq + 1,) if n.seq + 1 < len(nodes) else ())
+                for n in nodes}
+    liveness[nodes[-1].out_arrays[0]] = Liveness(Retention.STEP_OUTPUT, ())
+    return Trace(nodes=tuple(nodes), edges={}, step_outputs=(nodes[-1].out_arrays[0],),
+                 weights=frozenset(weights), inputs=frozenset({0}), liveness=liveness)
+
+
+def test_chains_end_before_a_matmul_that_consumes_an_earlier_matmul():
+    """gate, silu, times up, down: the down projection needs every element of
+    the earlier matmul's output, which one Metal launch cannot wait for. The
+    chain stops before it; the prefix and the singleton remain."""
+    t = _fake(["array.__matmul__", "mx.sigmoid", "array.__mul__", "array.__matmul__"],
+              [(4, 4), None, None, (4, 4)])
+    got = spans(build_stretches(t, "w"))
+    assert (0, 2) in got and (3, 3) in got
+    assert not any(s == 0 and e == 3 for s, e in got)
+    # two independent matmuls reading the same input may share a chain
+    t2 = _fake(["array.__matmul__", "array.__matmul__"], [(4, 4), (4, 4)])
+    t2 = _fake(["mx.exp", "array.__matmul__"], [None, (4, 4)])
+    assert (0, 1) in spans(build_stretches(t2, "w"))
+
+
+def test_weight_shapes_tell_copies_apart():
+    """The same op against a different weight shape is a different kernel."""
+    same_a = _fake(["array.__matmul__"], [(4, 4)])
+    same_b = _fake(["array.__matmul__"], [(4, 4)])
+    other = _fake(["array.__matmul__"], [(4, 8)])
+    cut = lambda t: build_stretches(t, "w")[0]
+    assert fingerprint(same_a, cut(same_a)) == fingerprint(same_b, cut(same_b))
+    assert fingerprint(same_a, cut(same_a)) != fingerprint(other, cut(other))
+
+
+def test_roofline_counts_the_fused_kernel_launch_once():
+    _, _, trace = traced("norm_three_proj", (4, 32))
+    chain = next(s for s in build_stretches(trace, "w") if (s.start_seq, s.end_seq) == (0, 3))
+    peaks = Peaks(bandwidth_gbps=100.0, flops_gflops={"float32": 3000.0}, launch_us=4.0)
+    assert stretch_roofline(trace, chain, peaks, t_orig_ms=1.0).t_launch_ms == pytest.approx(0.004)
+
+
+def test_uncovered_ops_are_named_before_pricing():
+    from autotuner.scaffold import uncovered_op
+
+    assert uncovered_op(["mx.fast.rms_norm", "array.__matmul__", "mx.sigmoid"]) is None
+    assert uncovered_op(["mx.quantized_matmul", "mx.fast.scaled_dot_product_attention"]) \
+        == "mx.fast.scaled_dot_product_attention"
+
+
 def test_regions_uninstall_last():
     tr = tracer()
     tr.uninstall()

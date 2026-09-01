@@ -41,6 +41,7 @@ from .regions.roofline import stretch_roofline
 from .regions.store import BoundaryStore
 from .regions.types import Region, Stretch
 from .report import Report
+from .scaffold import uncovered_op
 from .trace import Tracer
 from .trace.recorder import ArrayRef
 from .trace.serialize import nodes_to_json
@@ -144,6 +145,11 @@ class JobRunner:
             reason = screen_scope(self.traces[r.members[0].workload], r.members[0].scope_stack)
             if reason is not None:
                 r.rejected = f"no certified delivery scope: {reason}"
+            elif (op := uncovered_op(r.ops)) is not None:
+                # nothing to edit if the harness cannot write a starting kernel;
+                # say so before any capture or pricing is spent on it
+                r.rejected = f"no scaffold for {op}"
+            if r.rejected:
                 self.report.stranded.append({"fingerprint": r.fingerprint, "ops": list(r.ops),
                                              "reason": r.rejected})
             else:
@@ -236,9 +242,14 @@ class JobRunner:
                 t_orig_ms=(share * self.step_ms[rep.workload]) if share else 1e-9,
             )
         kept = rank(apply_floor(regions))
-        covered_ms = sum(sum(r.t_orig_ms.values()) for r in regions)
+        # every compute op belongs to exactly one single-op region, so their
+        # shares sum to the fraction of the step that any candidate can reach;
+        # the rest runs inside stranded scopes or ops no kernel can replace
         self.report.coverage = {
-            "sum_region_clock_x_copies_ms": covered_ms,
+            "share_of_step_inside_candidates": {
+                w.name: sum(r.p.get(w.name, 0.0) for r in regions if len(r.ops) == 1)
+                for w in self.manifest.workloads
+            },
             "step_ms": dict(self.step_ms),
         }
         for r in regions:

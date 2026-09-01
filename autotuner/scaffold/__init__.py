@@ -4,9 +4,21 @@ build_scaffold is the one entry point: stitched from the wheel's own Metal
 source when the region is a single library op we can wrap verbatim (library
 parity by construction), naive lowering otherwise."""
 
-from .lower import lower_naive, stretch_input_shapes
+from .lower import (
+    _EW_NAMES, _MATMUL_NAMES, _QMM_NAMES, _REDUCE_NAMES, _RMS_NAMES, _ROPE_NAMES, _VIEW_NAMES,
+    lower_naive, stretch_input_shapes,
+)
 from .stitch import stitch_qmm_chain, stitch_quantized_matmul
 from .symshape import NoScaffold
+
+_COVERED = (frozenset(_EW_NAMES) | frozenset(_REDUCE_NAMES) | _MATMUL_NAMES | _RMS_NAMES
+            | _QMM_NAMES | _ROPE_NAMES | _VIEW_NAMES)
+
+
+def uncovered_op(ops) -> str | None:
+    """The first op no scaffold path can write, or None. Cheap enough to run
+    before a region is captured and priced."""
+    return next((op for op in ops if op not in _COVERED), None)
 
 
 def build_scaffold(trace, stretch, instances=()):
@@ -30,5 +42,5 @@ def build_scaffold(trace, stretch, instances=()):
     return lower_naive(trace, stretch, instances)
 
 
-__all__ = ["build_scaffold", "lower_naive", "stitch_qmm_chain",
-           "stitch_quantized_matmul", "stretch_input_shapes", "NoScaffold"]
+__all__ = ["build_scaffold", "lower_naive", "stitch_qmm_chain", "stitch_quantized_matmul",
+           "stretch_input_shapes", "uncovered_op", "NoScaffold"]

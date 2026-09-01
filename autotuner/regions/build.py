@@ -23,6 +23,17 @@ VIEW_OPS = frozenset({
 })
 
 
+# Ops that reduce over a full input dimension with their own weights. One
+# Metal launch has no grid-wide barrier, and the determinism gate forbids the
+# atomics that could fake one, so a chain cannot hold one of these fed by
+# another's output: every output element would need the whole earlier result.
+MATMUL_LIKE = frozenset({
+    "mx.matmul", "array.__matmul__", "mx.addmm", "mx.quantized_matmul",
+    "mx.gather_qmm", "mx.gather_mm", "mx.block_masked_mm",
+    "mx.fast.scaled_dot_product_attention",
+})
+
+
 def _contains_array_ref(obj: object) -> bool:
     if isinstance(obj, ArrayRef):
         return True
@@ -134,10 +145,17 @@ def build_stretches(trace: Trace, workload: str) -> list[Stretch]:
 
     for a in sorted(anchors):
         compute_seen = 0
+        downstream: set[int] = set()  # arrays that depend on a matmul-like op inside the chain
         for j in range(a, n):
+            node = trace.nodes[j]
             if barrier[j]:
                 break
-            if not is_view(trace.nodes[j]):
+            reads_downstream = any(aid in downstream for aid in node.in_arrays)
+            if node.op in MATMUL_LIKE and reads_downstream:
+                break  # no single launch can be this chain
+            if node.op in MATMUL_LIKE or reads_downstream:
+                downstream.update(node.out_arrays)
+            if not is_view(node):
                 compute_seen += 1
                 if compute_seen > MAX_STRETCH_COMPUTE_OPS:
                     break

@@ -70,7 +70,7 @@ def stretch_roofline(
     boundary_bytes = sum(_bytes_of(spec_of[aid]) for aid in stretch.input_ids)
     boundary_bytes += sum(_bytes_of(spec_of[aid]) for aid in stretch.output_ids)
     flops = sum(node_flops(n) for n in nodes)
-    launches = sum(1 for n in nodes if not is_view(n))
+    launches = 1  # the ideal kernel for a region is one launch, whatever the library fires
 
     compute_dtype = _dominant_dtype(nodes)
     peak_flops = peaks.flops_gflops.get(compute_dtype)

@@ -1,11 +1,13 @@
-"""Region fingerprints (plan 5.5): copy grouping by canonical form.
+"""Region fingerprints: copy grouping by canonical form.
 
 Two stretches are copies of one region iff their canonical forms match: op
 sequence, dtypes, ranks, non-shape scalar args, and internal edge structure,
-with array identities replaced by role indices. Concrete shapes and
+with array identities replaced by role indices. Activation shapes and
 shape-derived scalar args (reshape targets, slice bounds, split sizes) are
-deliberately not part of the form; they are per-instance. Weights count by
-dtype and role, not value.
+deliberately not part of the form, so the same sequence at two sizes is one
+region. Weights count by role, dtype, and shape: a weight never moves with a
+named dimension, and a projection against a different weight shape is a
+different kernel to write, price, and check.
 """
 
 from __future__ import annotations
@@ -46,10 +48,10 @@ def canonical_form(trace: Trace, stretch: Stretch) -> tuple:
     form = []
     for pos, node in enumerate(nodes):
         in_roles = []
-        for aid in node.in_arrays:
+        for aid, (shape, _) in zip(node.in_arrays, node.in_specs):
             if aid not in roles:
                 if aid in trace.weights:
-                    roles[aid] = ("w", w_count)
+                    roles[aid] = ("w", w_count, tuple(shape))
                     w_count += 1
                 else:
                     roles[aid] = ("x", x_count)
