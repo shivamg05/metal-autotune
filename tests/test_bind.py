@@ -2,6 +2,7 @@
 retrace check, shape fallback, and rollback, on real fixtures."""
 
 import importlib.util
+import sys
 from pathlib import Path
 
 import mlx.core as mx
@@ -34,6 +35,7 @@ def load_fixture(name: str):
     tracer()
     spec = importlib.util.spec_from_file_location(f"fixture_b_{name}", FIXTURES / f"{name}.py")
     mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod  # a compiled function in it is named by this import path
     spec.loader.exec_module(mod)
     return mod.build()
 
@@ -201,7 +203,7 @@ def test_fallback_path_replays_original_ops():
 def test_screen_rejects_unreplayable_scopes():
     cases = {
         "cache_retention": ((4, 16), "python-retained"),
-        "opaque_submodule": ((4, 8), "opaque compiled"),
+        "opaque_submodule": ((4, 8), "cannot name"),
         "data_branch": ((4, 8), "evaluates mid-call"),
     }
     for name, (shape, needle) in cases.items():
@@ -211,6 +213,28 @@ def test_screen_rejects_unreplayable_scopes():
         root_stack = trace.nodes[0].module_stack[:1]
         reason = screen_scope(trace, root_stack)
         assert reason is not None and needle in reason, (name, reason)
+
+
+def test_scope_around_a_named_compiled_call_replays_bitwise():
+    """The model's own compiled section is one opaque call, but a scope that
+    contains it still hosts a wrapper: the wrapper calls the compiled function
+    by import path, exactly as the model does."""
+    model = load_fixture("compiled_submodule")
+    x = mx.random.normal((4, 8), key=mx.random.key(8))
+    trace, _ = tracer().trace(model, [x])
+    part_stack = next(sc.stack for sc in trace.scope_calls if sc.address == "part@0")
+    assert screen_scope(trace, part_stack) is None
+    emitted = emit_wrapper(trace, scope_call_at(trace, "part@0"), [], "IdPart")
+    assert "_kernels.imported('fixture_b_compiled_submodule.fast_tanh')" in emitted.source
+    cls = build_wrapper_class(emitted)
+
+    def install_cb(wrapper):
+        occupant = install(model, "part", wrapper)
+        return lambda: uninstall(model, "part", occupant)
+
+    result = certify_identity(build_wrapper=lambda: cls(model.part, {}), install=install_cb,
+                              runs=[lambda: model(x)])
+    assert result.ok, result.reason
 
 
 def test_screen_accepts_replayable_scope():

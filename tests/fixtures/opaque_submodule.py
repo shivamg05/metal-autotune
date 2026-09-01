@@ -1,7 +1,6 @@
-"""Fixture: a compiled callable the tracer never witnessed plain, standing in
-for anything a library ships pre-compiled that the source substitution cannot
-recover. It must record as one opaque node, and ops inside it can never be
-regions. The fixture clears the proxy's plain path to simulate that history."""
+"""Fixture: a compiled lambda held on the model. Nothing outside the model
+can reach it by import path, so it records as an unnamed opaque call, no
+region may include it, and no wrapper can replay a scope that contains it."""
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -13,8 +12,6 @@ class PartOpaque(nn.Module):
         mx.random.seed(19)
         self.w = mx.random.normal((8, 8))
         self.fast = mx.compile(lambda a: mx.tanh(a) * 2.0)
-        if hasattr(self.fast, "_plain"):
-            self.fast._plain = None  # as if compiled before the tracer existed
 
     def __call__(self, x):
         y = x @ self.w

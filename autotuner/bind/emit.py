@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 
 import mlx.core as mx
 
-from ..trace.recorder import ArrayRef, OPAQUE_OP, dtype_name
+from ..trace.recorder import ArrayRef, OPAQUE_OP, compiled_path, dtype_name
 from ..trace.types import ScopeCall, Trace, TraceNode
 from autotuner_runtime.kernels import KernelSpec
 
@@ -185,7 +185,7 @@ class _Emitter:
     def emit_node(self, node: TraceNode) -> None:
         if node.op == OPAQUE_OP:
             raise NotReplayable(
-                f"scope {self.scope.address!r} contains an opaque compiled call"
+                f"scope {self.scope.address!r} contains a compiled call the harness cannot name"
             )
         self._current_node = node
         for aid in node.in_arrays:
@@ -194,7 +194,12 @@ class _Emitter:
         kwargs_t = node.scalar_args["kwargs"]
         short = node.op.removeprefix("array.")
 
-        if node.op.startswith("mx."):
+        if compiled_path(node.op):
+            # the model's own compiled section, called as the model calls it
+            pieces = [self.value_expr(a) for a in args_t]
+            pieces += [f"{k}={self.value_expr(v)}" for k, v in kwargs_t.items()]
+            self._assign(node, f"_kernels.imported({compiled_path(node.op)!r})({', '.join(pieces)})")
+        elif node.op.startswith("mx."):
             pieces = [self.value_expr(a) for a in args_t]
             pieces += [f"{k}={self.value_expr(v)}" for k, v in kwargs_t.items()]
             expr = f"{node.op}({', '.join(pieces)})"

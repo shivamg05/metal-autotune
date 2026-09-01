@@ -8,7 +8,7 @@ barriers, kept with their prefixes; not every subset is enumerated.
 
 from __future__ import annotations
 
-from ..trace.recorder import ArrayRef, OPAQUE_OP
+from ..trace.recorder import ArrayRef, is_opaque
 from ..trace.types import Retention, Trace, TraceNode
 from .types import Stretch
 
@@ -62,7 +62,7 @@ def _is_barrier(node: TraceNode, trace: Trace) -> bool:
     model's own python kept (the wrapper can never reach that reference)."""
     if node.op == "array.__setitem__":
         return True
-    if node.op == OPAQUE_OP:
+    if is_opaque(node.op):
         return True
     for out in node.out_arrays:
         if trace.liveness[out].kind is Retention.PYTHON_RETAINED:

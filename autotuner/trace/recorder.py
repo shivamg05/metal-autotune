@@ -19,7 +19,21 @@ from .freeze import freeze
 from .types import ScopeCall, Trace, TraceNode
 from .walk import snapshot_arrays
 
-OPAQUE_OP = "compiled_fn"
+OPAQUE_OP = "compiled_fn"       # a compiled call the harness cannot name
+COMPILED_PREFIX = "compiled:"   # a compiled call named by its import path
+
+
+def compiled_op(path: str | None) -> str:
+    return f"{COMPILED_PREFIX}{path}" if path else OPAQUE_OP
+
+
+def is_opaque(op: str) -> bool:
+    """A compiled section: never inside a region, always a chain barrier."""
+    return op == OPAQUE_OP or op.startswith(COMPILED_PREFIX)
+
+
+def compiled_path(op: str) -> str | None:
+    return op[len(COMPILED_PREFIX):] if op.startswith(COMPILED_PREFIX) else None
 
 
 @dataclass(frozen=True)

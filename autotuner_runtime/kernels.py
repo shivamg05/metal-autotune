@@ -11,6 +11,7 @@ up as one node in retraces.
 
 from __future__ import annotations
 
+import importlib
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -113,6 +114,13 @@ class LoadedKernel:
             template=template,
             init_value=init_value,
         )
+
+
+def imported(path: str):
+    """The model's own compiled function, found by its import path; a
+    generated wrapper calls it where the recording saw the compiled section."""
+    module, _, name = path.rpartition(".")
+    return getattr(importlib.import_module(module), name)
 
 
 _cache: dict[str, LoadedKernel] = {}

@@ -294,10 +294,9 @@ names, in this order.
 - [x] 5. Checks: stress regime never touches weights and picks the largest
       finite scale; output-shape mistakes fail a named gate; child timeout
       follows the region's size.
-- [~] 6. Regions: the dependent-matmul rule, weight shapes in the
-      fingerprint, scaffold coverage screened before pricing, launch term and
-      coverage line fixed (done); opaque compiled calls with import-path
-      replay (next).
+- [x] 6. Regions: opaque compiled calls with import-path replay; the
+      dependent-matmul rule; weight shapes in the fingerprint; scaffold
+      coverage screened before pricing; launch term and coverage fixed.
 - [ ] 7. Installing: verification against every installed cut; same-scope
       copies in one wrapper; superseded kernels dropped; whole-model check
       and an artifact load at job end.

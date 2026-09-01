@@ -15,7 +15,6 @@ which are patched functions.
 from __future__ import annotations
 
 import sys
-from pathlib import Path
 from typing import Callable
 
 import mlx.core as mx
@@ -31,7 +30,7 @@ from .optable import (
     register_original,
     resolve,
 )
-from .recorder import OPAQUE_OP, Recorder
+from .recorder import Recorder, compiled_op
 
 
 def walk_module_paths(model: object) -> dict[int, str]:
@@ -63,29 +62,34 @@ def walk_module_paths(model: object) -> dict[int, str]:
 
 
 class _CompiledProxy:
-    """Stands in for a model-owned compiled callable. A compile the tracer
-    witnessed (it holds the plain function) records as that function's own
-    ops while armed and runs compiled when disarmed, so scopes containing it
-    stay replayable; identity certification stays the bitwise arbiter before
-    any swap. A compile predating the tracer records as one opaque node
-    (spike_09: a compiled section's trace reruns its body under suppression).
-    Disarmed, the only cost is one flag check per compiled call."""
+    """Stands in for a compiled callable. While recording it runs the compiled
+    function with recording suppressed and records one node for the whole
+    call, named by the function's import path when it has one, so a scope
+    containing it can still be replayed by calling that path. Disarmed, the
+    only cost is one flag check per call."""
 
-    def __init__(self, compiled: Callable, recorder: Recorder, plain: Callable | None = None):
+    def __init__(self, compiled: Callable, recorder: Recorder, path: str | None = None):
         self._compiled = compiled
         self._recorder = recorder
-        self._plain = plain
+        self._path = path
 
     def __call__(self, *args, **kwargs):
         rec = self._recorder
         if not rec.recording:
             return self._compiled(*args, **kwargs)
-        if self._plain is not None:
-            return self._plain(*args, **kwargs)
         with rec.suppressed():
             result = self._compiled(*args, **kwargs)
-        rec.maybe_record(OPAQUE_OP, args, kwargs, result)
+        rec.maybe_record(compiled_op(self._path), args, kwargs, result)
         return result
+
+
+def _import_path(fun) -> str | None:
+    """module.name for a function reachable by import; None for lambdas,
+    closures, and methods, which nothing outside their scope can find."""
+    module, name = getattr(fun, "__module__", None), getattr(fun, "__qualname__", "")
+    if not module or not name or "<" in name or "." in name:
+        return None
+    return f"{module}.{name}"
 
 
 class Patcher:
@@ -120,46 +124,19 @@ class Patcher:
         self.installed = True
 
     def _patch_precompiled(self) -> None:
-        """mlx.nn ships every activation compiled at import time (nn.silu and
-        friends), before any tracer could wrap mx.compile. Calling one while
-        armed leaks its compile-trace placeholder arrays into the record, and
-        an opaque proxy would strand every scope containing an activation. So
-        the library's own activations source is re-executed with the compile
-        decorator neutralized, yielding the identical math as plain recordable
-        ops; those substitute in. Anything compiled we cannot recover this way
-        falls back to the opaque proxy (correct, merely stranding)."""
+        """mlx.nn ships its activations already compiled, before any tracer
+        could wrap mx.compile. Each one becomes a proxy that records one call
+        named by import path, so a scope that uses nn.silu stays replayable
+        while the activation itself stays one opaque section."""
         compiled_type = type(self._special_originals["compile"](lambda x: x))
         recorder = self.recorder
-        plain = self._plain_activations()
         for mod_name, mod in list(sys.modules.items()):
             if mod is None or not mod_name.startswith("mlx.nn"):
                 continue
             for attr, value in list(vars(mod).items()):
                 if isinstance(value, compiled_type):
                     self._precompiled_originals.append((mod, attr, value))
-                    replacement = plain.get(attr) or _CompiledProxy(value, recorder)
-                    setattr(mod, attr, replacement)
-
-    def _plain_activations(self) -> dict:
-        """Re-exec mlx/nn/layers/activations.py with mx.compile as identity."""
-        import importlib.util
-
-        source_file = Path(nn.layers.activations.__file__)
-        try:
-            spec = importlib.util.spec_from_file_location("autotuner_plain_activations", source_file)
-            module = importlib.util.module_from_spec(spec)
-            saved = mx.compile
-            mx.compile = lambda fun, *a, **k: fun
-            try:
-                spec.loader.exec_module(module)
-            finally:
-                mx.compile = saved
-            return {
-                k: v for k, v in vars(module).items()
-                if callable(v) and not isinstance(v, type) and not k.startswith("_")
-            }
-        except Exception:
-            return {}
+                    setattr(mod, attr, _CompiledProxy(value, recorder, f"{mod_name}.{attr}"))
 
     def _patch_array_property(self, op_name: str) -> None:
         short = op_name.removeprefix("array.")
@@ -242,7 +219,7 @@ class Patcher:
         rt_kernels.call = kernel_call_wrapper
 
         def compile_wrapper(fun, *args, **kwargs):
-            return _CompiledProxy(orig_compile(fun, *args, **kwargs), recorder, plain=fun)
+            return _CompiledProxy(orig_compile(fun, *args, **kwargs), recorder, _import_path(fun))
 
         def eval_wrapper(*args):
             recorder.note_evaluation()

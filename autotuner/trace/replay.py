@@ -17,8 +17,10 @@ from typing import Callable, Iterable, Mapping, Sequence
 
 import mlx.core as mx
 
+from autotuner_runtime.kernels import imported
+
 from .optable import MUTATING_METHODS, resolve
-from .recorder import ArrayRef
+from .recorder import OPAQUE_OP, ArrayRef, compiled_path
 from .types import TraceNode
 
 
@@ -68,9 +70,12 @@ def replay(
     returns live arrays for the requested output ids."""
     env: dict[int, mx.array] = dict(bindings)
     for node in nodes:
-        fn = None
         if op_substitute and node.op in op_substitute:
             fn = op_substitute[node.op]
+        elif compiled_path(node.op):
+            fn = imported(compiled_path(node.op))
+        elif node.op == OPAQUE_OP:
+            raise RuntimeError(f"seq {node.seq}: a compiled call with no import path cannot be replayed")
         else:
             fn = resolve(node.op)
         bound: list[mx.array] = []

@@ -46,7 +46,7 @@ def screen_scope(trace: Trace, stack: tuple[str, ...]) -> str | None:
         return str(e)
     for node in nodes:
         if node.op == OPAQUE_OP:
-            return "the scope contains an opaque compiled call"
+            return "the scope contains a compiled call the harness cannot name"
         for out in node.out_arrays:
             if trace.liveness[out].kind is Retention.PYTHON_RETAINED:
                 return (

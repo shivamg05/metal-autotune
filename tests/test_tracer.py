@@ -6,6 +6,7 @@ all tests here, and the final test uninstalls and checks exact restoration.
 """
 
 import importlib.util
+import sys
 from pathlib import Path
 
 import mlx.core as mx
@@ -33,6 +34,7 @@ def load_fixture(name: str):
     tracer()  # patches must be up before the model file imports
     spec = importlib.util.spec_from_file_location(f"fixture_{name}", FIXTURES / f"{name}.py")
     mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod  # a compiled function in it is named by this import path
     spec.loader.exec_module(mod)
     return mod.build()
 
@@ -85,16 +87,27 @@ def test_module_addresses_distinguish_layers():
     assert all(p == per_layer[0] for p in per_layer)
 
 
-def test_witnessed_compile_records_its_plain_body():
-    """A compile applied after the tracer installed records as the plain
-    function's own ops, so the scope stays replayable."""
-    trace, _ = trace_of("compiled_submodule", (4, 8))
+def test_named_compiled_function_records_as_one_call_by_import_path():
+    """A compiled section records as one call, never as the ops inside it,
+    and one the tracer can name by import path replays through that path."""
+    from autotuner.trace.walk import arrays_by_path
+
+    model = load_fixture("compiled_submodule")
+    x = mx.random.normal((4, 8), key=mx.random.key(0))
+    trace, outs = tracer().trace(model, [x])
     ops = [n.op for n in trace.nodes]
-    assert OPAQUE_OP not in ops
-    assert "mx.tanh" in ops
+    assert "compiled:fixture_compiled_submodule.fast_tanh" in ops
+    assert "mx.tanh" not in ops and OPAQUE_OP not in ops
+    by_path = arrays_by_path(model)
+    bindings = {aid: x for aid in trace.inputs}
+    bindings.update({aid: by_path[trace.weight_paths[aid]] for aid in trace.weights
+                     if trace.weight_paths.get(aid) in by_path})
+    replayed = replay(trace.nodes, bindings, trace.step_outputs)
+    mx.eval(list(replayed.values()))
+    assert mx.array_equal(replayed[trace.step_outputs[0]], outs).item()
 
 
-def test_unwitnessed_compile_is_one_opaque_call():
+def test_compiled_lambda_is_one_opaque_call():
     trace, _ = trace_of("opaque_submodule", (4, 8))
     ops = [n.op for n in trace.nodes]
     assert ops.count(OPAQUE_OP) == 1
@@ -103,6 +116,8 @@ def test_unwitnessed_compile_is_one_opaque_call():
     # the opaque node anchors completeness: its output feeds the next op
     opaque = next(n for n in trace.nodes if n.op == OPAQUE_OP)
     assert trace.edges.get(opaque.seq)
+    with pytest.raises(RuntimeError, match="cannot be replayed"):
+        replay([opaque], {aid: mx.zeros((4, 8)) for aid in opaque.in_arrays}, opaque.out_arrays)
 
 
 def test_cache_retention_marks_python_retained():

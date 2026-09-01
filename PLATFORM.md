@@ -232,19 +232,22 @@ Verified by experiment while building M5-M8 (each has a test in the named file):
 - mlx.nn ships EVERY activation pre-compiled at import time
   (@partial(mx.compile, shapeless=True) on silu, gelu, softmax, and 22 more).
   A pre-existing compiled object called while recording leaks its compile-trace
-  placeholder arrays into the record (caught by the completeness check on the
-  first real decoder fixture). The tracer therefore re-executes the library's
-  own activations source with the compile decorator neutralized and substitutes
-  the identical math as plain recordable ops; unknown compiled objects fall
-  back to the opaque proxy (tests/test_llama_ish.py).
+  placeholder arrays into the record unless recording is suppressed around the
+  call (caught by the completeness check on the first real decoder fixture).
+  The tracer wraps each one in a proxy that runs it with recording suppressed
+  and records one call named by import path (compiled:mlx.nn.silu); the spec's
+  rule holds, no region includes the activation, and a scope that calls it
+  stays replayable because the wrapper calls the same path
+  (tests/test_tracer.py, tests/test_bind.py, tests/test_llama_ish.py).
 - Llama 3 8B (4-bit, mlx_lm) traces completely: 739 nodes, no completeness
   aborts, no mid-record evaluation. Copy grouping lands per the identity rule
   (per-layer stretches at copies=32, a 22-op attention+MLP stretch at
   copies=31, the quantized_matmul singleton at copies=225). mlx_lm's llama MLP
   routes silu(gate)*up through a module-level compiled helper created at
-  mlx_lm import; it records as one opaque call per layer, so whole-layer
-  scopes strand while attention and projection sub-scopes stay replayable
-  (spikes/llama8b_trace.py).
+  mlx_lm import; it records as one call named compiled:mlx_lm.models.activations.swiglu
+  per layer, so the fused kernel the model really runs is never priced as
+  three separate ops, and the scopes around it stay replayable
+  (spikes/llama8b_trace.py, before the import-path naming).
 
 ## Design adjustments recorded from these spikes
 
