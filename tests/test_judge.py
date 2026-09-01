@@ -661,3 +661,19 @@ def test_client_transcript_records_every_ask_and_reply(tmp_path):
     assert json.loads(rows[0]["messages"][0]["content"]) == {"region_state": {"stub": True}}
     assert "rejected" in rows[1]["messages"][-1]["content"]
     assert "Response schema (seed)" in rows[1]["system"]
+
+
+def test_item_ids_must_be_identifiers_because_they_become_kernel_names():
+    rejects({"queue": [witem("fuse-silu")]}, "letters, digits, and underscores")
+    rejects({"queue": [witem("h 1")]}, "kernel names")
+    assert validate_response({"queue": [witem("fuse_silu_2")]}).queue[0].id == "fuse_silu_2"
+
+
+def test_scratch_buffers_are_validated():
+    ok = validate_response({"mutations": [], "kernel": proposal(
+        scratch=[["tmp0", "float32", ["in0.shape[0]", "8"]], ["tmp1", "float16", ["1"]]])}).kernel
+    assert ok.scratch == (("tmp0", "float32", ("in0.shape[0]", "8")), ("tmp1", "float16", ("1",)))
+    rejects({"mutations": [], "kernel": proposal(scratch=[["buf", "float32", ["1"]]])}, "tmp0, tmp1")
+    rejects({"mutations": [], "kernel": proposal(scratch=[["tmp0", "float99", ["1"]]])}, "unknown dtype")
+    rejects({"mutations": [], "kernel": proposal(scratch=[["tmp0", "float32", ["x"]]])}, "scratch tmp0")
+    rejects({"mutations": [], "kernel": proposal(scratch=[["tmp0", "float32"]])}, "[name, dtype")

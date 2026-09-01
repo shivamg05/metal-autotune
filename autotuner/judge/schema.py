@@ -24,6 +24,7 @@ OUTCOMES = ("failed", "correct_slower", "tentative_ship", "shipped", "rolled_bac
 _DTYPE_NAMES = frozenset(_DTYPES)  # one source of truth with the kernel call site
 _IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 _IN_REF = re.compile(r"in\d+\Z")
+_SCRATCH = re.compile(r"tmp\d+\Z")
 
 
 class MalformedResponse(ValueError):
@@ -61,10 +62,11 @@ class KernelProposal:
     parent_kernel_id: str                      # which code this change edits
     grid: tuple[str, str, str]                 # launch grammar, TOTAL threads
     threadgroup: tuple[str, str, str]
-    output_shapes: tuple[tuple[str, ...], ...]
-    header: str = ""
-    template: tuple[tuple[str, str], ...] = ()  # (name, dtype name or "inK")
+    output_shapes: tuple[tuple[str, ...], ...] # one per region output
+    header: str = ""                           # empty means the parent's
+    template: tuple[tuple[str, str], ...] = ()  # (name, dtype name or "inK"); empty means the parent's
     fallback_predicate: str | None = None       # true -> use the library path
+    scratch: tuple[tuple[str, str, tuple[str, ...]], ...] = ()  # (tmpN, dtype, shape exprs)
 
 
 @dataclass(frozen=True)
@@ -143,6 +145,9 @@ def _item(obj: object) -> QueueItem:
     if unknown:
         raise MalformedResponse(f"queue item has unknown keys {sorted(unknown)}")
     item_id = _str(obj, "id", "queue item")
+    if not _IDENT.match(item_id):
+        raise MalformedResponse(
+            f"item id {item_id!r} must be letters, digits, and underscores: ids become kernel names")
     kind = _str(obj, "kind", f"item {item_id!r}")
     if kind not in KINDS:
         raise MalformedResponse(f"item {item_id!r}: kind {kind!r} is not on the menu {list(KINDS)}")
@@ -164,7 +169,7 @@ def _item(obj: object) -> QueueItem:
 
 
 _PROPOSAL_KEYS = {"source", "parent_kernel_id", "grid", "threadgroup", "output_shapes",
-                  "header", "template", "fallback_predicate"}
+                  "header", "template", "fallback_predicate", "scratch"}
 
 
 def _proposal(obj: object) -> KernelProposal:
@@ -196,7 +201,27 @@ def _proposal(obj: object) -> KernelProposal:
         _expr(fallback, "fallback_predicate")
     return KernelProposal(source=source, parent_kernel_id=parent, grid=grid,
                           threadgroup=threadgroup, output_shapes=out_shapes,
-                          header=header, template=template, fallback_predicate=fallback)
+                          header=header, template=template, fallback_predicate=fallback,
+                          scratch=_scratch(obj.get("scratch", [])))
+
+
+def _scratch(obj: object) -> tuple[tuple[str, str, tuple[str, ...]], ...]:
+    """Extra device buffers the kernel writes: [name, dtype, [shape exprs]]."""
+    if not isinstance(obj, list):
+        raise MalformedResponse("scratch must be a list of [name, dtype, [shape exprs]] entries")
+    out = []
+    for entry in obj:
+        if not (isinstance(entry, list) and len(entry) == 3 and isinstance(entry[0], str)
+                and isinstance(entry[1], str)):
+            raise MalformedResponse(f"scratch entry {entry!r} must be [name, dtype, [shape exprs]]")
+        name, dtype, shape = entry
+        if not _SCRATCH.match(name):
+            raise MalformedResponse(f"scratch buffer {name!r} must be named tmp0, tmp1, ...")
+        if dtype not in _DTYPE_NAMES:
+            raise MalformedResponse(f"scratch buffer {name!r}: unknown dtype {dtype!r}")
+        exprs = tuple(_expr(e, f"scratch {name}") for e in _expr_list(shape, f"scratch {name} shape"))
+        out.append((name, dtype, exprs))
+    return tuple(out)
 
 
 def _template(obj: object) -> tuple[tuple[str, str], ...]:

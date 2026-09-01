@@ -37,6 +37,8 @@ class RegionContract:
     output_dtypes: tuple[str, ...]
     live_outputs: tuple[str, ...]
     requires_fallback: bool = False   # the hypothesis is shape-specialized
+    input_shapes: tuple[tuple[int, ...], ...] = ()   # at the traced size; expressions are evaluated on them
+    output_shapes: tuple[tuple[int, ...], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -103,18 +105,31 @@ def check(spec: KernelSpec, contract: RegionContract) -> list[Failure]:
                 f"output {name!r}: {len(exprs)} shape expressions, region rank is {want}",
             ))
 
-    dummy_shapes = [(4,) * r for r in contract.input_ranks]
+    shapes = [tuple(s) for s in contract.input_shapes] or [(4,) * r for r in contract.input_ranks]
     for axis_name, exprs in (("grid", spec.grid), ("threadgroup", spec.threadgroup)):
         if len(exprs) != 3:
             fails.append(Failure(
                 "launch_arity", f"{axis_name} has {len(exprs)} expressions, needs 3"))
         for i, text in enumerate(exprs):
-            _probe(f"{axis_name}[{i}]", text, dummy_shapes, fails)
+            _probe(f"{axis_name}[{i}]", text, shapes, fails)
     for j, exprs in enumerate(spec.output_shapes):
         for i, text in enumerate(exprs):
-            _probe(f"output_shapes[{j}][{i}]", text, dummy_shapes, fails)
+            _probe(f"output_shapes[{j}][{i}]", text, shapes, fails)
+    # a region output's expressions must give the shape the trace recorded,
+    # or the child would crash on the mismatch instead of naming a gate
+    for name, exprs, want in zip(spec.output_names, spec.output_shapes, contract.output_shapes):
+        try:
+            got = tuple(Expr(e).evaluate(shapes) for e in exprs)
+        except (GrammarError, ArithmeticError):
+            continue  # already reported by the probe above
+        if got != tuple(want):
+            fails.append(Failure(
+                "output_shape",
+                f"output {name!r}: the expressions give {got} at the traced size, "
+                f"the region records {tuple(want)}",
+            ))
     if spec.fallback_predicate is not None:
-        _probe("fallback_predicate", spec.fallback_predicate, dummy_shapes, fails)
+        _probe("fallback_predicate", spec.fallback_predicate, shapes, fails)
     elif contract.requires_fallback:
         fails.append(Failure(
             "fallback_missing",

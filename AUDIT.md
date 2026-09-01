@@ -282,7 +282,7 @@ names, in this order.
       verdict row; a candidates log with one line per attempt; the judge's
       requests and replies on disk; every evaluated kernel on disk; a
       per-region summary at close; valid JSON.
-- [ ] 2. Proposals: scratch outputs; ids sanitized and validated; parent
+- [x] 2. Proposals: scratch outputs; ids sanitized and validated; parent
       resolved, header and template inherited, the library header kept on
       the harness side; output shapes checked statically.
 - [ ] 3. Briefing: one renderer with the whole contract, shapes per workload,

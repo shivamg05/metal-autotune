@@ -45,6 +45,7 @@ _ITEM_SCHEMA = """item: {"id": str, "kind": "on-chip"|"specialize"|"retile"|"re-
        "assoc_tag": "preserving"|"changing", "hypothesis": English string,
        optional "family_id": str,
        optional "depends_on": an earlier item's id, with "condition": "correct"|"shipped"|"failed"}
+An id is letters, digits, and underscores only: it becomes part of a kernel name.
 No other item keys exist."""
 
 _SEED_SCHEMA = f"""Response schema (seed):
@@ -60,9 +61,14 @@ mutation: {{"op": "insert", "item": item, optional "before": queued id}}
 """ + """proposal, the Metal for the front ready item, an edit of a named parent:
   {"source": kernel body, "parent_kernel_id": str, optional "header": str,
    "grid": [3 launch-grammar exprs, total threads], "threadgroup": [3 exprs],
-   "output_shapes": [[exprs] per output],
+   "output_shapes": [[exprs], one entry per region output, in io.outputs order],
+   optional "scratch": [[name, dtype name, [shape exprs]], ...],
    optional "template": [[name, dtype name or "inN"], ...],
    optional "fallback_predicate": launch-grammar predicate}
+source is the whole kernel body; a header or template you leave out is inherited
+from the parent, so omit them to keep the parent's. Extra device buffers the body
+writes (staging between stages) go in scratch, named tmp0, tmp1, ... in the order
+the body uses them; region outputs are always out0, out1, ... and inputs in0, in1, ...
 Return "kernel": null to yield when you have nothing left to propose."""
 
 

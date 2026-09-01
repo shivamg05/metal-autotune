@@ -24,7 +24,7 @@ from .bind.verify import verify_retrace
 from .e2e import run_e2e, share_weights
 from .judge.queue import FamilyBook, Queue, QueueError
 from .judge.schema import JudgeBabble
-from .ladder.gates import EvalSet, LadderJob, run_ladder
+from .ladder.gates import EvalSet, LadderJob, LadderResult, run_ladder
 from .ladder.static_checks import RegionContract
 from .artifact.emit import write_kernel
 from .log import RunLog, TextLog, wall_now
@@ -258,6 +258,8 @@ class JobRunner:
             output_ranks=tuple(len(specs[a][0]) for a in rep.output_ids),
             output_dtypes=tuple(specs[a][1] for a in rep.output_ids),
             live_outputs=tuple(f"out{i}" for i in range(len(rep.output_ids))),
+            input_shapes=tuple(tuple(specs[a][0]) for a in rep.input_ids),
+            output_shapes=tuple(tuple(specs[a][0]) for a in rep.output_ids),
         )
 
     def _eval_sets(self, region: Region) -> list[EvalSet]:
@@ -309,23 +311,9 @@ class JobRunner:
             timeout_s=120.0,
         )
 
-    def _kernel_from_proposal(self, region: Region, proposal, hyp_id: str) -> KernelSpec:
-        contract = self._contract(region)
+    def _kernel_from_proposal(self, run: RegionRun, region: Region, proposal, hyp_id: str) -> KernelSpec:
         kid = f"r{region.fingerprint[:6]}_{hyp_id}"
-        return KernelSpec(
-            kernel_id=kid,
-            name=f"at_{kid}",
-            input_names=contract.input_names,
-            output_names=contract.output_names,
-            source=proposal.source,
-            header=proposal.header,
-            grid=tuple(proposal.grid),
-            threadgroup=tuple(proposal.threadgroup),
-            output_shapes=tuple(tuple(s) for s in proposal.output_shapes),
-            output_dtypes=contract.output_dtypes,
-            template=tuple(proposal.template),
-            fallback_predicate=proposal.fallback_predicate,
-        )
+        return kernel_from_proposal(self._contract(region), run.kernels, proposal, kid)
 
     def open_region(self, region: Region, judge) -> RegionRun:
         from .scaffold import NoScaffold, build_scaffold
@@ -380,6 +368,7 @@ class JobRunner:
     def _judge_fix(self, run: RegionRun, judge, scaffold, result) -> KernelSpec | None:
         region = run.region
         # the judge needs the full region state plus the failing kernel to fix it
+        run.kernels[scaffold.kernel_id] = scaffold
         meta = self._meta(run)
         meta["scaffold_failure"] = True
         meta["head"] = scaffold.kernel_id
@@ -394,7 +383,7 @@ class JobRunner:
         if resp.kernel is None:
             self.log.append("scaffold_fix", fingerprint=region.fingerprint, outcome="yield")
             return None
-        fixed = self._kernel_from_proposal(region, resp.kernel, "scafix")
+        fixed = self._kernel_from_proposal(run, region, resp.kernel, "scafix")
         write_kernel(self.kernel_dir, fixed)
         check = run_ladder(self._ladder_job(region, fixed, "preserving", run_clock=False))
         self._record_attempt(region, "scafix", "fix", "the judge's one fix of the starting kernel",
@@ -505,16 +494,25 @@ class JobRunner:
 
             run.hypotheses += 1
             self.total_hypotheses += 1
-            kernel = self._kernel_from_proposal(region, resp.kernel, item.id)
+            parent = resp.kernel.parent_kernel_id
+            known = parent in run.kernels
+            kernel = self._kernel_from_proposal(run, region, resp.kernel, item.id)
             run.kernels[kernel.kernel_id] = kernel
             write_kernel(self.kernel_dir, kernel)
-            family = families.resolve(item, resp.kernel.parent_kernel_id)
-            # without this, every child starts a fresh family and the spec's
-            # 8-strike abandonment can never trip (audit finding F3)
+            family = families.resolve(item, parent)
+            # a child joins its parent's family; a fresh one would never trip the
+            # eight-strike abandonment rule
             families.register_kernel(kernel.kernel_id, family)
-            result = run_ladder(self._ladder_job(region, kernel, item.assoc_tag, run_clock=True))
-
-            parent = resp.kernel.parent_kernel_id
+            if known:
+                result = run_ladder(self._ladder_job(region, kernel, item.assoc_tag, run_clock=True))
+            else:
+                # the parent is the judge's own memory of what it edited; an
+                # unknown one is a mistake to name, not a kernel to measure
+                result = LadderResult("failed", "static", {"failures": [{
+                    "check": "parent_kernel_id",
+                    "detail": f"{parent!r} is not a kernel of this region; "
+                              f"the kernels are {sorted(run.kernels)}"}]},
+                    None, None, None, None, [])
             if result.outcome == "failed":
                 outcome = "failed"
                 if result.failed_gate in ("static", "compile"):
@@ -903,15 +901,45 @@ def _region_line(region: Region, event: str, run: "RegionRun | None" = None) -> 
     return f"{wall_now()}\t{region.fingerprint[:8]}\tregion_{event}\t{' > '.join(region.ops)}\t{how}"
 
 
+HEADER_SHOWN_CHARS = 8000  # a judge-written header fits; a library header does not
+
+
+def kernel_from_proposal(contract: RegionContract, kernels: dict, proposal, kernel_id: str) -> KernelSpec:
+    """The harness owns names, dtypes, and the call site; the judge supplies
+    the body and the launch. A header or template left out means the parent's."""
+    parent = kernels.get(proposal.parent_kernel_id)
+    scratch = tuple(proposal.scratch)
+    return KernelSpec(
+        kernel_id=kernel_id,
+        name=f"at_{kernel_id}",
+        input_names=contract.input_names,
+        output_names=contract.output_names + tuple(s[0] for s in scratch),
+        source=proposal.source,
+        header=proposal.header or (parent.header if parent else ""),
+        grid=tuple(proposal.grid),
+        threadgroup=tuple(proposal.threadgroup),
+        output_shapes=(tuple(tuple(s) for s in proposal.output_shapes)
+                       + tuple(tuple(s[2]) for s in scratch)),
+        output_dtypes=contract.output_dtypes + tuple(s[1] for s in scratch),
+        template=tuple(proposal.template) or (parent.template if parent else ()),
+        fallback_predicate=proposal.fallback_predicate,
+    )
+
+
 def _kernel_view(spec: KernelSpec) -> dict:
     """What the judge may see of a kernel: its source and launch story.
     Never the call-site fields the harness owns (init_value, math_mode)."""
+    header = spec.header
+    if len(header) > HEADER_SHOWN_CHARS:
+        header = (f"<{header.count(chr(10))} lines of the library's own Metal source, kept by "
+                  f"the harness; leave header out of a proposal to keep it>")
     return {
         "source": spec.source,
-        "header": spec.header,
+        "header": header,
         "grid": list(spec.grid),
         "threadgroup": list(spec.threadgroup),
         "output_shapes": [list(s) for s in spec.output_shapes],
+        "output_dtypes": list(spec.output_dtypes),
         "template": [list(t) for t in spec.template],
         "input_names": list(spec.input_names),
         "output_names": list(spec.output_names),
