@@ -1,0 +1,9 @@
+FACT weakref-accepted: PASS - weakref.ref succeeded on lazy (a+b) and evaluated (mx.eval'd) arrays, type=array
+FACT weakref-lazy-dies: PASS - lazy array: alive while referenced=True, dead after del+gc.collect()=True
+FACT weakref-evaluated-dies: PASS - evaluated array: alive while referenced=True, dead after del+gc.collect()=True
+FACT module-state-attr-reserved: INFO - assigning self.state on a Module subclass raises AttributeError (property 'state' of 'run.<locals>.StateName' object has no deleter); toy fixtures must avoid that attribute name
+FACT walk-array-count: INFO - snapshot walk reached 5 distinct arrays on the model object
+FACT retained-and-consumed: PASS - k appended to cache AND used in later op; walk found it at model.cache[0]; weakref alive after forward=True; out=f(k) evaluated to shape (1, 4)
+FACT walk-finds-nested-containers: PASS - list=model.cache[0], dict-nested=model.store.hist[0], tuple=model.snap[0], parameter=model.proj.weight
+FACT walk-negative-control: PASS - step output (not stored on model) found by walk=False
+FACT retention-clears-on-drop: PASS - after clearing cache/store/snap and gc.collect(), k weakref dead=True

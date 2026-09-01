@@ -50,14 +50,19 @@ Dependency direction: `judge/` may import `regions/` types; nothing imports `jud
 
 ## Stack and commands
 
-Python 3.12, `uv`-managed venv. Dependencies: `mlx` (exact version pinned in `pyproject.toml` and recorded in every report), `pyyaml`, `pytest`, `anthropic`. No code exists yet (pre-M0); once scaffolding lands:
+Python 3.12, `uv`-managed venv. Dependencies: `mlx` (exact version pinned in `pyproject.toml` and recorded in every report), `pyyaml`, `pytest`, `anthropic`.
 
 ```bash
 uv sync
 uv run pytest                          # full suite
 uv run pytest tests/test_foo.py -k bar # one test
-uv run autotune run manifest.yaml      # the CLI
+uv run autotune run manifest.yaml                     # the CLI (API-key judge)
+uv run autotune run manifest.yaml --judge claude-cli  # judge on the local Claude Code login
+uv run autotune run manifest.yaml --judge agent       # a live agent answers judge_io/ (AGENT_JUDGE.md)
 ```
+
+`RUNNING.md` is the operator guide for running a job; it is user-facing and must
+never reference the internal ledgers (PLATFORM.md, UNVERIFIED.md).
 
 ## Repo discipline
 

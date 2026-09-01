@@ -347,7 +347,11 @@ Mechanics:
 - **Weights and state.** The wrapper holds a reference to the original module it
   replaced and delegates attribute access to it, so model code reaching through
   children keeps working and the weights used are the live model's own arrays, no
-  transplant. At freeze time, weight `array_id`s are resolved to parameter PATHS via
+  transplant. (M0 spikes 04/05: wrapper classes must subclass nn.Module, because
+  Module.__setattr__ drops a plain-object child from the module tree and the subtree
+  vanishes from parameters()/named_modules(); and the delegating __getattr__ must
+  raise AttributeError, not KeyError, before its wrapped attribute is set, or
+  Module.__setattr__'s hasattr probe breaks during __init__.) At freeze time, weight `array_id`s are resolved to parameter PATHS via
   the model-attribute snapshot walk Section 5.1 already performs; generated code reads
   each weight by path through the wrapped original, which is what makes the same
   generated source valid on any fresh `build()` model. Scalar args recorded inside
@@ -518,9 +522,12 @@ way. The wheel ships ~4MB of MSL under
 reductions, all plain text). Two facts (re-verify): `mx.fast.metal_kernel(header=...)`
 resolves absolute-path `#include` lines from disk, but the shipped headers' own nested
 includes are repo-relative and do not resolve, so stitching requires a one-time include
-flattener that inlines each entry point into a self-contained header. Build the
-flattener; stitch wherever the definition above holds; fall back to naive lowering
-everywhere else.
+flattener that inlines each entry point into a self-contained header. (M0 spike_08:
+feasible, a flattened steel GEMM header compiles; the flattener must skip the
+auto-prepended prelude, utils.h and its transitive includes, or hit redefinition
+errors, and must terminate output with a newline or a trailing line comment swallows
+the generated signature.) Build the flattener; stitch wherever the definition above
+holds; fall back to naive lowering everywhere else.
 
 ### 5.10 Kernel compilation and evaluation facts (all re-verify in Milestone 0)
 
@@ -541,9 +548,15 @@ everywhere else.
   buffers; grid built-ins appear in the generated signature only if the source text
   mentions them. A helper header (`utils.h`, ~471 lines) is auto-prepended.
 - Compile errors surface as `RuntimeError` at `mx.eval` time, never at construction or
-  call. The harness must eval a probe output under try/except to detect a broken build,
-  and must subtract the auto-header line count when reporting error line numbers to the
-  judge.
+  call. The harness must eval a probe output under try/except to detect a broken build.
+  (M0 spike_06: reported line numbers count the full concatenated program, utils.h plus
+  the generated signature plus the body, and the offset GROWS with the generated
+  signature (472 for 1-in/1-out, 473 for 2 inputs, more with shape buffers or grid
+  built-ins), so the harness computes the offset per kernel rather than subtracting a
+  constant. spike_04: the kernel name is pasted into the generated signature, so a
+  non-C-identifier name breaks compilation with the error surfacing only at probe eval;
+  static checks validate the name. For transcendentals, library-bit fidelity comes from
+  metal::precise:: namespacing, not math_mode.)
 - Fast-math is a per-kernel knob: `compile_options={'math_mode': 'safe'|'relaxed'|'fast'}`.
   Pin `safe` for every kernel in the job, harness-side. Record the pin in the report.
   (`fast` silently breaks NaN and inf semantics.)
@@ -597,7 +610,7 @@ Spec-fixed:
 
 | Constant | Value |
 |---|---|
-| Watchdog | 10x library region time |
+| Watchdog | 20x library region time (raised from 10x by maintainer decision 2026-08-31: correct fused-chain starting kernels sit near 10x, and the gate exists to catch wedged kernels, not honest slowness) |
 | Ship margin | max(1% of the library region time re-measured in this verdict, 3 sigma of the interleaved samples) |
 | Fail-streak close | 5 straight compile/static fails on one parent |
 | Roofline close | shipped within 5% of roofline |
@@ -657,12 +670,19 @@ relies on have M0 spikes.
    Enforce in `measure/session.py` as an invariant around every timed path (clocks,
    peaks, e2e). Validate on new hardware with a blocked (not interleaved) long-run A/A
    test: interleaving duty levels measures nothing because heat is accumulated state
-   (M0 spike).
+   (M0 spike). (M0 spike_10 refinement: after a pacing idle the GPU runs at ramped-down
+   clocks and the first sample reads 1.5-1.6x steady state, so pacing is chunk-granular
+   and every chunk takes ~2 unmeasured ramp-warm samples of the functions about to be
+   timed before any measured sample; per-sample pacing biases every pair and inflates
+   the A/A floor ~50x.)
 3. **Warm until stable, not a fixed count.** Warm every distinct shape once, then repeat
    until two consecutive timings agree within 1% (cap ~30). Fixed small warmup counts
    have left first-ever kernels reading 2x slow (pipeline JIT plus page faults;
    M0 spike pins convergence on a first-ever kernel). The spec's rule that the first
-   eval of each workload is thrown away is the floor, not the ceiling.
+   eval of each workload is thrown away is the floor, not the ceiling. (M0 spike_10:
+   a first-ever kernel's first call measured 63x steady state, dominated by ~90ms of
+   Metal compile; and the 1% agreement rule needs an absolute epsilon floor, default
+   100us, because 1% of a ~1ms kernel is under dispatch jitter and never converges.)
 4. **Pair and interleave everything comparative.** A/B comparisons run in one session,
    alternating (the spec's ABBA for the ship clock), so drift is common-mode. Never
    subtract two separately timed quantities; that fabricated a large phantom effect
@@ -708,7 +728,12 @@ relies on have M0 spikes.
     silently returns the pre-swap graph (every candidate then measures exactly 0.00%).
     Any compiled callable, whether a harness-compiled baseline (Section 2) or a model
     whose own forward compiles internally, must be freshly built after every bind
-    before any timed pass. (M0 spike pins the caching behavior.)
+    before any timed pass. (M0 spike_09 pinned the caching behavior and found the
+    remedy must be stronger than "call mx.compile again": the cache entry survives
+    while any old compiled object is alive, so recompiling the same function object
+    still returns the stale graph. The harness therefore compiles a newly defined
+    closure over the model after every swap; dropping every old compiled object first
+    also works but is fragile.)
 11. **The measurement floor is real.** On the reference machine, ~1.5% end-to-end was
     reliably detectable and ~1% was a coin flip (M0 A/A spike re-establishes the
     floor). This is why the ship clock is the region clock (a 2x win on a 3% region is
@@ -866,7 +891,11 @@ Failing bind or e2e rolls the ship back and the judge mutates the queue.
 Every kernel evaluation is out of process. One `sandbox/worker.py`, three launch modes,
 selected by environment at spawn:
 
-- **validate mode**: `MTL_SHADER_VALIDATION=1`. Runs gates 1-8.
+- **validate mode**: `MTL_SHADER_VALIDATION=1` plus `MTL_SHADER_VALIDATION_REPORT_TO_STDERR=1`.
+  Runs gates 1-8. (M0 spike_07: validation alone reports to os_log only and zerofills
+  invalid accesses without faulting, so the harness gets no signal; with the stderr
+  variable set at launch, "Invalid device load"/"Invalid device store" lines appear on
+  child stderr with kernel name and offset, and the worker parses them into gate detail.)
 - **score mode**: clean env. Re-runs smoke + determinism, then gate 9. Also used for
   the step clock, region pricing, certification and bind retraces, and e2e once M5
   lands (M3/M4 may measure in-process with an asserted-clean environment; M5 migrates

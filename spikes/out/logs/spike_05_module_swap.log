@@ -1,0 +1,9 @@
+FACT mlx-version: INFO - mlx 0.32.2, device Device(gpu, 0)
+FACT parent-setattr-named-child: PASS - output 2.0->3.0 (want 2.0->3.0), new in named_modules=True, old removed=True
+FACT update-modules-rejects-numeric-dict-keys: PASS - key '3': ValueError(Module does not have sub-module named "3".); key 3: ValueError(Module does not have sub-module named "3".); output before/after attempts 24.0/24.0
+FACT update-modules-numeric-keys-nonstrict: INFO - strict=False silently no-ops on dict key '3': output stays 24.0
+FACT update-modules-list-form: PASS - spec {'layers': [{}, {}, {}, new]} gives output 60.0 (want 60.0), layers[3] is new=True
+FACT list-index-assignment: PASS - model.layers[3] = new gives output 60.0 (want 60.0), new in named_modules=True, old removed=True
+FACT wrapper-getattr-delegation: PASS - output bitwise equal after swap=True (11.0 vs 11.0), child.weight=2.0 (want 2.0), child.sub.attr=7.0 (want 7.0)
+FACT wrapped-tree-report: INFO - after wrapper swap named_modules=['child', 'child.wrapped', 'child.wrapped.sub'], parameters=['child.wrapped.sub.attr', 'child.wrapped.weight']
+FACT plain-object-swap: INFO - non-Module wrapper via setattr: model output 2.0 through wrapper (calls=1), but named_modules=[] and parameters=[] (dropped from module tree)

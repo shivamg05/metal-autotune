@@ -1,0 +1,10 @@
+FACT mlx-version: INFO - mlx 0.32.2, device Device(gpu, 0)
+FACT compiled-callable-stale-after-swap: PASS - after child swap 2x->3x: eager step gives [3.0, 6.0, 9.0, 12.0], the already-compiled callable gives [2.0, 4.0, 6.0, 8.0] (pre-swap graph=True)
+FACT fresh-compile-same-callable-reflects-swap: FAIL - mx.compile(step) again (old compiled object still alive) gives [2.0, 4.0, 6.0, 8.0], want post-swap [3.0, 6.0, 9.0, 12.0]
+FACT fresh-compile-after-dropping-old: INFO - after deleting both old compiled objects, mx.compile(step) gives [3.0, 6.0, 9.0, 12.0] (sees the swap=True)
+FACT fresh-compile-new-closure: INFO - compiling a newly defined closure over the same model gives [3.0, 6.0, 9.0, 12.0] (sees the swap=True)
+FACT attr-counter-frozen: INFO - __call__ increments a python counter: compiled call1=[3.0, 5.0] call2=[3.0, 5.0] (identical=True), count attr=1 after 2 calls (body ran only at trace)
+FACT array-attr-reassign-frozen: INFO - gain reassigned 2.0->5.0 between calls: compiled returns [3.0, 5.0] (old array baked into the trace=True)
+FACT per-shape-retrace: PASS - 5 calls over shapes [(2,3),(2,3),(4,3),(4,3),(2,3)] ran the python body for [(2, 3), (4, 3)] (want once per distinct shape)
+FACT plain-vs-compiled-step: INFO - 4-layer MLP dim 512 batch 32: plain median 0.114 ms/step, compiled median 0.112 ms/step, median paired delta +1.6% (positive means compiled faster), warmed in 5/10 samples over 40 interleaved pairs
+FACT nested-compile: INFO - mx.compile(outer) calling a compiled inner: correct output=True, inner python body ran 1 more time(s) during the outer trace (shape already in the inner cache), outer body ran 1 time(s) over 2 calls

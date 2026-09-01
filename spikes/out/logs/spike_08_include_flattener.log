@@ -1,0 +1,9 @@
+FACT mlx-version: INFO - mlx 0.32.2 at /Users/shivamgarg/dev/metal-autotune/.venv/lib/python3.12/site-packages/mlx
+FACT shipped-msl-tree: PASS - 90 .h files, 924458 bytes under /Users/shivamgarg/dev/metal-autotune/.venv/lib/python3.12/site-packages/mlx/include/mlx/backend/metal/kernels; steel GEMM, sdpa, quantized, reduction all present
+FACT msl-tree-size: INFO - kernels MSL subtree 924458 bytes; whole include tree 3346220 bytes (plan 5.9 says ~4MB under kernels/, which matches the whole tree, not kernels/); steel/gemm/gemm.h=8475B, steel/attn/attn.h=8532B, sdpa_vector.h=17572B, quantized.h=86302B, reduction/reduce_row.h=11321B, utils.h=14319B
+FACT utils-auto-prepended: PASS - empty-header kernel sees Limits<float>::max (=inf) from utils.h
+FACT absolute-include-resolves: PASS - header '#include "/Users/shivamgarg/dev/metal-autotune/spikes/out/spike08_tiny.h"' compiled and computed 3x+1 correctly
+FACT nested-relative-include-fails: PASS - compile failed as plan claims: 'mlx/backend/metal/kernels/steel/gemm/loader.h' file not found
+FACT flattened-utils-vs-prelude: INFO - re-inlining utils.h clashes with the auto-prepended copy (redefinition of 'bfloat16_to_uint16'); the flattener must skip utils.h and its transitive includes
+FACT header-trailing-newline: INFO - header ending in a line comment with no trailing newline swallows the generated kernel signature and fails to compile (mlx/backend/metal/kernels/utils.h:2415:23: error: 'buffer' attribute only applies to parameters, global constant variables, and non-static data members); the flattener must emit a trailing newline
+FACT include-flattener-feasible: PASS - flattened steel/gemm/gemm.h (9 files, 54592 chars, prelude skipped) compiles as header; sizeof(mlx::steel::GEMMParams)=72

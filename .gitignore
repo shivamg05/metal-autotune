@@ -1,0 +1,9 @@
+# run directories and generated artifacts stay out of the tree
+work-*/
+artifact/
+autotune_work/
+# python and tooling
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
