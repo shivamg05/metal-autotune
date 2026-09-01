@@ -67,6 +67,7 @@ class KernelProposal:
     template: tuple[tuple[str, str], ...] = ()  # (name, dtype name or "inK"); empty means the parent's
     fallback_predicate: str | None = None       # true -> use the library path
     scratch: tuple[tuple[str, str, tuple[str, ...]], ...] = ()  # (tmpN, dtype, shape exprs)
+    item_id: str | None = None                  # the queue item this kernel is for
 
 
 @dataclass(frozen=True)
@@ -169,7 +170,7 @@ def _item(obj: object) -> QueueItem:
 
 
 _PROPOSAL_KEYS = {"source", "parent_kernel_id", "grid", "threadgroup", "output_shapes",
-                  "header", "template", "fallback_predicate", "scratch"}
+                  "header", "template", "fallback_predicate", "scratch", "item_id"}
 
 
 def _proposal(obj: object) -> KernelProposal:
@@ -202,7 +203,8 @@ def _proposal(obj: object) -> KernelProposal:
     return KernelProposal(source=source, parent_kernel_id=parent, grid=grid,
                           threadgroup=threadgroup, output_shapes=out_shapes,
                           header=header, template=template, fallback_predicate=fallback,
-                          scratch=_scratch(obj.get("scratch", [])))
+                          scratch=_scratch(obj.get("scratch", [])),
+                          item_id=_opt_str(obj, "item_id", "kernel"))
 
 
 def _scratch(obj: object) -> tuple[tuple[str, str, tuple[str, ...]], ...]:

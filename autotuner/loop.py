@@ -66,7 +66,10 @@ class RegionRun:
     head_ms: float | None = None
     shipped_ms: float | None = None
     library_ms: float | None = None   # the library beside head, from head's own clock
+    head_ratio: float | None = None   # head_ms over its library_ms: the drift-free number
+    shipped_ratio: float | None = None
     head_tag: str = "preserving"      # assoc tag of the edit that produced head
+    shipped_tag: str = "preserving"
     last_kernel: str | None = None    # the kernel the latest verdict was about
     attempts: dict[str, dict] = field(default_factory=dict)  # kernel id -> its verdict
     hypotheses: int = 0
@@ -360,15 +363,16 @@ class JobRunner:
                 run.close_rule = f"scaffold failed {result.failed_gate} (the one judge fix attempt did not produce a passing kernel)"
                 return run
             scaffold, result = fixed
-        run.scaffold = run.head = scaffold
-        run.head_ms, run.library_ms = result.region_ms, result.library_ms
+        run.scaffold = scaffold
+        self._set_head(run, scaffold, result, "preserving")
         outcome = result.outcome
         if outcome == "tentative_ship":
             # the harness's own kernel beat the library on the region clock;
             # it ships through the same install and whole-model checks as any edit
             outcome = "shipped" if self._bind_and_promote(run, scaffold, result) else "rolled_back"
             if outcome == "shipped":
-                run.shipped, run.shipped_ms = scaffold, result.region_ms
+                run.shipped, run.shipped_ms, run.shipped_ratio = scaffold, result.region_ms, _ratio(result)
+                run.recent_ship_gains.append(1.0 - _ratio(result))
         repaired = scaffold is not run.kernels.get(f"r{region.fingerprint[:6]}_scaffold")
         self._record_attempt(
             run, "scafix" if repaired else "scaffold", "fix" if repaired else "scaffold",
@@ -418,95 +422,75 @@ class JobRunner:
         return fixed, check
 
     def hypothesis_cycle(self, run: RegionRun, judge) -> None:
+        """One hypothesis at a time. Every call to the judge carries the last
+        verdict and the queue; the judge edits its plan first, then writes
+        Metal for the front ready item; the ladder decides; repeat."""
         region = run.region
-        queue = Queue()
-        families = FamilyBook()
+        queue, families = Queue(), FamilyBook()
         families.register_scaffold(run.scaffold.kernel_id)
-        t0 = time.perf_counter()
-        try:
-            seed = judge.seed(self._meta(run, queue, families, None))
-        except JudgeBabble:
-            self.log.append("judge", fingerprint=region.fingerprint, phase="seed",
-                            latency_s=round(time.perf_counter() - t0, 1), action="babble")
-            run.close_rule = "queue empty (judge babbled at seed)"
+        seed, failure = self._ask_judge(run, "seed",
+                                        lambda: judge.seed(self._meta(run, queue, families, None)))
+        if seed is None:
+            run.close_rule = ("the judge babbled at seed" if failure == "babble"
+                              else f"judge unavailable at seed ({failure})")
             return
-        except Exception as e:
-            # a transport blip (CLI exit, timeout, network) costs the region,
-            # never the job (audit finding F1)
-            self.log.append("judge", fingerprint=region.fingerprint, phase="seed",
-                            latency_s=round(time.perf_counter() - t0, 1),
-                            action="error", reason=str(e)[:200])
-            run.close_rule = f"judge unavailable at seed ({type(e).__name__})"
-            return
-        self.log.append("judge", fingerprint=region.fingerprint, phase="seed",
-                        latency_s=round(time.perf_counter() - t0, 1), queue=len(seed.queue))
         try:
             queue.seed(seed.queue)
         except QueueError as e:
             run.close_rule = f"the judge's seed queue was inconsistent ({e})"
             return
-        verdict_payload = None
-        judge_errors = 0  # consecutive transport failures; 3 closes the region
+        verdict = None
+        errors = 0  # consecutive transport failures; three close the region
 
         while True:
-            rule = self._close_rule(run, queue)
+            rule = self._close_rule(run, queue, families)
             if rule:
                 run.close_rule = rule
                 return
-            item = queue.pop_ready()
-            if item is None:
-                if queue.empty:
-                    run.close_rule = "the queue is empty (the judge yields)"
+            front = queue.peek_ready()
+            resp, failure = self._ask_judge(run, "next", lambda: judge.next(
+                self._meta(run, queue, families, _item_view(front) if front else None), verdict))
+            if resp is None:
+                hyp = front.id if front else "none"
+                if failure == "babble":
+                    # a babbling judge burns budget, so it exhausts its region
+                    run.hypotheses += 1
+                    self.total_hypotheses += 1
+                    self._record_attempt(run, hyp, front.kind if front else "none",
+                                         front.hypothesis if front else "", None, None, None,
+                                         None, gate="judge_babble")
+                    verdict = {"hypothesis_id": hyp, "outcome": "failed", "failed_gate": "judge_babble"}
                 else:
-                    run.close_rule = (f"no queued item is ready; {len(queue)} wait on "
-                                      f"unsatisfied conditions ({', '.join(queue.ids())})")
-                return
-            # the queue and the verdicts are the judge's only memory; every
-            # call carries them plus the item it must write for
-            meta = self._meta(run, queue, families, _item_view(item))
-            t0 = time.perf_counter()
-            try:
-                resp = judge.next(meta, verdict_payload)
-            except JudgeBabble:
-                self.log.append("judge", fingerprint=region.fingerprint, phase="next",
-                                latency_s=round(time.perf_counter() - t0, 1), action="babble")
-                run.hypotheses += 1
-                self.total_hypotheses += 1
-                self._record_attempt(run, item.id, item.kind, item.hypothesis,
-                                     item.assoc_tag, None, None, None, gate="judge_babble")
-                verdict_payload = {"hypothesis_id": item.id, "outcome": "failed",
-                                   "failed_gate": "judge_babble"}
-                queue.record_verdict(item.id, "failed")
+                    errors += 1
+                    self._record_attempt(run, hyp, front.kind if front else "none",
+                                         front.hypothesis if front else "", None, None, None,
+                                         None, gate="judge_error", reason=failure)
+                    verdict = {"hypothesis_id": hyp, "outcome": "failed",
+                               "failed_gate": "judge_error", "detail": {"reason": failure}}
+                    if errors >= 3:
+                        run.close_rule = f"judge unavailable (3 straight transport errors, last {failure})"
+                        return
                 continue
-            except Exception as e:
-                self.log.append("judge", fingerprint=region.fingerprint, phase="next",
-                                latency_s=round(time.perf_counter() - t0, 1),
-                                action="error", reason=str(e)[:200])
-                judge_errors += 1
-                self._record_attempt(run, item.id, item.kind, item.hypothesis,
-                                     item.assoc_tag, None, None, None, gate="judge_error",
-                                     reason=str(e)[:200])
-                verdict_payload = {"hypothesis_id": item.id, "outcome": "failed",
-                                   "failed_gate": "judge_error",
-                                   "detail": {"reason": str(e)[:200]}}
-                queue.record_verdict(item.id, "failed")
-                if judge_errors >= 3:
-                    run.close_rule = f"judge unavailable (3 straight transport errors, last {type(e).__name__})"
-                    return
-                continue
-            judge_errors = 0
-            self.log.append("judge", fingerprint=region.fingerprint, phase="next",
-                            latency_s=round(time.perf_counter() - t0, 1),
-                            mutations=len(resp.mutations),
-                            action="yield" if resp.kernel is None else "proposal")
+            errors = 0
             try:
                 queue.apply_mutations(resp.mutations)
             except QueueError as e:
-                # a bad plan edit costs the plan edit, never the kernel or job
-                self.log.append("queue_mutations_rejected",
-                                fingerprint=region.fingerprint, reason=str(e))
+                # a bad plan edit costs the plan edit, never the kernel or the job
+                self.log.append("queue_mutations_rejected", fingerprint=region.fingerprint,
+                                reason=str(e))
             if resp.kernel is None:
-                run.close_rule = "the queue is empty (the judge yields)"
+                if queue.empty:
+                    run.close_rule = "the judge yields (queue empty)"
+                elif queue.peek_ready() is None:
+                    run.close_rule = (f"no queued item is ready after the judge heard the "
+                                      f"verdict ({len(queue)} wait: {', '.join(queue.ids())})")
+                else:
+                    run.close_rule = f"the judge yields with {len(queue)} items still queued"
+                return
+            item = queue.pop_ready(resp.kernel.item_id)
+            if item is None:
+                run.close_rule = (f"the judge wrote a kernel but no queued item is ready "
+                                  f"({', '.join(queue.ids()) or 'queue empty'})")
                 return
 
             run.hypotheses += 1
@@ -530,43 +514,85 @@ class JobRunner:
                     "detail": f"{parent!r} names no kernel of this region; say head, "
                               f"scaffold, shipped, a hypothesis id, or one of {sorted(run.kernels)}"}]},
                     None, None, None, None, [])
-            if result.outcome == "failed":
-                outcome = "failed"
-                if result.failed_gate in ("static", "compile"):
-                    run.fail_streak_by_parent[parent] = run.fail_streak_by_parent.get(parent, 0) + 1
-                run.stale_streak += 1
-            else:
-                run.fail_streak_by_parent[parent] = 0
-                if result.outcome == "correct_slower":
-                    outcome = "correct_slower"
-                    run.head, run.head_ms, run.head_tag = kernel, result.region_ms, item.assoc_tag
-                    run.library_ms = result.library_ms
-                    run.stale_streak += 1
-                else:  # tentative_ship: bind and e2e decide
-                    if self._bind_and_promote(run, kernel, result):
-                        outcome = "shipped"
-                        gain = result.win_ms or 0.0
-                        prev = run.shipped_ms
-                        run.shipped, run.shipped_ms = kernel, result.region_ms
-                        run.head, run.head_ms, run.head_tag = kernel, result.region_ms, item.assoc_tag
-                        run.library_ms = result.library_ms
-                        run.recent_ship_gains.append(
-                            gain / prev if prev else 1.0
-                        )
-                        run.stale_streak = 0
-                    else:
-                        outcome = "rolled_back"
-                        run.stale_streak += 1
-
-            families.record_verdict(family, outcome if outcome != "rolled_back" else "rolled_back")
+            outcome = self._apply_verdict(run, item, kernel, parent, result)
+            families.record_verdict(family, outcome)
             if families.tripped(family):
                 families.abandon(family)
-                run.head = run.shipped or run.scaffold
+                base = run.shipped or run.scaffold
+                self._set_head(run, base, run.attempts[base.kernel_id],
+                               run.shipped_tag if run.shipped else "preserving")
                 self.log.append("family_abandoned", fingerprint=region.fingerprint, family=family)
             queue.record_verdict(item.id, outcome)
-            verdict_payload = _verdict_payload(item.id, kernel.kernel_id, outcome, result)
+            verdict = _verdict_payload(item.id, kernel.kernel_id, outcome, result)
             self._record_attempt(run, item.id, item.kind, item.hypothesis, item.assoc_tag,
                                  kernel, parent, result, outcome=outcome)
+
+    def _ask_judge(self, run: RegionRun, phase: str, call):
+        """One judge call with its log row: (response, None), or (None, why)."""
+        t0 = time.perf_counter()
+        try:
+            resp = call()
+        except JudgeBabble:
+            self.log.append("judge", fingerprint=run.region.fingerprint, phase=phase,
+                            latency_s=round(time.perf_counter() - t0, 1), action="babble")
+            return None, "babble"
+        except Exception as e:
+            # a transport blip (CLI exit, timeout, network) costs a call or a
+            # region, never the job
+            self.log.append("judge", fingerprint=run.region.fingerprint, phase=phase,
+                            latency_s=round(time.perf_counter() - t0, 1),
+                            action="error", reason=str(e)[:200])
+            return None, f"{type(e).__name__}: {str(e)[:120]}"
+        summary = ({"queue": len(resp.queue)} if phase == "seed" else
+                   {"mutations": len(resp.mutations),
+                    "action": "yield" if resp.kernel is None else "proposal"})
+        self.log.append("judge", fingerprint=run.region.fingerprint, phase=phase,
+                        latency_s=round(time.perf_counter() - t0, 1), **summary)
+        return resp, None
+
+    def _set_head(self, run: RegionRun, kernel: KernelSpec, clock, tag: str) -> None:
+        """clock is a ladder result or a recorded attempt: anything with the
+        kernel's region_ms and library_ms."""
+        get = clock.get if isinstance(clock, dict) else lambda k: getattr(clock, k)
+        run.head, run.head_tag = kernel, tag
+        run.head_ms, run.library_ms = get("region_ms"), get("library_ms")
+        run.head_ratio = _ratio(clock)
+
+    def _apply_verdict(self, run: RegionRun, item, kernel: KernelSpec, parent: str, result) -> str:
+        """The spec's three verdicts, plus the bookkeeping each one moves.
+        Comparisons between kernels use each one's ratio to the library it
+        was clocked beside, so two clocks taken minutes apart still compare."""
+        if result.outcome == "failed":
+            if result.failed_gate in ("static", "compile"):
+                run.fail_streak_by_parent[parent] = run.fail_streak_by_parent.get(parent, 0) + 1
+            run.stale_streak += 1
+            return "failed"
+        run.fail_streak_by_parent[parent] = 0
+        ratio, sigma = _ratio(result), (result.sigma_ms or 0.0) / (result.library_ms or 1.0)
+        outcome = result.outcome
+        if outcome == "tentative_ship" and run.shipped_ratio is not None and not (
+            run.shipped_ratio - ratio > max(0.01 * run.shipped_ratio, 3.0 * sigma)
+        ):
+            # faster than the library, but the installed kernel is faster still
+            result.detail["not_faster_than_shipped"] = {
+                "candidate_over_library": ratio, "shipped_over_library": run.shipped_ratio}
+            outcome = "correct_slower"
+        if outcome == "tentative_ship":
+            if not self._bind_and_promote(run, kernel, result):
+                run.stale_streak += 1
+                return "rolled_back"
+            gain = 1.0 - ratio / run.shipped_ratio if run.shipped_ratio else 1.0 - ratio
+            run.recent_ship_gains.append(gain)
+            run.shipped, run.shipped_ms, run.shipped_ratio = kernel, result.region_ms, ratio
+            run.shipped_tag = item.assoc_tag
+            self._set_head(run, kernel, result, item.assoc_tag)
+            run.stale_streak = 0
+            return "shipped"
+        # correct but not a win: head moves only to a better correct kernel
+        if run.head_ratio is None or ratio < run.head_ratio:
+            self._set_head(run, kernel, result, item.assoc_tag)
+        run.stale_streak += 1
+        return "correct_slower"
 
     def _record_attempt(self, run: RegionRun, hyp_id: str, kind: str, text: str,
                         assoc_tag: str | None, kernel, parent: str | None, result,
@@ -652,7 +678,10 @@ class JobRunner:
             writing_for=writing_for,
         )
 
-    def _close_rule(self, run: RegionRun, queue: Queue) -> str | None:
+    def _close_rule(self, run: RegionRun, queue: Queue, families: FamilyBook) -> str | None:
+        """The spec's close rules. Clocks taken in a child are brought into the
+        job-start frame through their ratio to the library, then compared to
+        the roofline and the step measured at job start."""
         region = run.region
         if run.hypotheses >= self.manifest.budget_per_region:
             return "the region's hypothesis budget is spent"
@@ -660,18 +689,26 @@ class JobRunner:
             return "the job budget is spent"
         if any(v >= FAIL_STREAK_LIMIT for v in run.fail_streak_by_parent.values()):
             return "5 straight compile or static fails on one parent"
-        roof = region.roofline.t_roofline_ms if region.roofline else None
-        if roof and run.shipped_ms and run.shipped_ms <= SHIP_ROOFLINE_CLOSE * roof:
-            return "shipped is within 5% of the roofline"
         if len(run.recent_ship_gains) >= DIMINISHING_SHIPS and all(
             g < DIMINISHING_PCT for g in run.recent_ship_gains[-DIMINISHING_SHIPS:]
         ):
             return "3 ships in a row under 2% better than the last"
         if run.stale_streak >= STALE_LIMIT:
             return "6 hypotheses in a row without a meaningful win"
-        step = min(self.step_ms.values())
-        if roof and run.head_ms and (run.head_ms - roof) < 0.01 * step:
-            return "head's clock is within 1% of the step of the roofline"
+        if run.shipped is None and families.all_abandoned():
+            return "nothing shipped and every family is abandoned"
+        roof = region.roofline.t_roofline_ms if region.roofline else None
+        w = region.members[0].workload
+        step = self.step_ms[w]
+
+        def one_copy_ms(ratio: float) -> float:
+            return ratio * region.p_rep[w] * step  # in the frame the roofline was priced in
+
+        if roof and run.shipped_ratio is not None and one_copy_ms(run.shipped_ratio) <= SHIP_ROOFLINE_CLOSE * roof:
+            return "shipped is within 5% of the roofline"
+        if roof and run.head_ratio is not None and \
+                (one_copy_ms(run.head_ratio) - roof) * region.copies < 0.01 * step:
+            return "head's clock is within 1% of the step of the roofline, all copies counted"
         return None
 
     # -- bind and promote -----------------------------------------------------
@@ -844,6 +881,7 @@ class JobRunner:
                 bound=roof.bound if roof else None, s_max=roof.s_max if roof else None,
                 t_shipped_ms={w: run.shipped_ms for w in region.workloads}
                     if run.shipped_ms else None,
+                speedup=(1.0 / run.shipped_ratio) if run.shipped_ratio else None,
                 close_rule=run.close_rule, hypotheses=run.hypotheses, head_ms=run.head_ms,
             )
             self.log.append("region_closed", fingerprint=region.fingerprint,
@@ -940,6 +978,13 @@ def _ops_view(trace: Trace, stretch: Stretch) -> list[dict]:
             "outputs": [names[aid] for aid in node.out_arrays],
         })
     return view
+
+
+def _ratio(clock) -> float | None:
+    """A kernel's time over the library's, both from the same clock."""
+    get = clock.get if isinstance(clock, dict) else lambda k: getattr(clock, k)
+    region_ms, library_ms = get("region_ms"), get("library_ms")
+    return (region_ms / library_ms) if region_ms and library_ms else None
 
 
 def _item_view(item) -> dict:

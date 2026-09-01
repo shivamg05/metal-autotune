@@ -68,14 +68,20 @@ class Queue:
             seen.add(it.id)
         self._items = list(items)
 
-    def pop_ready(self) -> QueueItem | None:
-        """The front item whose depends_on condition holds, removed from the
-        queue. Unsatisfied items are skipped, not consumed."""
-        for i, item in enumerate(self._items):
-            if self._satisfied(item):
-                self._in_flight = item.id
-                return self._items.pop(i)
-        return None
+    def peek_ready(self) -> QueueItem | None:
+        """The front item whose depends_on condition holds, left in place."""
+        return next((item for item in self._items if self._satisfied(item)), None)
+
+    def pop_ready(self, wanted: str | None = None) -> QueueItem | None:
+        """Remove and return the front ready item, or the ready item named by
+        wanted when there is one. Unsatisfied items are skipped, not consumed."""
+        ready = [item for item in self._items if self._satisfied(item)]
+        chosen = next((item for item in ready if item.id == wanted), ready[0] if ready else None)
+        if chosen is None:
+            return None
+        self._items.remove(chosen)
+        self._in_flight = chosen.id
+        return chosen
 
     def record_verdict(self, item_id: str, outcome: str) -> None:
         """Log an executed item's outcome. Re-recording is legal: a rollback
@@ -229,6 +235,9 @@ class FamilyBook:
 
     def abandoned(self, family_id: str) -> bool:
         return family_id in self._abandoned
+
+    def all_abandoned(self) -> bool:
+        return bool(self._strikes) and all(f in self._abandoned for f in self._strikes)
 
     def state(self) -> dict[str, dict]:
         """Per-family climb state and strike count, as the prompt renders it."""

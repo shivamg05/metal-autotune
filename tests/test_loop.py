@@ -102,15 +102,16 @@ def test_planted_win_job_ships(tmp_path):
         assert meta["head"] in meta["kernels"]
         assert "source" in meta["kernels"][meta["head"]]
         assert "queue" in meta and "verdicts" in meta and "families" in meta
-        assert meta["executing"]["id"]
+        assert meta["writing_for"]["id"]
+        assert meta["launch_grammar"] and meta["menu"] and meta["laws"] and meta["legend"]
 
     shipped = [r for r in report.regions if r.get("s")]
     assert shipped, f"nothing shipped; regions: {report.regions}"
     hyp = [h for h in report.hypotheses if h["verdict"] == "shipped"]
     assert hyp, report.hypotheses
-    before = report.step_ms["main"]["before"]
-    after = report.step_ms["main"]["after"]
-    assert after < before, f"step did not improve: {before:.3f} -> {after:.3f}"
+    # the headline is the paired end-of-job comparison, never before minus after
+    step = report.step_ms["main"]
+    assert step["speedup"] > 1.0, f"the patched step did not beat the untouched one: {step}"
 
     # the artifact must reproduce the patched outputs in this process
     art = runner.emit_artifact(tmp_path / "artifact")
@@ -245,3 +246,75 @@ def test_judge_transport_error_costs_region_not_job(tmp_path):
                or not r.get("s") for r in report.regions)
     assert any(row.get("action") == "error" for row in runner.log.rows()
                if row["kind"] == "judge")
+
+
+def test_failed_first_item_lets_the_judge_insert_a_fix(tmp_path, monkeypatch):
+    """The spec's failure branch: the judge hears a failed verdict before the
+    next item is chosen, prepends a fix conditioned on that failure, and
+    writes it in the same reply. The old cycle popped first and closed the
+    region with the plan untouched."""
+    import autotuner.loop as loop_mod
+
+    # the test is about the cycle, not pricing: at this small shape the chain
+    # sits near the share floor and a noisy machine can drop it, so keep all
+    monkeypatch.setattr(loop_mod, "apply_floor", lambda regions, **k: regions)
+    broken = FUSED_CHAIN_SOURCE.replace("out0[i] =", "out0[i] = this_is_not_metal +")
+    calls = []
+
+    def judge_for(region):
+        if len(region.ops) != 8:
+            return yielding_judge(region)
+        return ScriptedJudge([
+            {"queue": [
+                {"id": "h1", "kind": "on-chip", "assoc_tag": "preserving",
+                 "hypothesis": "keep the chain's intermediates in registers"},
+                {"id": "h2", "kind": "retile", "assoc_tag": "preserving",
+                 "hypothesis": "then retile", "depends_on": "h1", "condition": "correct"},
+            ]},
+            {"mutations": [], "kernel": {
+                "source": broken, "parent_kernel_id": "scaffold",
+                "grid": ["in0.shape[0] * in0.shape[1]", "1", "1"],
+                "threadgroup": ["min(in0.shape[0] * in0.shape[1], 256)", "1", "1"],
+                "output_shapes": [["in0.shape[0]", "in0.shape[1]"]],
+            }},
+            {"mutations": [{"op": "insert", "before": "h2", "item": {
+                "id": "hfix", "kind": "fix", "assoc_tag": "preserving",
+                "hypothesis": "repair the compile error", "depends_on": "h1",
+                "condition": "failed"}}],
+             "kernel": {
+                "source": FUSED_CHAIN_SOURCE, "parent_kernel_id": "h1", "item_id": "hfix",
+                "grid": ["in0.shape[0] * in0.shape[1]", "1", "1"],
+                "threadgroup": ["min(in0.shape[0] * in0.shape[1], 256)", "1", "1"],
+                "output_shapes": [["in0.shape[0]", "in0.shape[1]"]],
+            }},
+            {"mutations": [], "kernel": None},
+        ])
+
+    def factory(region):
+        j = judge_for(region)
+        orig = j.next
+
+        def recording_next(meta, verdict):
+            calls.append((meta["writing_for"], verdict))
+            return orig(meta, verdict)
+
+        j.next = recording_next
+        return j
+
+    manifest = write_manifest(tmp_path, "planted_win.py", (64, 1024))
+    runner = JobRunner(manifest, tmp_path / "work", judge_factory=factory, clock_pairs=4,
+                       session=Session(sleep=lambda s: None))
+    report = runner.run()
+    chain = next(r for r in report.regions if len(r["ops"]) == 8)
+    rows = {h["id"]: h for h in report.hypotheses if h["region"] == chain["fingerprint"]}
+    assert rows["h1"]["verdict"] == "failed" and rows["h1"]["failed_gate"] == "compile"
+    assert rows["hfix"]["verdict"] in ("correct_slower", "shipped"), rows["hfix"]
+    assert rows["hfix"]["parent"] == rows["h1"]["kernel"]
+    # the second call carried h1's verdict and was asked to write for h2, which
+    # was not ready; the judge's fix was written for hfix instead
+    second_writing_for, second_verdict = calls[1]
+    assert second_verdict["hypothesis_id"] == "h1" and second_verdict["failed_gate"] == "compile"
+    assert second_writing_for is None
+    # h2 still waits on h1 succeeding, so the judge's yield closes the region
+    # with h2 named as the item left waiting, after the fix ran
+    assert "h2" in chain["close_rule"], chain["close_rule"]

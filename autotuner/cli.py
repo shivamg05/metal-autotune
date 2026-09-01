@@ -19,7 +19,6 @@ def main(argv=None) -> int:
                           "agent: a live agent answers <work-dir>/judge_io (see AGENT_JUDGE.md)")
     args = parser.parse_args(argv)
 
-    from .log import fmt_signed_ms
     from .loop import JobRunner
 
     if args.judge == "api":
@@ -48,10 +47,12 @@ def main(argv=None) -> int:
     shipped = [r for r in report.regions if r.get("s")]
     print(f"job done: {len(shipped)}/{len(report.regions)} regions shipped")
     for w, clocks in report.step_ms.items():
-        before, after = clocks.get("before"), clocks.get("after")
-        if before and after:
-            print(f"  {w}: {before:.3f} ms -> {after:.3f} ms "
-                  f"({fmt_signed_ms(before - after)}, {(after - before) / before * 100:+.1f}%)")
+        # the untouched model is re-measured beside the patched one at the end;
+        # the job-start clock is a different window and never enters this line
+        if clocks.get("speedup"):
+            print(f"  {w}: patched {clocks['after']:.3f} ms vs untouched "
+                  f"{clocks['baseline_at_end']:.3f} ms, measured together: "
+                  f"{clocks['speedup']:.3f}x (pair agreement {clocks['stability']:.2f})")
     print(f"artifact: {artifact}")
     return 0
 

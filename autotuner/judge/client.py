@@ -63,8 +63,9 @@ mutation: {{"op": "insert", "item": item, optional "before": queued id}}
         | {{"op": "delete", "id": queued id}}
         | {{"op": "reorder", "order": [every queued id, new order]}}
 {_ITEM_SCHEMA}
-""" + """proposal, the Metal for the front ready item, an edit of a named parent:
-  {"source": kernel body, "parent_kernel_id": str, optional "header": str,
+""" + """proposal, the Metal for the item in writing_for, an edit of a named parent:
+  {"source": kernel body, "parent_kernel_id": str, optional "item_id": str,
+   optional "header": str,
    "grid": [3 launch-grammar exprs, total threads], "threadgroup": [3 exprs],
    "output_shapes": [[exprs], one entry per region output, in io.outputs order],
    optional "scratch": [[name, dtype name, [shape exprs]], ...],
@@ -76,6 +77,10 @@ template you leave out is inherited from the parent, so omit them to keep the
 parent's. Extra device buffers the body
 writes (staging between stages) go in scratch, named tmp0, tmp1, ... in the order
 the body uses them; region outputs are always out0, out1, ... and inputs in0, in1, ...
+The verdict you are sent is for the last kernel you wrote; mutate the queue in
+reply to it first (insert a fix, drop a dead family, reorder), then write for
+the item that is front and ready after those mutations. item_id names it when
+it is not the item in writing_for.
 Return "kernel": null to yield when you have nothing left to propose."""
 
 

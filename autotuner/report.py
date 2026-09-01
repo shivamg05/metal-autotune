@@ -17,7 +17,6 @@ from pathlib import Path
 
 import mlx.core as mx
 
-from .log import SIGN_CONVENTION
 
 _ENV_VARS = ("MLX_MAX_OPS_PER_BUFFER", "MLX_MAX_MB_PER_BUFFER", "MTL_SHADER_VALIDATION",
              "MTL_SHADER_VALIDATION_REPORT_TO_STDERR", "MTL_CAPTURE_ENABLED")
@@ -31,7 +30,7 @@ LEGEND = {
     "roofline_ms": "the physical limit for one copy: bytes over bandwidth, or flops over peak",
     "s_max": "speedup ceiling: one copy's library time over its physical limit",
     "bound": "the resource that limits the region: memory, compute, or launch",
-    "s": "speedup shipped: library time over the shipped kernel's time",
+    "s": "speedup shipped: the library's time over the shipped kernel's, both from the kernel's own ship clock",
     "region_ms": "the kernel's time for one pass of one copy, from the ship clock",
     "library_ms": "the library's time for the same pass, measured beside it",
     "win_ms": "library_ms minus region_ms; positive means the kernel is faster",
@@ -58,10 +57,8 @@ class Report:
                    s_max: float | None, t_shipped_ms: dict | None = None,
                    close_rule: str | None = None, t_rep_ms: dict | None = None,
                    roofline_ms: float | None = None, hypotheses: int = 0,
-                   head_ms: float | None = None) -> None:
-        s = None
-        if t_shipped_ms:
-            s = {w: t_orig_ms[w] / t_shipped_ms[w] for w in t_shipped_ms if t_shipped_ms[w]}
+                   head_ms: float | None = None, speedup: float | None = None) -> None:
+        s = speedup
         tally: dict[str, int] = {}
         for h in self.hypotheses:
             if h["region"] == fingerprint:
@@ -99,7 +96,6 @@ class Report:
 
     def to_dict(self) -> dict:
         return {
-            "sign_convention": SIGN_CONVENTION,
             "legend": LEGEND,
             "written_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
             "machine": {

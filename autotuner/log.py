@@ -1,9 +1,5 @@
-"""Append-only run log (plan 5.13). JSONL, elapsed seconds on every row.
-
-Internal math is positive-means-faster; human-facing lines are signed
-milliseconds where negative means faster. fmt_signed_ms is the one formatter
-that converts, so the two conventions can never drift apart.
-"""
+"""Append-only run log: one JSON line per event, elapsed seconds and wall
+time on every row, plus a plain-text log for people."""
 
 from __future__ import annotations
 
@@ -27,14 +23,6 @@ def json_safe(obj):
     if isinstance(obj, (list, tuple)):
         return [json_safe(v) for v in obj]
     return obj
-
-SIGN_CONVENTION = "human-facing signed ms: negative means faster than baseline"
-
-
-def fmt_signed_ms(delta_faster_ms: float) -> str:
-    """Render an internal positive-means-faster delta for humans."""
-    return f"{-delta_faster_ms + 0.0:+.3f}ms"  # +0.0 keeps zero from printing as -0.000
-
 
 class RunLog:
     def __init__(self, path: str | Path):
