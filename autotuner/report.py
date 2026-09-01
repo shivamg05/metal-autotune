@@ -51,6 +51,7 @@ class Report:
     hypotheses: list = field(default_factory=list)
     stranded: list = field(default_factory=list)      # rejected regions with reasons
     coverage: dict = field(default_factory=dict)      # the standing self-proof line
+    final: dict = field(default_factory=dict)         # the whole-model check after the last region
 
     def add_region(self, *, fingerprint: str, ops: list[str], copies: int,
                    workloads: list[str], p: dict, t_orig_ms: dict, bound: str | None,
@@ -116,6 +117,7 @@ class Report:
             "hypotheses": self.hypotheses,
             "stranded": self.stranded_by_reason(),
             "coverage": self.coverage,
+            "final": self.final,
         }
 
     def write(self, path: str | Path) -> None:

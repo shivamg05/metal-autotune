@@ -297,7 +297,7 @@ names, in this order.
 - [x] 6. Regions: opaque compiled calls with import-path replay; the
       dependent-matmul rule; weight shapes in the fingerprint; scaffold
       coverage screened before pricing; launch term and coverage fixed.
-- [ ] 7. Installing: verification against every installed cut; same-scope
+- [x] 7. Installing: verification against every installed cut; same-scope
       copies in one wrapper; superseded kernels dropped; whole-model check
       and an artifact load at job end.
 - [ ] 8. Measurement: pricing at eight pairs with the step warmed once;

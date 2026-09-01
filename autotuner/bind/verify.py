@@ -89,18 +89,22 @@ def verify_retrace(
 
     if not reasons:
         # dataflow: each custom node's outputs must feed the same downstream
-        # events the baseline cut's outputs fed
+        # events the baseline cut's outputs fed; a baseline node inside a cut
+        # maps to that cut's event, so one cut feeding the next cut counts
         base_event_of = {}
         pat_event_of = {}
         for idx, (e, g) in enumerate(zip(expected, got)):
-            if e[0] != "custom_kernel":
+            if e[0] == "custom_kernel":
+                for seq in range(e[2][0], e[2][1] + 1):
+                    base_event_of[seq] = idx
+            else:
                 base_event_of[e[2].seq] = idx
             pat_event_of[g[2].seq] = idx
         kernel_positions = [i for i, e in enumerate(expected) if e[0] == "custom_kernel"]
         for pos, span in zip(kernel_positions, spans):
             in_span = baseline.nodes[span[0]:span[1] + 1]
             produced = {a for n in in_span for a in n.out_arrays}
-            base_consumers = _consumer_events(baseline, produced, base_event_of)
+            base_consumers = _consumer_events(baseline, produced, base_event_of) - {pos}
             pat_node = got[pos][2]
             pat_consumers = _consumer_events(patched, set(pat_node.out_arrays), pat_event_of)
             if base_consumers != pat_consumers:

@@ -21,13 +21,13 @@ from .bind.certify import certify_identity, find_scope_call, screen_scope
 from .bind.emit import EmittedWrapper, NotReplayable, Splice, emit_wrapper
 from .bind.swap import install as swap_install, uninstall as swap_uninstall
 from .bind.verify import verify_retrace
-from .e2e import run_e2e, share_weights
+from .e2e import _flatten as flatten_outputs, run_e2e, share_weights
 from .judge.prompts import render_region_state
 from .judge.queue import FamilyBook, Queue, QueueError
 from .judge.schema import JudgeBabble
 from .ladder.gates import EvalSet, LadderJob, LadderResult, run_ladder
 from .ladder.static_checks import RegionContract
-from .artifact.emit import write_kernel
+from .artifact.emit import check_apply, emit_artifact, write_kernel
 from .log import RunLog, TextLog, wall_now
 from .measure.clocks import compare, step_clock
 from .measure.controls import aa_null
@@ -36,7 +36,7 @@ from .measure.session import Session
 from .regions.build import build_stretches
 from .regions.fingerprint import group_copies
 from .regions.price import capture_boundaries, price_region
-from .regions.rank import apply_floor, covered_by, rank
+from .regions.rank import apply_floor, free_members, rank
 from .regions.roofline import stretch_roofline
 from .regions.store import BoundaryStore
 from .regions.types import Region, Stretch
@@ -107,8 +107,10 @@ class JobRunner:
         self.step_ms: dict[str, float] = {}
         self.total_hypotheses = 0
         self.installed: dict[str, tuple] = {}  # scope -> (original module, splices, kernels)
+        self.cuts: dict[str, dict[tuple[int, int], str]] = {}  # workload -> {span: kernel id}
         self.certified_scopes: set[str] = set()
         self.emitted: dict[str, EmittedWrapper] = {}
+        self.final_ok = True
 
     # -- stage 1: model and traces -------------------------------------------
 
@@ -789,18 +791,18 @@ class JobRunner:
                     input_ids=m.input_ids, output_ids=m.output_ids,
                     fingerprint=region.fingerprint,
                 )
-                # a scope that already hosts a shipped wrapper accumulates:
-                # new wrapper = original module + every splice shipped so far
-                prior_install = self.installed.get(scope_path)
-                if prior_install:
-                    original, prior_splices, prior_kernels = prior_install
-                    splices = list(prior_splices) + [splice]
-                    kernels = dict(prior_kernels)
+                # one wrapper per scope carries every cut shipped into it, the
+                # copies of this attempt included; a cut on a span already
+                # spliced replaces the old kernel there
+                prior = pending_installed.get(scope_path) or self.installed.get(scope_path)
+                if prior:
+                    original, prior_splices, _ = prior
+                    splices = [s for s in prior_splices
+                               if (s.start_seq, s.end_seq) != (m.start_seq, m.end_seq)] + [splice]
                 else:
                     original = _resolve(self.model, scope_path)
                     splices = [splice]
-                    kernels = {}
-                kernels[kernel.kernel_id] = kernel
+                kernels = {s.kernel.kernel_id: s.kernel for s in splices}
                 emitted = emit_wrapper(trace, scope, splices, f"W_{_safe(scope_path)}")
                 cls = _load_class(emitted)
                 occupant = swap_install(self.model, scope_path, cls(original, kernels))
@@ -809,19 +811,22 @@ class JobRunner:
                 self.emitted[scope_path] = emitted
                 pending_installed[scope_path] = (original, splices, kernels)
 
-            # retrace: the cut must literally be one custom dispatch per copy
+            # retrace: every installed cut, this one included, must be exactly
+            # one custom dispatch per copy against the job-start recording
+            pending_cuts: dict[str, dict[tuple[int, int], str]] = {}
             for w in self.manifest.workloads:
-                retrace, _ = self.tracer.trace(self.model, self.tensors[w.name])
-                spans = [(m.start_seq, m.end_seq) for m in region.members
-                         if m.workload == w.name]
-                if not spans:
+                new = {(m.start_seq, m.end_seq): kernel.kernel_id
+                       for m in region.members if m.workload == w.name}
+                if not new:
                     continue
-                rep_check = verify_retrace(
-                    baseline_traces[w.name], retrace, spans,
-                    [kernel.kernel_id] * len(spans),
-                )
+                cuts = {**self.cuts.get(w.name, {}), **new}
+                spans = sorted(cuts)
+                retrace, _ = self.tracer.trace(self.model, self.tensors[w.name])
+                rep_check = verify_retrace(baseline_traces[w.name], retrace, spans,
+                                           [cuts[s] for s in spans])
                 if not rep_check.ok:
                     raise NotReplayable("; ".join(rep_check.reasons))
+                pending_cuts[w.name] = cuts
 
             self.tracer.uninstall()
             e2e = run_e2e(
@@ -836,6 +841,7 @@ class JobRunner:
                 unwind()
                 return False
             self.installed.update(pending_installed)
+            self.cuts.update(pending_cuts)
             self.log.append("shipped", fingerprint=region.fingerprint, kernel=kernel.kernel_id)
             return True
         except Exception as e:
@@ -869,9 +875,20 @@ class JobRunner:
 
         shipped_regions: list[Region] = []
         for region in ranked:
-            if any(covered_by(region, s) for s in shipped_regions):
+            free = free_members(region, shipped_regions)
+            if not free:
                 self.log.append("region_covered", fingerprint=region.fingerprint)
                 continue
+            if len(free) < region.copies:
+                # a shipped bigger cut owns the other copies; this region goes
+                # on at the copies still free, priced at that count
+                self.log.append("region_trimmed", fingerprint=region.fingerprint,
+                                copies_before=region.copies, copies_free=len(free))
+                region.members = free
+                for w in region.workloads:
+                    n = sum(m.workload == w for m in free)
+                    region.t_orig_ms[w] = region.t_rep_ms.get(w, 0.0) * n
+                    region.p[w] = region.p_rep.get(w, 0.0) * n
             roof = region.roofline
             self.log.append(
                 "region_open", fingerprint=region.fingerprint, ops=list(region.ops),
@@ -931,6 +948,7 @@ class JobRunner:
                             speedup=self.report.step_ms[w.name]["speedup"],
                             stability=round(comp.stability, 3))
 
+        self._final_check()
         self.report.constants = {
             "min_win_ms": MIN_WIN_MS, "budget_per_region": self.manifest.budget_per_region,
             "budget_total": self.manifest.budget_total, "seed": self.manifest.seed,
@@ -940,14 +958,40 @@ class JobRunner:
         self.report.write(self.work_dir / "report.json")
         return self.report
 
-    def emit_artifact(self, out_dir: str | Path) -> Path:
-        from .artifact.emit import emit_artifact
+    def _final_check(self) -> None:
+        """The spec's last end-to-end check over every workload once the
+        regions are done: the patched model as a whole, not one ship at a
+        time, against the untouched model."""
+        if not self.installed:
+            return
+        final = run_e2e(
+            self.session, self.baseline_model, self.model,
+            workloads=[(w.name, self.tensors[w.name]) for w in self.manifest.workloads],
+            veto_pairs=8,
+        )
+        self.final_ok = final.passed
+        self.report.final = {"passed": final.passed, "veto_passed": final.veto_passed,
+                             "checks": [c.__dict__ for c in final.checks]}
+        self.log.append("final_e2e", passed=final.passed, veto_passed=final.veto_passed,
+                        checks=self.report.final["checks"])
 
+    def emit_artifact(self, out_dir: str | Path) -> Path:
+        """Write the artifact, then load it onto a fresh build() in a fresh
+        process and check it reproduces the patched model."""
+        if not self.final_ok:
+            raise RuntimeError("the final whole-model check failed; no artifact is written "
+                               "for a patched model that does not match the original")
         specs: dict[str, KernelSpec] = {}
         for path in self.emitted:
             wrapper = _resolve(self.model, path)
             specs.update(getattr(wrapper, "_specs", {}))
-        return emit_artifact(out_dir, list(specs.values()), list(self.emitted.values()), self.report)
+        out = emit_artifact(out_dir, list(specs.values()), list(self.emitted.values()), self.report)
+        if self.installed:
+            first = self.manifest.workloads[0].name
+            tensors = self.tensors[first]
+            check_apply(out, self.manifest.model_path, tensors, flatten_outputs(self.model(*tensors)))
+            self.log.append("artifact_checked", artifact=str(out), workload=first)
+        return out
 
 
 def _safe(path: str) -> str:

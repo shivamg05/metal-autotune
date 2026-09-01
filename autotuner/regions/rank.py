@@ -45,15 +45,19 @@ def overlaps(a: Region, b: Region) -> bool:
     return False
 
 
-def covered_by(candidate: Region, shipped: Region) -> bool:
-    """Every member of candidate lies inside some member span of shipped, in
-    the same workload: the bigger shipped cut already owns those ops."""
-    for mc in candidate.members:
-        inside = any(
+def free_members(candidate: Region, shipped: list[Region]) -> list:
+    """The candidate's copies that no shipped cut already owns: a copy
+    inside a shipped span belongs to the bigger kernel now."""
+    return [
+        mc for mc in candidate.members
+        if not any(
             ms.workload == mc.workload
             and ms.start_seq <= mc.start_seq and mc.end_seq <= ms.end_seq
-            for ms in shipped.members
+            for s in shipped for ms in s.members
         )
-        if not inside:
-            return False
-    return True
+    ]
+
+
+def covered_by(candidate: Region, shipped: Region) -> bool:
+    """Every member of candidate lies inside some member span of shipped."""
+    return not free_members(candidate, [shipped])
