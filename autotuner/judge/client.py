@@ -59,12 +59,16 @@ _ITEM_SCHEMA = """item: {"id": str, "kind": short label in your own words (menu 
 An id is letters, digits, and underscores only: it becomes part of a kernel name.
 No other item keys exist."""
 
+_LESSON = """optional "lesson": one sentence, under 400 characters, that this region taught and
+later regions of this job should know (a numerics rule a gate enforced, a layout that
+paid); it is shown with every later call as lessons."""
+
 _SEED_SCHEMA = f"""Response schema (seed):
-{{"queue": [item, ...]}}
+{{"queue": [item, ...], {_LESSON}}}
 {_ITEM_SCHEMA}"""
 
 _NEXT_SCHEMA = f"""Response schema (next):
-{{"mutations": [mutation, ...], "kernel": proposal or null}}
+{{"mutations": [mutation, ...], "kernel": proposal or null, {_LESSON}}}
 mutation: {{"op": "insert", "item": item, optional "before": queued id}}
         | {{"op": "delete", "id": queued id}}
         | {{"op": "reorder", "order": [every queued id, new order]}}
@@ -87,7 +91,12 @@ The verdict you are sent is for the last kernel you wrote; mutate the queue in
 reply to it first (insert a fix, drop a dead family, reorder), then write for
 the item that is front and ready after those mutations. item_id names it when
 it is not the item in writing_for.
-Return "kernel": null to yield when you have nothing left to propose."""
+A yield ("kernel": null) is refused while the region's budget lasts: the harness
+asks again with the reason in the verdict as plan_refused, and after that one free
+re-ask every reply with nothing to evaluate costs an attempt, the same as a plan
+edit the queue refuses or a kernel for an item that is not ready. budget in
+region_state says how many attempts remain; spend them all: a correct kernel is
+never wasted, and a different family is always worth a try."""
 
 
 class JsonJudge:

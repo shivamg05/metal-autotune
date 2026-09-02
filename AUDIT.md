@@ -365,3 +365,93 @@ names, in this order.
       baseline (done as a manifest choice, compiled by default; the measured
       choice remains), the reordered-math whole-model check, re-pricing after a
       close.
+
+# Audit, 2026-09-02 evening
+
+The problem list from the 13:54 run (work-2026-09-02-1354-est: 68 minutes, 0 of
+7 regions shipped, 31 attempts), checked against the code and against the
+model itself. Ranked by how directly each stopped a first win; all fixed on the
+refactor branch unless marked.
+
+1. **Every fusion the cutter found died at delivery.** The cutter did its job:
+   the 82 candidates held norm + QKV (+ rope), residual add + norm + projection,
+   projection + residual + next norm, K + V, and gate + up, the fusions an
+   engineer would write by hand. 67 of them stranded with one reason, the
+   KV-cache write inside the attention block: the wrapper replays a whole
+   module, and no module above a leaf could be replayed. What survived was
+   single ops MLX already runs at the wire, so the judge spent 31 attempts
+   proving that. Fixed: a call on an object that holds model state records as
+   one opaque state call and the wrapper replays it by calling the same method
+   on the same object (plan 5.2). On the same model 66 of 73 candidates now
+   have a certified scope; the seven left have no starting kernel (attention
+   itself, dequantize, slice reads).
+2. **The clock judged small kernels on Python, not on the GPU.** The kernel
+   call site re-evaluated its launch grammar on every call: 4.9 us of CPU per
+   call against 0.3 us for a library op, and the chained loop builds every
+   pass inside the timed span, so a kernel whose GPU time was 3.7 us read 7.8
+   (spike 13). Every rope and norm attempt lost on that. Fixed: the launch is
+   evaluated once per call signature; 1.8 us now.
+3. **Regions closed with budget left, for reasons that measured nothing.** Six
+   stale attempts, eight-strike family abandonment, three roofline rules, a
+   yield taken as the end, and a batch of plan edits refused as a whole when
+   the judge deleted a parent before its dependents (two regions closed after
+   two attempts each, the kernel written in that reply thrown away, the judge
+   never told). Fixed, by maintainer decision: a region closes only when its
+   budget or the job's is spent; a yield is refused while budget lasts and
+   after one free re-ask every empty reply costs an attempt; plan edits land
+   as one batch or not at all, and a refused batch is re-asked with the reason.
+4. **The judge had no memory to speak of.** It saw the last verdict and a
+   handful of kernels, nothing across regions, and rediscovered in three
+   regions that a hand-written 4-bit matvec fails the scaled-up regime unless
+   it matches the library's summation order. Fixed: every call carries the
+   region's full attempt history, the closed regions' outcomes, and lessons the
+   judge writes for later regions of the job.
+5. **The operator guide carried one run's numbers.** Fixed; the ledgers keep
+   them.
+
+Left alone, on purpose: the 1.2x headroom gate at pricing, the 20x watchdog,
+the rule-based enumeration (it found the right cuts), and the busy-GPU refusal
+(the machine spent this evening with another process holding the GPU at 100%,
+which the gate correctly names).
+
+## The real impact
+
+Baseten's 42% on Qwen-Image is a diffusion model on an NVIDIA B300 with FP8
+scale prepacking, norm + quantization fusion, and a guidance cache; the same
+team's LLM result is 5.5%. On MLX, every published hand kernel ties the library
+on norms, loses on attention by 2 to 33x, and the one small-decoder decode
+number in the literature is 1 to 8%. Our own accounting agrees: the 4-bit step
+streams 335 MB of weights in about 3.5 ms of a 5.4 ms step, and a dependent
+tiny launch costs about 1.5 us of GPU time, so the whole prize on this
+workload is collapsing the 19 launches per layer into a few, roughly 10% of the
+step. Before this evening the harness could reach none of that: the fusions
+were cut and then stranded, and the clock handicapped whatever did get
+through. Now every one of them is deliverable, the naive starting kernels for
+them build and sit 4 to 6x from the library, and the judge keeps its budget,
+its history, and its lessons. Whether it can turn a 6x-slower fused
+norm + QKV into a win is the next run's question, and for the first time it is
+a fair one.
+
+## Decisions (open to veto)
+
+- State calls, as above. Scalars the model reads off a state object (the rope
+  offset) stay recorded constants; repeated-call certification is the check.
+- The region closes on budget alone; the spec's closing section says so now.
+- A yield costs an attempt after one free re-ask, so the budget is spent by
+  the judge and never handed back.
+- `family_id` is the judge's own label; the harness counts nothing per family.
+- A reply may carry a one-sentence `lesson`; the job keeps them and every
+  later call shows them.
+
+## The plan
+
+- [x] 1. Plan edits as one batch, refused batches re-asked with the reason.
+- [x] 2. Budget-only closes, yields refused; spec, plan, guides updated.
+- [x] 3. The operator guide general again.
+- [x] 4. The call site evaluates its launch once per signature (spike 13).
+- [x] 5. History, lessons, and closed regions in the briefing.
+- [x] 6. State calls: KV-cache scopes deliverable; fixture and real-model check.
+- [ ] 7. The 4-bit Qwen3 job on a quiet GPU with the live judge.
+- [ ] 8. Starting kernels for attention, dequantize, and slice reads.
+- [ ] 9. Still open from the last audit: re-pricing after a close, the
+      measured baseline choice, the reordered-math whole-model check.

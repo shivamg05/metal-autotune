@@ -11,7 +11,7 @@ import pytest
 
 from autotuner.judge import prompts
 from autotuner.judge.client import AnthropicJudge
-from autotuner.judge.queue import ABANDON_STRIKES, FamilyBook, Queue, QueueError
+from autotuner.judge.queue import Queue, QueueError
 from autotuner.judge.schema import (
     JudgeBabble,
     KernelProposal,
@@ -80,6 +80,19 @@ def test_validate_next_round_trip():
     assert k.output_shapes == (("in0.shape[0]",),)
     assert k.template == (("T", "in0"), ("ACC", "float32"))
     assert k.fallback_predicate == "in0.shape[0] > 64"
+
+
+def test_lesson_is_optional_and_bounded():
+    """A reply may carry one sentence for later regions; it is validated,
+    stripped, and refused when empty or too long."""
+    seed = validate_response({"queue": [witem()], "lesson": "  keep partials in float  "})
+    assert isinstance(seed, SeedResponse) and seed.lesson == "keep partials in float"
+    nxt = validate_response({"mutations": [], "kernel": None, "lesson": "one launch beats three"})
+    assert isinstance(nxt, NextResponse) and nxt.lesson == "one launch beats three"
+    assert validate_response({"mutations": [], "kernel": None}).lesson is None
+    rejects({"mutations": [], "kernel": None, "lesson": ""}, "lesson")
+    rejects({"mutations": [], "kernel": None, "lesson": "x" * 401}, "lesson")
+    rejects({"queue": [witem()], "lesson": 3}, "lesson")
 
 
 def test_validate_next_yield():
@@ -246,62 +259,6 @@ def test_mutation_errors():
     assert q.ids() == ("h1", "h2")              # failed batch left the queue intact
 
 
-# ---------------------------------------------------------------- families
-
-
-def test_family_inheritance():
-    book = FamilyBook()
-    book.register_scaffold("scaffold")
-    f1 = book.resolve(item("h1"), "scaffold")
-    assert f1 == "family1"                      # parentless item starts a new family
-    book.register_kernel("k1", f1)
-    assert book.resolve(item("h2"), "k1") == "family1"   # inherits the parent kernel's
-    assert book.resolve(item("h3", family_id="split-k"), "k1") == "split-k"  # declared wins
-    assert book.resolve(item("h4"), "scaffold") == "family2"  # a second fresh family
-
-
-def test_eight_strikes_trips_on_eighth():
-    book = FamilyBook()
-    fam = book.resolve(item("h1"), "scaffold")
-    for _ in range(ABANDON_STRIKES - 1):
-        book.record_verdict(fam, "correct_slower")
-    assert not book.tripped(fam)
-    book.record_verdict(fam, "correct_slower")
-    assert book.tripped(fam)                    # the 8th correct-but-slower
-    assert book.climbing == fam
-    book.abandon(fam)
-    assert book.abandoned(fam)
-    assert book.climbing is None
-
-
-def test_strikes_reset_on_ship_and_beaten_family_never_trips():
-    book = FamilyBook()
-    fam = book.resolve(item("h1"), "scaffold")
-    for _ in range(5):
-        book.record_verdict(fam, "correct_slower")
-    book.record_verdict(fam, "tentative_ship")
-    assert book.state()[fam] == {"strikes": 0, "beaten_library": True, "abandoned": False}
-    for _ in range(ABANDON_STRIKES):
-        book.record_verdict(fam, "correct_slower")
-    assert not book.tripped(fam)                # it beat the library once; never abandoned
-    book.record_verdict(fam, "rolled_back")     # rollback moves no counter
-    assert book.state()[fam]["strikes"] == ABANDON_STRIKES
-
-
-def test_climbing_tracks_last_slow_family():
-    book = FamilyBook()
-    fa = book.resolve(item("h1", family_id="one-pass"), "scaffold")
-    fb = book.resolve(item("h2", family_id="two-pass"), "scaffold")
-    book.record_verdict(fa, "correct_slower")
-    assert book.climbing == "one-pass"
-    book.record_verdict(fb, "correct_slower")
-    assert book.climbing == "two-pass"
-    book.record_verdict(fa, "failed")           # a fail does not move the climb
-    assert book.climbing == "two-pass"
-    book.record_verdict(fb, "shipped")
-    assert book.climbing is None
-
-
 # ---------------------------------------------------------------- prompts
 
 
@@ -326,11 +283,6 @@ def fixed_state():
     }
     ops = [{"op": "mx.exp", "args": ["in0"], "kwargs": {}, "outputs": ["t3"]},
            {"op": "mx.sin", "args": ["t3"], "kwargs": {}, "outputs": ["out0"]}]
-    book = FamilyBook()
-    book.register_scaffold("scaffold")
-    fam = book.resolve(item("h1"), "scaffold")
-    book.register_kernel("k1", fam)
-    book.record_verdict(fam, "correct_slower")
     queue = Queue()
     queue.seed([
         item("h2", kind="retile", assoc="changing", hypothesis="tile K, 8 per thread"),
@@ -352,7 +304,15 @@ def fixed_state():
                    "hypothesis": "tile K, 8 per thread"}
     return dict(region=region, io_specs=io_specs, ops=ops, kernels=kernels,
                 head="k1", shipped=None, head_ms=0.625, shipped_ms=None,
-                assoc_tag="preserving", families=book, queue=queue,
+                assoc_tag="preserving", queue=queue,
+                budget={"attempts_left_region": 3, "attempts_left_job": 20},
+                history=[{"id": "h1", "kind": "on-chip", "hypothesis": "registers",
+                          "parent": "scaffold", "verdict": "correct_slower",
+                          "summary": "correct_slower: 0.6250 ms vs library 0.5000 ms per copy"}],
+                lessons=[{"region": "fp-exp-s", "ops": ["mx.exp", "mx.sin"],
+                          "lesson": "precise:: transcendentals reproduce the library's bits"}],
+                regions_done=[{"ops": ["mx.tanh"], "copies": 4, "attempts": 6,
+                               "shipped": "nothing", "close": "the region's hypothesis budget is spent"}],
                 last_verdict=last_verdict, writing_for=writing_for)
 
 
@@ -383,10 +343,9 @@ def test_prompt_snapshot():
     assert rendered["head"] == "k1" and rendered["shipped"] is None
     assert rendered["kernels"] == state["kernels"]
     assert rendered["family"] == "assoc-preserving"
-    assert rendered["families"] == {
-        "per_family": {"family1": {"strikes": 1, "beaten_library": False, "abandoned": False}},
-        "climbing": "family1",
-    }
+    assert rendered["budget"] == {"attempts_left_region": 3, "attempts_left_job": 20}
+    assert rendered["history"] == state["history"] and rendered["lessons"] == state["lessons"]
+    assert rendered["regions_done"] == state["regions_done"]
     assert rendered["last_verdict"] == state["last_verdict"]
     assert rendered["writing_for"] == state["writing_for"]
     assert [q["id"] for q in rendered["queue"]] == ["h2", "h3"]
@@ -398,7 +357,8 @@ def test_prompt_snapshot():
     assert "ceil_div" in rendered["launch_grammar"] and "in0" in rendered["launch_grammar"]
     assert "out0" in rendered["body"] and "tmp0" in rendered["body"]
     for key in ("p", "T_orig_ms", "T_rep_ms", "roofline_ms", "s_max", "head_ms",
-                "shipped_ms", "library_ms", "win_ms", "sigma_ms", "bound", "writing_for"):
+                "shipped_ms", "library_ms", "win_ms", "sigma_ms", "bound", "writing_for",
+                "budget", "plan_refused", "history", "lessons", "regions_done"):
         assert key in rendered["legend"]
 
 
@@ -408,7 +368,8 @@ def test_prompt_is_structurally_sealed():
     params = inspect.signature(prompts.render_region_state).parameters
     assert set(params) == {"region", "io_specs", "ops", "kernels", "head", "shipped",
                            "head_ms", "shipped_ms", "head_floor_ms", "shipped_floor_ms",
-                           "assoc_tag", "families", "queue", "last_verdict", "writing_for", "chip"}
+                           "assoc_tag", "queue", "last_verdict", "writing_for", "chip", "budget",
+                           "history", "lessons", "regions_done"}
     assert all(p.kind is inspect.Parameter.KEYWORD_ONLY for p in params.values())
 
 
@@ -454,10 +415,11 @@ def test_scripted_winning_round_trip():
     q.record_verdict("h1", "shipped")
     second = judge.next(meta, {"hypothesis_id": "h1", "outcome": "shipped"})
     assert second.kernel is None and second.mutations == ()
-    assert q.empty                              # the judge yielded; close by empty queue
+    assert q.empty
+    assert judge.next(meta, None).kernel is None   # out of script: it keeps yielding
     with pytest.raises(ScriptExhausted):
-        judge.next(meta, None)
-    assert [call[0] for call in judge.seen] == ["seed", "next", "next", "next"]
+        judge.seed(meta)                            # a seed cannot be improvised
+    assert [call[0] for call in judge.seen] == ["seed", "next", "next", "next", "seed"]
 
 
 def test_scripted_fix_flow():
@@ -629,7 +591,7 @@ def test_parser_exhaustion_is_rejected_not_fatal():
 
 def test_delete_that_strands_dependents_is_rejected():
     """Deleting an item that queued items depend on would leave them
-    unsatisfiable forever with a false close reason."""
+    unsatisfiable forever."""
     from autotuner.judge.schema import DeleteItem
 
     q = Queue()
@@ -637,6 +599,31 @@ def test_delete_that_strands_dependents_is_rejected():
     with pytest.raises(QueueError, match="strand"):
         q.apply_mutations([DeleteItem(item_id="a")])
     assert q.ids() == ("a", "b")
+
+
+def test_a_batch_lands_whole_or_not_at_all():
+    """The 13:54 Qwen run lost two regions to this: the judge deleted a
+    parent before its dependents in one reply, the first delete was refused
+    against the live queue, and the kernel written in that reply was thrown
+    away. A batch is judged by the queue it leaves behind, in either order,
+    and a batch that fails on its last edit changes nothing."""
+    from autotuner.judge.schema import DeleteItem, InsertItem
+
+    for order in (("a", "b"), ("b", "a")):
+        q = Queue()
+        q.seed([_plain_item("a"), _plain_item("b", depends_on="a", condition="correct")])
+        q.apply_mutations([DeleteItem(item_id=i) for i in order] + [InsertItem(item=_plain_item("c"))])
+        assert q.ids() == ("c",)
+    q = Queue()
+    q.seed([_plain_item("a"), _plain_item("b")])
+    with pytest.raises(QueueError, match="no such queued item"):
+        q.apply_mutations([DeleteItem(item_id="a"), InsertItem(item=_plain_item("c")),
+                           DeleteItem(item_id="zzz")])
+    assert q.ids() == ("a", "b")
+    # a dependency on an item inserted later in the same batch is fine
+    q.apply_mutations([InsertItem(item=_plain_item("d", depends_on="e", condition="failed")),
+                       InsertItem(item=_plain_item("e"))])
+    assert q.ids() == ("a", "b", "d", "e")
 
 
 def test_client_transcript_records_every_ask_and_reply(tmp_path):

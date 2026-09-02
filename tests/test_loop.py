@@ -108,15 +108,15 @@ def test_planted_win_job_ships(tmp_path):
     for meta in next_payloads:
         assert meta["head"] in meta["kernels"]
         assert "source" in meta["kernels"][meta["head"]]
-        assert "queue" in meta and "verdicts" in meta and "families" in meta
+        assert "queue" in meta and "verdicts" in meta and "budget" in meta
+        assert "history" in meta and "lessons" in meta and "regions_done" in meta
         assert meta["launch_grammar"] and meta["menu"] and meta["laws"] and meta["legend"]
-    # writing_for names the front ready item; it is null on the call that hears
-    # the last verdict with nothing left queued, where the judge may only yield.
-    # One launch over the chain's bytes is the floor itself, so the shipped
-    # kernel usually closes the region by the roofline rule with no further call
+    # writing_for names the front ready item and is null once nothing is
+    # queued; the judge's yields are refused until the region's budget is spent
     assert [m["writing_for"]["id"] for m in next_payloads if m["writing_for"]] == ["h1"]
-    closes = [r.get("close") or r.get("close_rule") or "" for r in report.regions if r.get("s")]
-    assert next_payloads[-1]["writing_for"] is None or any("roofline" in c for c in closes), closes
+    assert next_payloads[-1]["writing_for"] is None
+    closes = [r.get("close_rule") or "" for r in report.regions if r.get("s")]
+    assert closes and all("budget is spent" in c for c in closes), closes
 
     shipped = [r for r in report.regions if r.get("s")]
     assert shipped, f"nothing shipped; regions: {report.regions}"
@@ -224,37 +224,6 @@ def only_the_chain(monkeypatch):
                         lambda regions, **k: [r for r in regions if len(r.ops) == 8])
 
 
-def test_a_library_at_its_floor_closes_the_region_at_open(tmp_path, monkeypatch):
-    """When a region opens, the sandbox clocks the library beside its floor
-    probe, in one window. Pricing's headroom is minutes old on a machine
-    whose speed moves; a library within 1.2x of its floor closes the region
-    before any plan is asked for, whatever pricing said."""
-    import autotuner.loop as loop_mod
-    from autotuner.ladder.gates import LadderResult
-
-    only_the_chain(monkeypatch)
-    monkeypatch.setattr(loop_mod, "run_ladder", lambda job: LadderResult(
-        "correct_slower", None, {}, 1.0, 1.0, 0.0, 0.0, ["static", "compile"], floor_ms=0.95))
-    asked = []
-
-    class Judge:
-        def seed(self, meta):
-            asked.append("seed")
-            raise AssertionError("no plan may be asked for")
-
-        def next(self, meta, verdict):
-            asked.append("next")
-            raise AssertionError("no plan may be asked for")
-
-    manifest = write_manifest(tmp_path, "planted_win.py", (64, 1024))
-    runner = JobRunner(manifest, tmp_path / "work", judge_factory=lambda region: Judge(),
-                       refuse_degraded=False, session=Session(sleep=lambda s: None))
-    report = runner.run()
-    closes = [r.get("close") or r.get("close_rule") or "" for r in report.regions]
-    assert closes and all(c.startswith("no headroom at open") for c in closes), closes
-    assert not asked
-
-
 def test_judge_transport_error_costs_region_not_job(tmp_path, monkeypatch):
     """A transport failure (CLI exit, timeout) closes the region with a named
     reason and the job completes."""
@@ -266,9 +235,6 @@ def test_judge_transport_error_costs_region_not_job(tmp_path, monkeypatch):
             raise RuntimeError("unreachable")
 
     only_the_chain(monkeypatch)
-    # the region must reach the judge: on a model this small the roofline
-    # rule can close it first, since its threshold is 1% of the whole step
-    monkeypatch.setattr(JobRunner, "_roofline_rule", lambda self, run: None)
     manifest = write_manifest(tmp_path, "planted_win.py", (64, 1024))
     runner = JobRunner(manifest, tmp_path / "work",
                        judge_factory=lambda region: DeadTransport(),
@@ -286,7 +252,6 @@ def test_failed_first_item_lets_the_judge_insert_a_fix(tmp_path, monkeypatch):
     writes it in the same reply. The old cycle popped first and closed the
     region with the plan untouched."""
     only_the_chain(monkeypatch)
-    monkeypatch.setattr(JobRunner, "_roofline_rule", lambda self, run: None)  # as above
     broken = FUSED_CHAIN_SOURCE.replace("out0[i] =", "out0[i] = this_is_not_metal +")
     calls = []
 
@@ -344,9 +309,12 @@ def test_failed_first_item_lets_the_judge_insert_a_fix(tmp_path, monkeypatch):
     second_writing_for, second_verdict = calls[1]
     assert second_verdict["hypothesis_id"] == "h1" and second_verdict["failed_gate"] == "compile"
     assert second_writing_for is None
-    # h2 still waits on h1 succeeding, so the judge's yield closes the region
-    # with h2 named as the item left waiting, after the fix ran
-    assert "h2" in chain["close_rule"], chain["close_rule"]
+    # h2 still waits on h1 succeeding and the judge has nothing more; its
+    # yields are refused until the region's budget is spent, which is the
+    # only way a region closes
+    assert "budget is spent" in chain["close_rule"], chain["close_rule"]
+    refused = [r for r in runner.log.rows() if r["kind"] == "plan_refused"]
+    assert refused and "yield" in refused[0]["reason"]
 
 
 def test_job_refuses_a_machine_that_cannot_measure(tmp_path, monkeypatch):

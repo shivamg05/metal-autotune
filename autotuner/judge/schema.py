@@ -42,15 +42,13 @@ class JudgeBabble(RuntimeError):
 
 @dataclass(frozen=True)
 class QueueItem:
-    """One hypothesis: English, not Metal. Family rule: an item without
-    family_id inherits its parent kernel's family at execution time, and an
-    item whose parent has no family (the scaffold) starts a new one."""
+    """One hypothesis: English, not Metal."""
 
     id: str
     kind: str                      # a short label for the move, in the judge's words
     assoc_tag: str                 # preserving | changing
     hypothesis: str                # English, not Metal
-    family_id: str | None = None
+    family_id: str | None = None   # the judge's own grouping label; the harness reads nothing into it
     depends_on: str | None = None  # an earlier item's id
     condition: str | None = None   # correct | shipped | failed; paired with depends_on
 
@@ -94,12 +92,14 @@ Mutation = InsertItem | DeleteItem | ReorderItems
 @dataclass(frozen=True)
 class SeedResponse:
     queue: tuple[QueueItem, ...]
+    lesson: str | None = None      # one sentence for later regions of this job
 
 
 @dataclass(frozen=True)
 class NextResponse:
     mutations: tuple[Mutation, ...]
-    kernel: KernelProposal | None  # None yields: nothing left to propose
+    kernel: KernelProposal | None  # None yields; refused while the budget lasts
+    lesson: str | None = None
 
 
 def validate_response(obj: object) -> SeedResponse | NextResponse:
@@ -107,19 +107,35 @@ def validate_response(obj: object) -> SeedResponse | NextResponse:
     is {"mutations": [...], "kernel": {...}|null}. Anything else is rejected."""
     if not isinstance(obj, dict):
         raise MalformedResponse(f"response must be a JSON object, got {type(obj).__name__}")
-    keys = set(obj)
+    lesson = _lesson(obj)
+    keys = set(obj) - {"lesson"}
     if "queue" in keys:
         if keys != {"queue"}:
             raise MalformedResponse(f"a seed response has exactly the key 'queue', got {sorted(keys)}")
-        return SeedResponse(queue=_seed_queue(obj["queue"]))
+        return SeedResponse(queue=_seed_queue(obj["queue"]), lesson=lesson)
     if keys == {"mutations", "kernel"}:
         return NextResponse(
             mutations=_mutations(obj["mutations"]),
             kernel=None if obj["kernel"] is None else _proposal(obj["kernel"]),
+            lesson=lesson,
         )
     raise MalformedResponse(
-        f"response keys must be ['queue'] or ['kernel', 'mutations'], got {sorted(keys)}"
+        f"response keys must be ['queue'] or ['kernel', 'mutations'], plus an optional "
+        f"'lesson', got {sorted(keys)}"
     )
+
+
+LESSON_MAX_CHARS = 400
+
+
+def _lesson(obj: dict) -> str | None:
+    lesson = obj.get("lesson")
+    if lesson is None:
+        return None
+    if not isinstance(lesson, str) or not lesson.strip() or len(lesson) > LESSON_MAX_CHARS:
+        raise MalformedResponse(
+            f"lesson must be a non-empty string of at most {LESSON_MAX_CHARS} characters")
+    return lesson.strip()
 
 
 def _seed_queue(obj: object) -> tuple[QueueItem, ...]:

@@ -59,7 +59,10 @@ the request files alone, never from the repo or work dir; the harness decides
 correctness and speed, never you. You plan a hypothesis queue in English, each
 idea labelled with a kind in your own words, and write Metal only for the front
 ready item, one small edit of a named parent at a time. The laws in the briefing
-are the only limits; worked examples come with every request. Return `"kernel": null` to yield when out of ideas. `DESIGN_SPEC.html`
+are the only limits; worked examples come with every request. A yield
+(`"kernel": null`) is refused while the region's budget lasts: the harness asks
+again, and after one free re-ask every reply with nothing to evaluate costs an
+attempt, so spend the budget on kernels. `DESIGN_SPEC.html`
 describes the judge's job; `autotuner/judge/schema.py` defines every reply
 field and `autotuner/judge/prompts.py` every briefing field. The
 request files remain afterward, so a reviewer can audit what the judge was

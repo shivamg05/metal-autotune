@@ -15,7 +15,7 @@ from typing import Mapping, Sequence
 from autotuner_runtime import grammar
 
 from ..regions.types import Region
-from .queue import FamilyBook, Queue
+from .queue import Queue
 from .examples import MOVES
 from .schema import ASSOC_TAGS, SUGGESTED_KINDS
 
@@ -72,6 +72,16 @@ LEGEND = {
     "win_ms": "library_ms minus the kernel's time; a ship needs a win past the margin",
     "sigma_ms": "uncertainty of win_ms",
     "writing_for": "the queue item your kernel is for; after your mutations it must be the front ready item",
+    "budget": "attempts left for this region and for the whole job; a yield is refused while any remain, "
+              "and after one free re-ask every reply with nothing to evaluate costs an attempt",
+    "history": "every attempt on this region so far, in order, each with its one-line outcome; the "
+               "sources you may edit are in kernels",
+    "lessons": "what you wrote down for later regions of this job, oldest first; write one (the "
+               "optional lesson field of a reply) when a verdict taught something the next region "
+               "should know",
+    "regions_done": "the regions this job already closed: what shipped there and how many attempts it took",
+    "plan_refused": "in a verdict: your last reply was refused for this reason and nothing was evaluated; "
+                    "the rest of the verdict is unchanged from the call before",
     "chip": "this machine: gpu_cores, bandwidth_gbps (bytes the whole chip moves per second), "
             "launch_us (one kernel launch), flops_gflops per dtype. A threadgroup runs on one core "
             "and gets one core's share of the bandwidth, so a launch needs threadgroups across every "
@@ -92,13 +102,16 @@ def render_region_state(
     head_ms: float | None,
     shipped_ms: float | None,
     assoc_tag: str,
-    families: FamilyBook,
     queue: Queue,
     last_verdict: Mapping | None,
     writing_for: Mapping | None,
     chip: Mapping | None = None,
     head_floor_ms: float | None = None,
     shipped_floor_ms: float | None = None,
+    budget: Mapping | None = None,
+    history: Sequence[Mapping] = (),
+    lessons: Sequence[Mapping] = (),
+    regions_done: Sequence[Mapping] = (),
 ) -> dict:
     """The one prompt contract, rendered per call. io_specs maps workload ->
     {"inputs": [(shape, dtype)], "outputs": [...]}; ops lists the recorded
@@ -137,7 +150,10 @@ def render_region_state(
         "shipped": shipped,
         "kernels": {k: dict(v) for k, v in kernels.items()},
         "family": f"assoc-{assoc_tag}",
-        "families": {"per_family": families.state(), "climbing": families.climbing},
+        "budget": dict(budget or {}),
+        "history": [dict(h) for h in history],
+        "lessons": [dict(l) for l in lessons],
+        "regions_done": [dict(r) for r in regions_done],
         "last_verdict": dict(last_verdict) if last_verdict is not None else None,
         "queue": list(queue.snapshot()),
         "verdicts": queue.verdicts,

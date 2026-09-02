@@ -54,6 +54,28 @@ for (uint c = 0; c < n; ++c) { acc += in0[r * n + c]; }
 out0[r] = acc;
 """
 
+_SPLIT_K = """\
+uint col = thread_position_in_grid.x / 8u;
+uint part = thread_position_in_grid.x % 8u;
+uint n = (uint)in0_shape[1];
+uint slab = n / 8u;
+float ss = 0.0f;
+for (uint k = 0; k < n; ++k) { float v = in0[k]; ss += v * v; }
+float inv = metal::precise::rsqrt(ss / float(n) + 1e-6f);
+float acc = 0.0f;
+for (uint k = part * slab; k < (part + 1u) * slab; ++k) {
+    acc += float(in0[k]) * inv * float(in1[k]) * float(in2[k * (uint)in2_shape[1] + col]);
+}
+threadgroup float partial[256];
+partial[thread_position_in_threadgroup.x] = acc;
+threadgroup_barrier(mem_flags::mem_threadgroup);
+if (part == 0) {
+    float total = 0.0f;
+    for (uint p = 0; p < 8u; ++p) total += partial[thread_position_in_threadgroup.x + p];
+    out0[col] = total;
+}
+"""
+
 SEED_EXAMPLES = [
     {
         "title": "seed: a norm feeding a projection, bound by memory",
@@ -142,16 +164,40 @@ NEXT_EXAMPLES = [
         },
     },
     {
-        "title": "next: a family that keeps losing is dropped, and nothing else is worth writing",
+        "title": "next: a family that keeps losing is dropped and a different one takes its turn",
         "state": {
+            "region": {"ops": ["mx.fast.rms_norm", "array.__matmul__"],
+                       "io": {"decode": {"inputs": [[[1, 1024], "float16"], [[1024], "float16"],
+                                                    [[1024, 3072], "float16"]],
+                                         "outputs": [[[1, 3072], "float16"]]}},
+                       "bound": "memory"},
             "verdict": {"kernel": "h3", "outcome": "correct_slower", "region_ms": 0.093,
                         "library_ms": 0.081, "shipped_ms": 0.070},
             "queue": [{"id": "h4", "kind": "launch", "family_id": "stream_w",
                        "hypothesis": "sixteen columns per thread"}],
-            "note": "h2 and h3 both lost to the shipped kernel; the family's next step "
-                    "would move the same knob again",
+            "budget": {"attempts_left_region": 9, "attempts_left_job": 40},
+            "note": "h2 and h3 both lost to the shipped kernel and h4 would move the same "
+                    "knob again; nine attempts remain, so a new family opens",
         },
-        "reply": {"mutations": [{"op": "delete", "id": "h4"}], "kernel": None},
+        "reply": {
+            "mutations": [
+                {"op": "delete", "id": "h4"},
+                {"op": "insert", "item": {
+                    "id": "h5", "kind": "split-K across simdgroups", "assoc_tag": "changing",
+                    "family_id": "split_k",
+                    "hypothesis": "one threadgroup per 32 output columns, each of its 8 SIMD groups "
+                                  "owns an eighth of K for every column and the partials tree-reduce "
+                                  "in threadgroup memory; the accumulation order changes"}},
+            ],
+            "kernel": {
+                "source": _SPLIT_K, "parent_kernel_id": "shipped", "item_id": "h5",
+                "grid": ["in2.shape[1] * 8", "1", "1"],
+                "threadgroup": ["256", "1", "1"],
+                "output_shapes": [["in0.shape[0]", "in2.shape[1]"]],
+            },
+            "lesson": "on this chip a 1024-row fp16 projection at batch 1 is at the wire once every "
+                      "weight byte is read once; past that only launch count moves it",
+        },
     },
 ]
 

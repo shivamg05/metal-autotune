@@ -209,14 +209,10 @@ input/output tensor sets, k per workload; Section 5.7).
 
 **Hypothesis / queue item**: `{id, kind, assoc_tag: preserving|changing,
 family_id: str, hypothesis: str, depends_on: id?, condition: correct|shipped|failed}`.
-`family_id` names the algorithm family the item belongs to (one-pass vs two-pass
-attention, split-K, ...); the judge declares it. When omitted, an item inherits its
-parent kernel's family, and a parentless item starts a new family, so unrelated
-hypotheses are never lumped into one family's counters. The harness keeps the 8-strike
-abandonment counter and climb state per `family_id`; head and shipped remain the spec's
-two per-region bookmarks (never per-family), and abandoning a family resets head to the
-scaffold or the last shipped kernel, exactly as the spec says. Only the front ready
-item is ever turned into Metal.
+`family_id` is the judge's own label for the algorithm family an item belongs to
+(one-pass vs two-pass attention, split-K, ...), so it can drop a whole family in one
+batch of deletes; the harness reads nothing into it. Head and shipped are the spec's two
+per-region bookmarks. Only the front ready item is ever turned into Metal.
 
 **KernelAttempt**: `{hypothesis_id, parent_kernel_id, source: str, header: str,
 launch: {grid, threadgroup, template}, fallback_predicate?: str}`. `grid`,
@@ -361,11 +357,26 @@ Mechanics:
   scope's own call arguments (a decode step's rope offset varies per call and must
   flow from the argument, not the recorded constant); the generator enforces this and
   certification backstops it.
+- **State calls.** A plain Python object reachable from the model that holds
+  arrays (mlx_lm's KVCache, a namespace of buffers) is a state holder. While
+  recording, its methods are wrapped like module calls: the call runs with
+  recording suppressed and records one opaque node, `state:<Class>.<method>`, with
+  the object's identity and model path. The generated wrapper replays it as the
+  same call on the same object, reached through the scope's call arguments (a
+  cache handed down the tree, found by identity, even inside a list) or through
+  the wrapped module by path, so the cache write and whatever else the method does
+  to its state happen for real, where the recorder could never see them. A state
+  call is a chain barrier, never inside a region, and never replays in process.
+  Scalars the model reads off the object (a rope offset) are recorded as the
+  constants they were, which certification over repeated calls checks. Before this
+  (2026-09-02) every fusion inside an attention block stranded on the KV-cache
+  write: 67 of 82 candidates on the Qwen3 decode job, 66 of 73 viable after.
 - **Static replayability screen** (at region build): a scope qualifies only if its
   recorded stream has no opaque compiled calls ANYWHERE in the scope (the wrapper
   replays the whole scope, and an opaque call has no serializable callable to
   re-invoke), no in-pass evaluation (data-dependent control flow), no
-  `python_retained` productions, scalar args passing the rule above, and one stream
+  `python_retained` productions (a slice write straight into a kept array, not
+  through a method), scalar args passing the rule above, and one stream
   that matches, node for node, everywhere the scope fires: every workload and every
   sweep retrace. A scope whose stream differs anywhere it fires is branchy and fails.
   A region with no qualifying enclosing scope is rejected with reason "no certified
@@ -388,8 +399,9 @@ Mechanics:
   shipping over an inner wrapper retires the inner one and merges its splices into
   the outer wrapper.
 - **What this strands, on purpose.** Regions whose every enclosing scope fails the
-  screen: a region overlapping cache-mutation code, top-level glue inside a stateful
-  decode step, anything under data-dependent control flow at every available scope.
+  screen: a region overlapping a kept array written without a method, top-level
+  glue inside a stateful decode step, anything under data-dependent control flow
+  at every available scope.
   Stranded regions are reported with their p and the failing reason, never silently
   dropped. If real runs show material wins stranded, the known escalation is the
   runtime-interception layer this section replaced (hook the op surface, arm at the
@@ -586,9 +598,10 @@ holds; fall back to naive lowering everywhere else.
 - Anthropic API, model configurable per job (default to a current top-tier model),
   temperature low. All judge I/O is strict JSON validated against `judge/schema.py`;
   a malformed response gets one re-ask, then counts as a failed hypothesis. It
-  consumes hypothesis budget (a babbling judge must exhaust its region, not stall it)
-  but never counts toward the 5-straight compile/static fail streak, which is about
-  kernels on one parent.
+  consumes hypothesis budget (a babbling judge must exhaust its region, not stall it).
+  A reply with nothing to evaluate (a yield, a batch of plan edits the queue refuses,
+  a kernel for an item that is not ready) is handled the same way one level up: the
+  loop asks again once with the reason, then each further one costs an attempt.
 - The judge is stateless per call. Every call re-renders the region's state: shapes,
   dtypes, p, bound, head and shipped distance from roofline, the assoc tag of the
   kernel being edited (the spec's `family: assoc-preserving | assoc-changing` line),
@@ -615,14 +628,9 @@ Spec-fixed:
 |---|---|
 | Watchdog | 20x library region time (raised from 10x by maintainer decision 2026-08-31: correct fused-chain starting kernels sit near 10x, and the gate exists to catch wedged kernels, not honest slowness) |
 | Ship margin | max(1% of the library region time re-measured in this verdict, 3 sigma of the interleaved samples) |
-| Fail-streak close | 5 straight compile/static fails on one parent |
-| Roofline close | shipped within 5% of the floor probe clocked beside it |
-| Diminishing-ships close | 3 ships in a row, each under 2% better than the last |
-| Head-near-roofline close | head minus the floor clocked beside it, all copies counted, under ~1% of the step |
-| Family abandonment | 8 correct-but-slower without ever beating the library |
+| Region close | the region's budget or the job's is spent, nothing else (maintainer decision 2026-09-02: the plateau, streak, roofline, and family rules closed regions the judge would have kept improving, and a yield is refused while budget remains) |
 | Scaffold fix attempts | 1 |
 | Determinism runs at gate 8 | 3 |
-| Stale-hypotheses close | 6 in a row beating shipped by neither 1% of region time nor the minimum absolute win (the "tens of microseconds" term uses the tunable default below) |
 
 Plan defaults (tunable, recorded):
 
@@ -1134,28 +1142,26 @@ outputs.
 ### M9: Judge (`judge/`)
 
 Schema, prompts, scripted judge, real client, the queue mechanics (pop-ready,
-depends_on conditions, mutation after verdicts, per-family_id bookkeeping: the 8-strike
-counter, head reset to scaffold or last shipped on abandonment, family deletion on ship
-as a judge-side queue mutation with harness-side counters).
+depends_on conditions, mutations after verdicts applied as one batch).
 
 Done when: the full hypothesis cycle runs against the scripted judge deterministically
 (seed queue, execute front item, verdict, mutate); prompt rendering is snapshot-tested;
-a malformed LLM response burns one re-ask then one hypothesis, never the run; family
-abandonment triggers on the 8th correct-but-slower and head resets correctly.
+a malformed LLM response burns one re-ask then one hypothesis, never the run; a batch
+of plan edits lands whole or not at all.
 
 ### M10: The region loop (`loop.py`)
 
 Open (scaffold, fix-or-skip), the hypothesis cycle wired to sandbox + ladder + bind
 (including identity certification on the first ship into each scope, with the loop
-owning escalate-to-parent-or-strand when certification fails), close rules, family
-bookkeeping, retrace-after-close with share updates and covered-region dropping
+owning escalate-to-parent-or-strand when certification fails), the budget as the
+one close rule, retrace-after-close with share updates and covered-region dropping
 (through span maps on patched models), budgets, the final e2e plus the sweep-fallback
 pass through the real installed wrappers, full run logging.
 
 Done when: with the scripted judge on the planted-win fixture, the whole job runs
 end to end: finds the region, ships a scripted winning kernel through bind + e2e,
-closes by rule, retraces, and the run log replays the spec's example history shape
-(fail, fix, climb, ship, plateau, close). A second scripted run on the vendor-parity
+closes when its budget is spent, retraces, and the run log replays the spec's
+example history shape (fail, fix, climb, ship, close on budget). A second scripted run on the vendor-parity
 fixture ships nothing and says so.
 
 ### M11: Artifact (`artifact/`)
@@ -1204,7 +1210,7 @@ region:
   p, copies, bound (memory|compute|launch), T_orig per workload
   s_max and the distance of head and shipped from T_roofline
 family: assoc tag of the kernel being edited (assoc-preserving | assoc-changing)
-families: per family_id, climb state and strike count; current family being climbed
+budget: attempts left for the region and for the job
 parent: kernel source + launch expressions being edited, and its verdict
 last_verdict: outcome, failed gate, gate detail (compiler diagnostics with fixed
   line numbers, worst numeric excess, timing samples)

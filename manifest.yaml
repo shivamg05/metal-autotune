@@ -1,4 +1,4 @@
-model: models/qwen3_0.6b_4bit_decode.py   # bf16 decode has 8% room; 4-bit has 27% (RUNNING.md)
+model: models/qwen3_0.6b_4bit_decode.py   # the bf16 model quantized in memory; the model file says why
 workloads:
   - name: decode
     inputs:

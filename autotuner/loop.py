@@ -23,7 +23,7 @@ from .bind.swap import install as swap_install, uninstall as swap_uninstall
 from .bind.verify import verify_retrace
 from .e2e import _flatten_params, run_e2e, share_weights
 from .judge.prompts import render_region_state
-from .judge.queue import FamilyBook, Queue, QueueError
+from .judge.queue import Queue, QueueError
 from .judge.schema import JudgeBabble
 from .ladder.gates import EvalSet, LadderJob, LadderResult, run_ladder
 from .ladder.static_checks import RegionContract
@@ -37,7 +37,7 @@ from .measure.session import Session
 from .regions.build import build_stretches, is_view, weight_like_ids
 from .regions.fingerprint import group_copies
 from .regions.price import PRICE_PAIRS, capture_boundaries, price_region
-from .regions.rank import ROOFLINE_HAS_ROOM, apply_floor, free_members, rank
+from .regions.rank import apply_floor, free_members, rank
 from .regions.roofline import step_floor, stretch_roofline
 from .regions.store import BoundaryStore
 from .regions.types import Region, Stretch
@@ -54,11 +54,6 @@ from autotuner_runtime.kernels import KernelSpec
 
 MIN_WIN_MS = 0.030  # a win must save a few tens of microseconds per step across copies
 CLOCK_PAIRS = 32    # ABBA pairs behind the ship clock and the headline
-STALE_LIMIT = 6
-FAIL_STREAK_LIMIT = 5
-SHIP_ROOFLINE_CLOSE = 1.05
-DIMINISHING_SHIPS = 3
-DIMINISHING_PCT = 0.02
 
 
 @dataclass
@@ -79,9 +74,6 @@ class RegionRun:
     last_kernel: str | None = None    # the kernel the latest verdict was about
     attempts: dict[str, dict] = field(default_factory=dict)  # kernel id -> its verdict
     hypotheses: int = 0
-    stale_streak: int = 0
-    recent_ship_gains: list[float] = field(default_factory=list)
-    fail_streak_by_parent: dict[str, int] = field(default_factory=dict)
     close_rule: str | None = None
     kernels: dict[str, KernelSpec] = field(default_factory=dict)
 
@@ -119,6 +111,7 @@ class JobRunner:
         self.step_ms: dict[str, float] = {}
         self.peaks = None  # measured by measure_machine before any clock
         self.total_hypotheses = 0
+        self.lessons: list[dict] = []  # what the judge wrote down for later regions
         self.installed: dict[str, tuple] = {}  # scope -> (original module, splices, kernels)
         self.cuts: dict[str, dict[tuple[int, int], str]] = {}  # workload -> {span: kernel id}
         self.certified_scopes: set[str] = set()
@@ -579,7 +572,6 @@ class JobRunner:
             if outcome == "shipped":
                 run.shipped, run.shipped_ms, run.shipped_ratio = scaffold, result.region_ms, _ratio(result)
                 run.shipped_floor_ms = result.floor_ms
-                run.recent_ship_gains.append(1.0 - _ratio(result))
         repaired = scaffold is not run.kernels.get(f"r{region.fingerprint[:6]}_scaffold")
         self._record_attempt(
             run, "scafix" if repaired else "scaffold", "fix" if repaired else "scaffold",
@@ -603,7 +595,7 @@ class JobRunner:
         writing_for = {"id": "scafix", "kind": "fix", "assoc_tag": "preserving",
                        "hypothesis": "repair the starting kernel so it passes the checks"}
         try:
-            resp = judge.next(self._meta(run, Queue(), FamilyBook(), writing_for), verdict)
+            resp = judge.next(self._meta(run, Queue(), writing_for), verdict)
         except Exception as e:
             self.log.append("scaffold_fix", fingerprint=region.fingerprint,
                             outcome="judge_error", reason=str(e)[:200])
@@ -626,40 +618,40 @@ class JobRunner:
         return fixed, check
 
     def hypothesis_cycle(self, run: RegionRun, judge) -> None:
-        """One hypothesis at a time. Every call to the judge carries the last
-        verdict and the queue; the judge edits its plan first, then writes
-        Metal for the front ready item; the ladder decides; repeat."""
+        """One hypothesis at a time until the budget is spent. Every call to
+        the judge carries the last verdict and the queue; the judge edits its
+        plan first, then writes Metal for the front ready item; the ladder
+        decides; repeat. A reply with nothing to evaluate (a yield, plan
+        edits the queue refuses, a kernel for an item that is not ready) is
+        asked again once with the reason; each further one costs an attempt,
+        so the budget is spent by the judge and never handed back."""
         region = run.region
-        queue, families = Queue(), FamilyBook()
-        families.register_scaffold(run.scaffold.kernel_id)
-        rule = self._roofline_rule(run)
-        if rule:
-            run.close_rule = rule  # nothing left to gain; no plan is asked for
-            return
-        seed, failure = self._ask_judge(run, "seed",
-                                        lambda: judge.seed(self._meta(run, queue, families, None)))
+        queue = Queue()
+        seed, failure = self._ask_judge(run, "seed", lambda: judge.seed(self._meta(run, queue, None)))
         if seed is None:
             run.close_rule = ("the judge babbled at seed" if failure == "babble"
                               else f"judge unavailable at seed ({failure})")
             return
+        self._note_lesson(run, seed)
         try:
             queue.seed(seed.queue)
         except QueueError as e:
             run.close_rule = f"the judge's seed queue was inconsistent ({e})"
             return
         verdict = None
-        errors = 0  # consecutive transport failures; three close the region
+        errors = 0    # consecutive transport failures; three close the region
+        refused = 0   # consecutive replies with nothing to evaluate
 
         while True:
-            rule = self._close_rule(run, queue, families)
+            rule = self._close_rule(run)
             if rule:
                 run.close_rule = rule
                 return
             front = queue.peek_ready()
             resp, failure = self._ask_judge(run, "next", lambda: judge.next(
-                self._meta(run, queue, families, _item_view(front) if front else None), verdict))
+                self._meta(run, queue, _item_view(front) if front else None), verdict))
+            hyp = front.id if front else "none"
             if resp is None:
-                hyp = front.id if front else "none"
                 if failure == "babble":
                     # a babbling judge burns budget, so it exhausts its region
                     run.hypotheses += 1
@@ -680,26 +672,34 @@ class JobRunner:
                         return
                 continue
             errors = 0
+            self._note_lesson(run, resp)
+            item = None
             try:
                 queue.apply_mutations(resp.mutations)
             except QueueError as e:
-                # a bad plan edit costs the plan edit, never the kernel or the job
-                self.log.append("queue_mutations_rejected", fingerprint=region.fingerprint,
-                                reason=str(e))
-            if resp.kernel is None:
-                if queue.empty:
-                    run.close_rule = "the judge yields (queue empty)"
-                elif queue.peek_ready() is None:
-                    run.close_rule = (f"no queued item is ready after the judge heard the "
-                                      f"verdict ({len(queue)} wait: {', '.join(queue.ids())})")
+                problem = f"your plan edits were refused and none applied: {e}"
+            else:
+                if resp.kernel is None:
+                    problem = (f"a yield is refused while the budget lasts: "
+                               f"{self._attempts_left(run)} attempts remain, propose")
                 else:
-                    run.close_rule = f"the judge yields with {len(queue)} items still queued"
-                return
-            item = queue.pop_ready(resp.kernel.item_id)
+                    item = queue.pop_ready(resp.kernel.item_id)
+                    problem = None if item is not None else (
+                        f"your kernel names no ready item: queued {', '.join(queue.ids()) or 'nothing'}"
+                        f", every one waiting on a verdict that has not come")
             if item is None:
-                run.close_rule = (f"the judge wrote a kernel but no queued item is ready "
-                                  f"({', '.join(queue.ids()) or 'queue empty'})")
-                return
+                self.log.append("plan_refused", fingerprint=region.fingerprint, reason=problem)
+                verdict = {**(verdict or {}), "plan_refused": problem}
+                refused += 1
+                if refused > 1:
+                    # the one free re-ask is spent; every further empty reply costs an attempt
+                    run.hypotheses += 1
+                    self.total_hypotheses += 1
+                    self._record_attempt(run, hyp, front.kind if front else "none",
+                                         front.hypothesis if front else "", None, None, None,
+                                         None, gate="plan_refused", reason=problem)
+                continue
+            refused = 0
 
             run.hypotheses += 1
             self.total_hypotheses += 1
@@ -708,10 +708,6 @@ class JobRunner:
             kernel = self._kernel_from_proposal(run, region, resp.kernel, item.id)
             run.kernels[kernel.kernel_id] = kernel
             write_kernel(self.kernel_dir, kernel)
-            family = families.resolve(item, parent)
-            # a child joins its parent's family; a fresh one would never trip the
-            # eight-strike abandonment rule
-            families.register_kernel(kernel.kernel_id, family)
             if parent_spec is not None:
                 result = run_ladder(self._ladder_job(region, kernel, item.assoc_tag, run_clock=True))
             else:
@@ -722,18 +718,23 @@ class JobRunner:
                     "detail": f"{parent!r} names no kernel of this region; say head, "
                               f"scaffold, shipped, a hypothesis id, or one of {sorted(run.kernels)}"}]},
                     None, None, None, None, [])
-            outcome = self._apply_verdict(run, item, kernel, parent, result)
-            families.record_verdict(family, outcome)
-            if families.tripped(family):
-                families.abandon(family)
-                base = run.shipped or run.scaffold
-                self._set_head(run, base, run.attempts[base.kernel_id],
-                               run.shipped_tag if run.shipped else "preserving")
-                self.log.append("family_abandoned", fingerprint=region.fingerprint, family=family)
+            outcome = self._apply_verdict(run, item, kernel, result)
             queue.record_verdict(item.id, outcome)
             verdict = _verdict_payload(item.id, kernel.kernel_id, outcome, result)
             self._record_attempt(run, item.id, item.kind, item.hypothesis, item.assoc_tag,
                                  kernel, parent, result, outcome=outcome)
+
+    def _note_lesson(self, run: RegionRun, resp) -> None:
+        """A sentence the judge wrote for later regions of this job; every
+        later call carries the list."""
+        if resp.lesson:
+            self.lessons.append({"region": run.region.fingerprint[:8], "ops": list(run.region.ops),
+                                 "lesson": resp.lesson})
+            self.log.append("lesson", fingerprint=run.region.fingerprint, lesson=resp.lesson)
+
+    def _attempts_left(self, run: RegionRun) -> int:
+        return min(self.manifest.budget_per_region - run.hypotheses,
+                   self.manifest.budget_total - self.total_hypotheses)
 
     def _ask_judge(self, run: RegionRun, phase: str, call):
         """One judge call with its log row: (response, None), or (None, why)."""
@@ -767,16 +768,12 @@ class JobRunner:
         run.head_floor_ms = get("floor_ms")
         run.head_ratio = _ratio(clock)
 
-    def _apply_verdict(self, run: RegionRun, item, kernel: KernelSpec, parent: str, result) -> str:
+    def _apply_verdict(self, run: RegionRun, item, kernel: KernelSpec, result) -> str:
         """The spec's three verdicts, plus the bookkeeping each one moves.
         Comparisons between kernels use each one's ratio to the library it
         was clocked beside, so two clocks taken minutes apart still compare."""
         if result.outcome == "failed":
-            if result.failed_gate in ("static", "compile"):
-                run.fail_streak_by_parent[parent] = run.fail_streak_by_parent.get(parent, 0) + 1
-            run.stale_streak += 1
             return "failed"
-        run.fail_streak_by_parent[parent] = 0
         ratio, sigma = _ratio(result), (result.sigma_ms or 0.0) / (result.library_ms or 1.0)
         outcome = result.outcome
         if outcome == "tentative_ship" and run.shipped_ratio is not None and not (
@@ -788,20 +785,15 @@ class JobRunner:
             outcome = "correct_slower"
         if outcome == "tentative_ship":
             if not self._bind_and_promote(run, kernel, result):
-                run.stale_streak += 1
                 return "rolled_back"
-            gain = 1.0 - ratio / run.shipped_ratio if run.shipped_ratio else 1.0 - ratio
-            run.recent_ship_gains.append(gain)
             run.shipped, run.shipped_ms, run.shipped_ratio = kernel, result.region_ms, ratio
             run.shipped_floor_ms = result.floor_ms
             run.shipped_tag = item.assoc_tag
             self._set_head(run, kernel, result, item.assoc_tag)
-            run.stale_streak = 0
             return "shipped"
         # correct but not a win: head moves only to a better correct kernel
         if run.head_ratio is None or ratio < run.head_ratio:
             self._set_head(run, kernel, result, item.assoc_tag)
-        run.stale_streak += 1
         return "correct_slower"
 
     def _record_attempt(self, run: RegionRun, hyp_id: str, kind: str, text: str,
@@ -826,19 +818,6 @@ class JobRunner:
                 "region_ms": region_ms, "library_ms": library_ms, "win_ms": win_ms,
                 "floor_ms": floor_ms,
             }
-        self.report.add_hypothesis(
-            hypothesis_id=hyp_id, region=region.fingerprint, kind=kind,
-            hypothesis_text=text, assoc_tag=assoc_tag, parent=parent,
-            kernel=kernel.kernel_id if kernel else None, verdict=outcome,
-            failed_gate=gate, region_ms=region_ms, library_ms=library_ms,
-            win_ms=win_ms, sigma_ms=sigma_ms, floor_ms=floor_ms,
-        )
-        self.log.append("verdict", fingerprint=region.fingerprint, hypothesis=hyp_id,
-                        hypothesis_kind=kind, hypothesis_text=text, assoc_tag=assoc_tag,
-                        kernel=kernel.kernel_id if kernel else None, parent=parent,
-                        outcome=outcome, gate=gate, region_ms=region_ms,
-                        library_ms=library_ms, win_ms=win_ms, sigma_ms=sigma_ms,
-                        floor_ms=floor_ms, detail=detail)
         if gate:
             how = f"{outcome} at {gate}: {_short_reason(detail)}"
         elif region_ms is not None and library_ms is not None:
@@ -848,11 +827,23 @@ class JobRunner:
             how = "correct, not clocked"
         else:
             how = outcome
+        self.report.add_hypothesis(
+            hypothesis_id=hyp_id, region=region.fingerprint, kind=kind,
+            hypothesis_text=text, assoc_tag=assoc_tag, parent=parent,
+            kernel=kernel.kernel_id if kernel else None, verdict=outcome,
+            failed_gate=gate, region_ms=region_ms, library_ms=library_ms,
+            win_ms=win_ms, sigma_ms=sigma_ms, floor_ms=floor_ms, summary=how,
+        )
+        self.log.append("verdict", fingerprint=region.fingerprint, hypothesis=hyp_id,
+                        hypothesis_kind=kind, hypothesis_text=text, assoc_tag=assoc_tag,
+                        kernel=kernel.kernel_id if kernel else None, parent=parent,
+                        outcome=outcome, gate=gate, region_ms=region_ms,
+                        library_ms=library_ms, win_ms=win_ms, sigma_ms=sigma_ms,
+                        floor_ms=floor_ms, detail=detail)
         self.candidates.append(
             f"{wall_now()}\t{region.fingerprint[:8]}\t{hyp_id}\t{kind}\t{how}\t{text}")
 
-    def _meta(self, run: RegionRun, queue: Queue, families: FamilyBook,
-              writing_for: dict | None) -> dict:
+    def _meta(self, run: RegionRun, queue: Queue, writing_for: dict | None) -> dict:
         """Everything the judge gets on one call. The kernels it can name are
         the scaffold, head, shipped, the one the last verdict was about, and
         any a queued item depends on."""
@@ -886,6 +877,11 @@ class JobRunner:
         if self.peaks is not None:
             chip.update(bandwidth_gbps=self.peaks.bandwidth_gbps, launch_us=self.peaks.launch_us,
                         flops_gflops=self.peaks.flops_gflops)
+        history = [{k: h[k] for k in ("id", "kind", "hypothesis", "parent", "verdict", "summary")}
+                   for h in self.report.hypotheses if h["region"] == region.fingerprint]
+        done = [{"ops": r["ops"], "copies": r["copies"], "attempts": r["hypotheses"],
+                 "shipped": f"{r['s']:.2f}x the library" if r.get("s") else "nothing",
+                 "close": r["close_rule"]} for r in self.report.regions]
         return render_region_state(
             region=region, io_specs=io_specs, chip=chip,
             ops=_ops_view(self.traces[rep.workload], rep),
@@ -894,52 +890,20 @@ class JobRunner:
             shipped=run.shipped.kernel_id if run.shipped else None,
             head_ms=run.head_ms, shipped_ms=run.shipped_ms, assoc_tag=run.head_tag,
             head_floor_ms=run.head_floor_ms, shipped_floor_ms=run.shipped_floor_ms,
-            families=families, queue=queue,
+            queue=queue, history=history, lessons=list(self.lessons), regions_done=done,
+            budget={"attempts_left_region": self.manifest.budget_per_region - run.hypotheses,
+                    "attempts_left_job": self.manifest.budget_total - self.total_hypotheses},
             last_verdict=run.attempts.get(run.last_kernel) if run.last_kernel else None,
             writing_for=writing_for,
         )
 
-    def _close_rule(self, run: RegionRun, queue: Queue, families: FamilyBook) -> str | None:
-        """The spec's close rules. Clocks taken in a child are brought into the
-        job-start frame through their ratio to the library, then compared to
-        the roofline and the step measured at job start."""
-        region = run.region
+    def _close_rule(self, run: RegionRun) -> str | None:
+        """A region closes when its budget or the job's is spent, and for no
+        other reason: the judge is asked until then, whatever the verdicts."""
         if run.hypotheses >= self.manifest.budget_per_region:
             return "the region's hypothesis budget is spent"
         if self.total_hypotheses >= self.manifest.budget_total:
             return "the job budget is spent"
-        if any(v >= FAIL_STREAK_LIMIT for v in run.fail_streak_by_parent.values()):
-            return "5 straight compile or static fails on one parent"
-        if len(run.recent_ship_gains) >= DIMINISHING_SHIPS and all(
-            g < DIMINISHING_PCT for g in run.recent_ship_gains[-DIMINISHING_SHIPS:]
-        ):
-            return "3 ships in a row under 2% better than the last"
-        if run.stale_streak >= STALE_LIMIT:
-            return "6 hypotheses in a row without a meaningful win"
-        if run.shipped is None and families.all_abandoned():
-            return "nothing shipped and every family is abandoned"
-        return self._roofline_rule(run)
-
-    def _roofline_rule(self, run: RegionRun) -> str | None:
-        """The close rules that need no queue: at open, the library re-measured
-        beside its floor with no room left (pricing's headroom is minutes old
-        on a machine that moves); then shipped or head so near the limit that
-        nothing worth the budget is left. Each clock holds a kernel against the
-        floor probe timed beside it, in the same child, so the machine's speed
-        at either moment cancels."""
-        region = run.region
-        step = self.step_ms[region.members[0].workload]
-        if run.shipped is None and run.hypotheses == 0 and run.library_ms and run.head_floor_ms \
-                and run.library_ms / run.head_floor_ms < ROOFLINE_HAS_ROOM:
-            return (f"no headroom at open: the library runs at "
-                    f"{run.library_ms / run.head_floor_ms:.2f}x its floor "
-                    f"({run.library_ms:.4f} vs {run.head_floor_ms:.4f} ms per copy)")
-        if run.shipped_ms is not None and run.shipped_floor_ms and \
-                run.shipped_ms <= SHIP_ROOFLINE_CLOSE * run.shipped_floor_ms:
-            return "shipped is within 5% of the roofline"
-        if run.head_ms is not None and run.head_floor_ms and \
-                (run.head_ms - run.head_floor_ms) * region.copies < 0.01 * step:
-            return "head's clock is within 1% of the step of the roofline, all copies counted"
         return None
 
     # -- bind and promote -----------------------------------------------------
@@ -1118,10 +1082,14 @@ class JobRunner:
                 t_orig_ms=dict(region.t_orig_ms), t_rep_ms=dict(region.t_rep_ms),
             )
             self.candidates.append(_region_line(region, "open"))
-            judge = self.judge_factory(region)
-            run = self.open_region(region, judge)
-            if run.scaffold is not None and run.close_rule is None:
-                self.hypothesis_cycle(run, judge)
+            if self.total_hypotheses >= self.manifest.budget_total:
+                run = RegionRun(region=region, close_rule="not opened: the job budget is spent")
+                self.log.append("region_skip", fingerprint=region.fingerprint, reason=run.close_rule)
+            else:
+                judge = self.judge_factory(region)
+                run = self.open_region(region, judge)
+                if run.scaffold is not None and run.close_rule is None:
+                    self.hypothesis_cycle(run, judge)
             if run.shipped is not None:
                 shipped_regions.append(region)
             self.report.add_region(

@@ -4,7 +4,9 @@ this; no test depends on a live LLM.
 A script is a list of raw response payloads consumed one per call, each pushed
 through the same validate_response boundary as the real client: a malformed
 step consumes the one re-ask (the next step answers it), and two malformed in
-a row raise JudgeBabble, exactly the client's behavior.
+a row raise JudgeBabble, exactly the client's behavior. A script with no next
+step left yields, the way a judge out of ideas does; the loop charges those
+yields to the budget.
 """
 
 from __future__ import annotations
@@ -42,6 +44,8 @@ class ScriptedJudge:
 
     def next(self, region_meta: dict, verdict: object) -> NextResponse:
         self.seen.append(("next", region_meta, verdict))
+        if self._pos >= len(self._script):
+            return NextResponse(mutations=(), kernel=None)
         return self._take(NextResponse)
 
     def _take(self, want: type):

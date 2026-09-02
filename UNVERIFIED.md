@@ -41,14 +41,22 @@ Every code path not yet executed on real hardware, and why. Delete entries as th
 - The agent mailbox judge (--judge agent) is tested against a thread standing in
   for the agent; no human-or-agent-operated run yet.
 - `autotuner/manifest.py` check_build timeout path: never hit.
-- Family abandonment and the diminishing-ships / stale-hypotheses close rules: unit
-  logic tested via the judge queue tests; no loop run has organically triggered
-  them (the scripted judges yield first).
+- Budget-only persistence with a live judge: refused yields, refused plan
+  edits, and the attempts they cost are tested against scripted judges only.
+- State calls at model scale: the Qwen3 4-bit decode step traces with 28
+  `state:KVCache.update_and_fetch` calls and 66 of 73 candidates pass the
+  scope screen, and the attention and block scopes certify on the fixture; no
+  job has yet certified the real attention scope, shipped a kernel through it,
+  or loaded such an artifact in a fresh process.
+- Starting kernels for the chains state calls made reachable: on the real model
+  the naive kernels for norm+QKV, residual+norm+gate+up, down+residual+norm, and
+  gate+up build, match the library to bf16 rounding, and read 4 to 6x the
+  library on a shared GPU; none has been through the ladder. Attention itself,
+  dequantize, and slice reads still have no starting kernel.
 - The measured floor at model scale: the stream probe has run beside bf16
   matvecs and fixture chains, not yet beside a quantized projection (uint32
   weights, scales and biases as separate inputs) or inside a real job's
-  pricing and sandbox clocks. The next 4-bit Qwen3 run is its test, and the
-  open-time close ("no headroom at open") has fired only under a faked ladder.
+  pricing and sandbox clocks. The next 4-bit Qwen3 run is its test.
 - The flops term of the roofline is still arithmetic against the matmul peak
   measured at job start, so a compute-bound region's headroom mixes a probe
   from one window with a peak from another. Decode regions are memory-bound

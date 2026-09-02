@@ -2,10 +2,8 @@
 
 The queue and the verdict log are the judge's only memory. pop_ready walks
 from the front and returns the first item whose depends_on condition the
-verdict log satisfies; mutations arrive from the judge after each verdict.
-FamilyBook keeps the per-family_id counters (the spec's 8-strike abandonment)
-and the family-being-climbed state; the head and shipped bookmarks stay in
-the loop, never here.
+verdict log satisfies; mutations arrive from the judge after each verdict,
+applied as one batch. The head and shipped bookmarks stay in the loop.
 """
 
 from __future__ import annotations
@@ -65,6 +63,8 @@ class Queue:
         seen: set[str] = set()
         for it in items:
             self._check_new_item(it, seen)
+            if it.depends_on is not None and it.depends_on not in seen:
+                raise QueueError(f"item {it.id!r} depends on {it.depends_on!r}, which is not an earlier item")
             seen.add(it.id)
         self._items = list(items)
 
@@ -95,17 +95,27 @@ class Queue:
             self._in_flight = None
 
     def apply_mutations(self, mutations: Iterable[Mutation]) -> None:
-        """Insert, delete, reorder, applied in order; the first bad mutation
-        raises QueueError and leaves later ones unapplied."""
+        """Insert, delete, reorder, as one batch: all of it lands or none of
+        it does, and a dependency is judged against the queue the batch
+        leaves behind, so deleting a parent together with its dependents is
+        legal in either order."""
+        items = list(self._items)
         for m in mutations:
             if isinstance(m, InsertItem):
-                self._insert(m)
+                items = self._insert(items, m)
             elif isinstance(m, DeleteItem):
-                self._delete(m)
+                items = self._delete(items, m)
             elif isinstance(m, ReorderItems):
-                self._reorder(m)
+                items = self._reorder(items, m)
             else:
                 raise QueueError(f"unknown mutation {m!r}")
+        known = {it.id for it in items} | set(self._verdicts) | ({self._in_flight} - {None})
+        for it in items:
+            if it.depends_on is not None and it.depends_on not in known:
+                raise QueueError(
+                    f"item {it.id!r} would be stranded: it depends on {it.depends_on!r}, "
+                    f"which the batch leaves neither queued nor executed")
+        self._items = items
 
     def snapshot(self) -> tuple[dict, ...]:
         """The queue as the prompt renders it: items with satisfied flags."""
@@ -139,113 +149,27 @@ class Queue:
             known.add(self._in_flight)
         if item.id in known:
             raise QueueError(f"item id {item.id!r} already exists in this region")
-        if item.depends_on is not None and item.depends_on not in known:
-            raise QueueError(
-                f"item {item.id!r} depends on {item.depends_on!r}, which does not exist yet"
-            )
 
-    def _insert(self, m: InsertItem) -> None:
-        self._check_new_item(m.item, set())
+    def _insert(self, items: list[QueueItem], m: InsertItem) -> list[QueueItem]:
+        self._check_new_item(m.item, {it.id for it in items})
         if m.before is None:
-            self._items.append(m.item)
-            return
-        for i, it in enumerate(self._items):
+            return items + [m.item]
+        for i, it in enumerate(items):
             if it.id == m.before:
-                self._items.insert(i, m.item)
-                return
+                return items[:i] + [m.item] + items[i:]
         raise QueueError(f"insert before {m.before!r}: no such queued item")
 
-    def _delete(self, m: DeleteItem) -> None:
-        for i, it in enumerate(self._items):
-            if it.id == m.item_id:
-                stranded = [d.id for d in self._items if d.depends_on == m.item_id]
-                if stranded:
-                    raise QueueError(
-                        f"delete {m.item_id!r} would strand {stranded}, which depend on it")
-                del self._items[i]
-                return
-        raise QueueError(f"delete {m.item_id!r}: no such queued item")
+    def _delete(self, items: list[QueueItem], m: DeleteItem) -> list[QueueItem]:
+        kept = [it for it in items if it.id != m.item_id]
+        if len(kept) == len(items):
+            raise QueueError(f"delete {m.item_id!r}: no such queued item")
+        return kept
 
-    def _reorder(self, m: ReorderItems) -> None:
-        current = {it.id: it for it in self._items}
+    def _reorder(self, items: list[QueueItem], m: ReorderItems) -> list[QueueItem]:
+        current = {it.id: it for it in items}
         if sorted(m.order) != sorted(current):
             raise QueueError(
                 f"reorder must permute exactly the queued ids {sorted(current)}, got {list(m.order)}"
             )
-        self._items = [current[i] for i in m.order]
+        return [current[i] for i in m.order]
 
-
-ABANDON_STRIKES = 8  # spec-fixed: correct-but-slower without ever beating the library
-
-
-class FamilyBook:
-    """Per-family_id counters for one region. The judge declares families; the
-    harness counts. Beating the library (a region-clock ship) permanently
-    clears a family from abandonment and resets its strikes."""
-
-    def __init__(self) -> None:
-        self._kernel_family: dict[str, str | None] = {}  # kernel id -> family (scaffold: None)
-        self._strikes: dict[str, int] = {}
-        self._beaten: set[str] = set()
-        self._abandoned: set[str] = set()
-        self._fresh = 0
-        self.climbing: str | None = None  # family of the last correct-but-slower head update
-
-    def register_scaffold(self, kernel_id: str) -> None:
-        self._kernel_family[kernel_id] = None
-
-    def register_kernel(self, kernel_id: str, family_id: str) -> None:
-        self._kernel_family[kernel_id] = family_id
-
-    def resolve(self, item: QueueItem, parent_kernel_id: str) -> str:
-        """The family an executed item belongs to: its own declaration, else
-        its parent kernel's family, else a new family (scaffold parent)."""
-        family = item.family_id or self._kernel_family.get(parent_kernel_id)
-        if family is None:
-            self._fresh += 1
-            family = f"family{self._fresh}"
-        self._strikes.setdefault(family, 0)
-        return family
-
-    def record_verdict(self, family_id: str, outcome: str) -> None:
-        if outcome not in OUTCOMES:
-            raise QueueError(f"outcome {outcome!r} must be one of {list(OUTCOMES)}")
-        self._strikes.setdefault(family_id, 0)
-        if outcome == "correct_slower":
-            self._strikes[family_id] += 1
-            self.climbing = family_id
-        elif outcome in ("tentative_ship", "shipped"):
-            self._strikes[family_id] = 0
-            self._beaten.add(family_id)
-            if self.climbing == family_id:
-                self.climbing = None
-        # failed and rolled_back change no counter: the rolled-back ship
-        # already marked the family beaten when it won the region clock
-
-    def tripped(self, family_id: str) -> bool:
-        """True on the 8th correct-but-slower of a family that never beat the
-        library; the loop then abandons it and resets head."""
-        return (family_id not in self._beaten
-                and self._strikes.get(family_id, 0) >= ABANDON_STRIKES)
-
-    def abandon(self, family_id: str) -> None:
-        self._abandoned.add(family_id)
-        if self.climbing == family_id:
-            self.climbing = None
-
-    def abandoned(self, family_id: str) -> bool:
-        return family_id in self._abandoned
-
-    def all_abandoned(self) -> bool:
-        return bool(self._strikes) and all(f in self._abandoned for f in self._strikes)
-
-    def state(self) -> dict[str, dict]:
-        """Per-family climb state and strike count, as the prompt renders it."""
-        return {
-            family: {
-                "strikes": strikes,
-                "beaten_library": family in self._beaten,
-                "abandoned": family in self._abandoned,
-            }
-            for family, strikes in sorted(self._strikes.items())
-        }
