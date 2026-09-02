@@ -188,6 +188,7 @@ def make_job(ctx, spec, *, tag="preserving", tol=FP32_TOL, contract_over=None,
         changing_floor=changing_floor,
         min_win_ms=min_win_ms,
         run_clock=run_clock,
+        clock_pairs=8,
         timeout_s=TIMEOUT_S,
     )
 

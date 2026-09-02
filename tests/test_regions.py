@@ -26,18 +26,15 @@ from autotuner.regions.roofline import node_flops, stretch_roofline
 from autotuner.regions.sweep import SweepDivergence, locate_span
 from autotuner.regions.types import Region, Roofline, Stretch
 from autotuner.trace import Tracer
+from tests.conftest import current_tracer, tracer_for_module
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
-_tracer = None
+_module_tracer = tracer_for_module()
 
 
 def tracer() -> Tracer:
-    global _tracer
-    if _tracer is None:
-        _tracer = Tracer()
-        _tracer.install()
-    return _tracer
+    return current_tracer()
 
 
 def load_fixture(name: str):
@@ -451,11 +448,3 @@ def test_uncovered_ops_are_named_before_pricing():
     assert uncovered_op(["mx.fast.rms_norm", "array.__matmul__", "mx.sigmoid"]) is None
     assert uncovered_op(["mx.quantized_matmul", "mx.fast.scaled_dot_product_attention"]) \
         == "mx.fast.scaled_dot_product_attention"
-
-
-def test_regions_uninstall_last():
-    tr = tracer()
-    tr.uninstall()
-    assert tr.verify_restored() == []
-    global _tracer
-    _tracer = None

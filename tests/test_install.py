@@ -110,3 +110,76 @@ def test_a_multi_op_cut_feeding_the_next_cut_verifies(runner):
     after = runner.model(x)
     mx.eval(after)
     assert mx.array_equal(before, after).item()
+
+
+FUSED = elementwise("rchain_h1", (
+    "uint c = i % (uint)in0_shape[1];\n"
+    "float x = in0[i];\n"
+    "float y = x * 2.0f + in1[c];\n"
+    "y = (y != y) ? y : metal::max(y, 0.0f);\n"
+    "y = y * x;\n"
+    "y = y + in2[c];\n"
+    "y = (y != y) ? y : metal::min(y, 8.0f);\n"
+    "out0[i] = (y - 1.0f) * 0.5f;"), ("in0", "in1", "in2"))
+
+
+def _chain(runner):
+    return RegionRun(region=runner.region("array.__mul__", "array.__add__", "mx.maximum",
+                                          "array.__mul__", "array.__add__", "mx.minimum",
+                                          "array.__sub__", "array.__mul__"))
+
+
+def test_a_crash_mid_install_rolls_the_model_back(runner, tmp_path, monkeypatch):
+    """An unexpected exception inside the install must leave the model, the
+    artifact record, and the patch surface exactly as before, and be logged
+    with its reason instead of ending the job."""
+    import autotuner.loop as loop_mod
+    from autotuner_runtime.swap import ReplayWrapper
+
+    def exploding_e2e(*a, **k):
+        raise RuntimeError("[METAL] command buffer execution failed")
+
+    monkeypatch.setattr(loop_mod, "run_e2e", exploding_e2e)
+    assert not runner._bind_and_promote(_chain(runner), FUSED, WIN)
+    assert not isinstance(runner.model.chain, ReplayWrapper)
+    assert not runner.tracer.patcher.installed
+    assert runner.installed == {} and runner.emitted == {} and runner.cuts == {}
+    assert any(r["kind"] == "bind_failed" and "command buffer" in r["reason"]
+               for r in runner.log.rows())
+
+
+def test_a_win_that_fails_the_whole_model_check_leaves_no_trace(runner, tmp_path, monkeypatch):
+    """A region-clock win the whole-model check rejects must vanish from the
+    artifact record, or apply() would install it in a fresh process."""
+    import json
+
+    import autotuner.loop as loop_mod
+
+    class FailedE2E:
+        passed = False
+        veto_passed = False
+        checks = ()
+
+    monkeypatch.setattr(loop_mod, "run_e2e", lambda *a, **k: FailedE2E())
+    assert not runner._bind_and_promote(_chain(runner), FUSED, WIN)
+    assert runner.emitted == {} and runner.installed == {}
+    art = runner.emit_artifact(tmp_path / "artifact")
+    assert json.loads((art / "swap_table.json").read_text()) == []
+    assert list((art / "kernels").glob("*.metal")) == []
+
+
+def test_a_failed_certification_removes_the_patch_surface(runner, monkeypatch):
+    """A scope that cannot be replayed invisibly gets no wrapper, and the
+    tracing machinery must not stay wrapped around every op afterwards, or
+    every later clock would be lying."""
+    import autotuner.loop as loop_mod
+
+    class FailedCert:
+        ok = False
+        reason = "forced by test"
+
+    monkeypatch.setattr(loop_mod, "certify_identity", lambda **k: FailedCert())
+    assert not runner._bind_and_promote(_chain(runner), FUSED, WIN)
+    assert not runner.tracer.patcher.installed
+    assert runner.installed == {} and "chain" not in runner.certified_scopes
+    assert any(r["kind"] == "certification_failed" for r in runner.log.rows())

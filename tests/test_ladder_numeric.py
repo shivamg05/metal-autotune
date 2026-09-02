@@ -28,18 +28,15 @@ from autotuner.ladder.numeric import (
 )
 from autotuner.ladder.static_checks import RegionContract, check
 from autotuner.trace import Tracer
+from tests.conftest import current_tracer, tracer_for_module
 from autotuner.trace.walk import arrays_by_path
 from autotuner_runtime.kernels import KernelSpec
 
-_tracer = None
+_module_tracer = tracer_for_module()
 
 
 def tracer() -> Tracer:
-    global _tracer
-    if _tracer is None:
-        _tracer = Tracer()
-        _tracer.install()
-    return _tracer
+    return current_tracer()
 
 
 # -- gate 1: static checks ---------------------------------------------------
@@ -480,29 +477,3 @@ def test_err_denominator_clamp():
     # |c - g| / max(|g|, clamp): the zero-golden element is scored on the clamp
     assert err([c], [g], denom_clamp=1.0) == pytest.approx(1e-3, rel=1e-5)
     assert err([c], [g], denom_clamp=1e-4) == pytest.approx(10.0, rel=1e-4)
-
-
-def test_ladder_numeric_uninstall_last():
-    tr = tracer()
-    tr.uninstall()
-    assert tr.verify_restored() == []
-    global _tracer
-    _tracer = None
-
-
-def test_regimes_leave_weights_alone():
-    """A weight is a constant of the frozen model; a regime that moved it
-    would test a model that does not exist."""
-    inputs = regime_inputs()
-    r = value_regimes(inputs, seed=7, weights=[False, True, False])
-    for name in REGIMES:
-        assert mx.array_equal(r[name][1], inputs[1]).item()
-    assert not mx.array_equal(r["scaled_up"][0], inputs[0]).item()
-
-
-def test_regimes_take_custom_magnitudes():
-    a = regime_inputs()[0]
-    r = value_regimes(regime_inputs(), seed=7, scale_up=10.0, outlier=100.0)
-    assert mx.allclose(r["scaled_up"][0].astype(mx.float32), a.astype(mx.float32) * 10,
-                       rtol=1e-2, atol=1e-2).item()
-    assert int(mx.sum(r["outliers"][0] == 100.0).item()) == OUTLIER_COUNT

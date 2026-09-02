@@ -29,10 +29,6 @@ from dataclasses import dataclass, field
 # kernels, not honest slowness (the ship margin still owns speed).
 WATCHDOG_FACTOR = 20.0
 
-# The M5 minimal gate set, in ladder order. The compile probe always runs;
-# it is the launch everything else depends on.
-GATES = ("compile", "watchdog", "poison", "allclose")
-
 _METAL_ENV = (
     "MTL_SHADER_VALIDATION",
     "MTL_SHADER_VALIDATION_REPORT_TO_STDERR",
@@ -51,42 +47,6 @@ _TAIL_CHARS = 4000
 
 
 @dataclass(frozen=True)
-class TensorSet:
-    """A safetensors file plus the order to read its entries in."""
-
-    path: str
-    names: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class JobSpec:
-    """Everything one evaluation needs; the child rebuilds it all from JSON.
-
-    tolerances stay harness-held: they cross this harness-to-harness boundary
-    and are never rendered to the judge.
-    """
-
-    kernel: dict                      # KernelSpec fields (autotuner_runtime.kernels)
-    inputs: TensorSet
-    reference: TensorSet              # library outputs, one per kernel output
-    t_library_ms: float               # library region time, for the child-side watchdog
-    tolerances: dict                  # {"rtol": float, "atol": float}
-    gates: tuple[str, ...] = GATES
-    saturate_pool: bool = False       # dirty the buffer pool before any launch
-
-    def to_json(self) -> str:
-        return json.dumps(dataclasses.asdict(self))
-
-    @staticmethod
-    def from_json(text: str) -> "JobSpec":
-        d = json.loads(text)
-        d["inputs"] = TensorSet(d["inputs"]["path"], tuple(d["inputs"]["names"]))
-        d["reference"] = TensorSet(d["reference"]["path"], tuple(d["reference"]["names"]))
-        d["gates"] = tuple(d["gates"])
-        return JobSpec(**d)
-
-
-@dataclass(frozen=True)
 class EvalSetSpec:
     """One eval set as the child sees it: k input files and k reference files
     (safetensors keyed "a<array_id>"), plus the span at this size when the
@@ -102,14 +62,14 @@ class EvalSetSpec:
 
 @dataclass(frozen=True)
 class LadderSpec:
-    """The full-ladder job spec (M6). Same boundary rules as JobSpec: the child
-    rebuilds everything from this JSON, tolerances stay harness-held, and the
-    "kind" field tells the worker's stdin dispatcher this is a ladder job.
+    """One kernel's trip up the ladder, as the child sees it. The child rebuilds
+    everything from this JSON; tolerances cross only this harness-to-harness
+    boundary and never reach the judge.
 
-    phase "validate" runs gates 2-8 (spawned in validate mode); phase "score"
-    re-runs smoke + determinism and then the ship clock (spawned in score mode,
-    because validation recompiles pipelines and the timed pipeline must be the
-    checked pipeline)."""
+    phase "validate" runs gates 2-8 with shader validation on; phase "score"
+    re-runs smoke and determinism on the clean pipeline and then the ship
+    clock, because validation recompiles pipelines and the timed pipeline must
+    be the checked pipeline."""
 
     kernel: dict                      # KernelSpec fields
     assoc_tag: str                    # "preserving" | "changing"
@@ -161,7 +121,7 @@ class Verdict:
     """
 
     passed: bool
-    failed_gate: str | None           # one of GATES, or "subprocess"
+    failed_gate: str | None           # the gate that failed, or "subprocess"
     gates_passed: tuple[str, ...]
     detail: dict = field(default_factory=dict)
     timing: dict = field(default_factory=dict)
@@ -188,7 +148,7 @@ def mode_env(mode: str) -> dict[str, str]:
     return env
 
 
-def run_job(spec: "JobSpec | LadderSpec", mode: str, timeout_s: float) -> Verdict:
+def run_job(spec: LadderSpec, mode: str, timeout_s: float) -> Verdict:
     """Spawn one worker, write the spec to its stdin, read the one JSON verdict
     line from its stdout. Nonzero exit, crash, or wall timeout maps to
     failed_gate "subprocess" with the stderr tail."""

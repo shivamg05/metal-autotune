@@ -25,18 +25,15 @@ from autotuner.trace import Trace, Tracer, TraceNode
 from autotuner.trace.recorder import ArrayRef
 from autotuner.trace.replay import replay
 from autotuner_runtime.kernels import KernelSpec, call
+from tests.conftest import current_tracer, tracer_for_module
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
-_tracer = None
+_module_tracer = tracer_for_module()
 
 
 def tracer() -> Tracer:
-    global _tracer
-    if _tracer is None:
-        _tracer = Tracer()
-        _tracer.install()
-    return _tracer
+    return current_tracer()
 
 
 def load_fixture(name: str):
@@ -545,11 +542,3 @@ def test_view_op_not_lowered_raises():
     with pytest.raises(NoScaffold) as e:
         lower_naive(t, cut(t, 0, len(t.nodes) - 1))
     assert e.value.reason in ("op-not-lowered", "view-not-lowered")
-
-
-def test_scaffold_uninstall_last():
-    tr = tracer()
-    tr.uninstall()
-    assert tr.verify_restored() == []
-    global _tracer
-    _tracer = None

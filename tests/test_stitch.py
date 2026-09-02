@@ -23,7 +23,10 @@ from autotuner.scaffold.symshape import NoScaffold
 from autotuner.trace.recorder import dtype_name
 from autotuner_runtime.kernels import KernelSpec, call
 from tests.conftest import require_healthy_gpu, require_quiet_load
+from tests.conftest import tracer_for_module
 from tests.test_scaffold import check, cut, tracer
+
+_module_tracer = tracer_for_module()
 
 DECODE_KN = [(4096, 4096), (4096, 1024), (4096, 14336), (14336, 4096)]
 
@@ -476,15 +479,3 @@ def test_chain_timing_within_3x_of_library():
         tl.append(time.perf_counter() - t0)
     ratio = statistics.median(ts) / statistics.median(tl)
     assert ratio < 3.0, f"stitched/library ratio {ratio:.2f}"
-
-
-def test_stitch_uninstall_last():
-    """This file re-installs the shared tracer after test_scaffold's own
-    uninstall-last has run, so it must restore the patch surface itself or
-    the next module inherits a patched mx."""
-    from tests import test_scaffold
-
-    tr = tracer()
-    tr.uninstall()
-    assert tr.verify_restored() == []
-    test_scaffold._tracer = None

@@ -135,7 +135,7 @@ def test_planted_win_job_ships(tmp_path):
 def test_vendor_parity_job_ships_nothing(tmp_path):
     manifest = write_manifest(tmp_path, "vendor_parity.py", (256, 512))
     runner = JobRunner(manifest, tmp_path / "work", judge_factory=yielding_judge, clock_pairs=8,
-                       refuse_degraded=False, session=Session())
+                       refuse_degraded=False, session=Session(sleep=lambda s: None))
     report = runner.run()
     shipped = [r for r in report.regions if r.get("s")]
     assert not shipped
@@ -164,72 +164,18 @@ def test_used_work_dir_refused(tmp_path):
         JobRunner(manifest, tmp_path / "work", judge_factory=yielding_judge)
 
 
-def test_ship_crash_restores_model_and_continues(tmp_path, monkeypatch):
-    """Audit finding 1: an unexpected exception mid-installation must roll the
-    model back, close the region with a named reason, and let the job finish,
-    never die with wrappers installed."""
+def only_the_chain(monkeypatch):
+    """Open only the planted chain: the other thirteen candidates each cost
+    a starting kernel and two child processes and prove nothing here."""
     import autotuner.loop as loop_mod
 
-    def exploding_e2e(*a, **k):
-        raise RuntimeError("[METAL] command buffer execution failed")
-
-    monkeypatch.setattr(loop_mod, "run_e2e", exploding_e2e)
-    manifest = write_manifest(tmp_path, "planted_win.py", (4096, 1024))
-    runner = JobRunner(manifest, tmp_path / "work", judge_factory=winning_chain_judge, clock_pairs=8,
-                       refuse_degraded=False, session=Session())
-    report = runner.run()  # must complete, not raise
-    assert not [r for r in report.regions if r.get("s")]
-    from autotuner_runtime.swap import ReplayWrapper
-    assert not isinstance(runner.model.chain, ReplayWrapper)
-    assert not runner.tracer.patcher.installed
-    kinds = [row["kind"] for row in runner.log.rows()]
-    assert "bind_failed" in kinds
+    monkeypatch.setattr(loop_mod, "apply_floor",
+                        lambda regions, **k: [r for r in regions if len(r.ops) == 8])
 
 
-def test_rolled_back_ship_leaves_artifact_clean(tmp_path, monkeypatch):
-    """Audit finding 2: a win that fails the whole-model check must vanish
-    from the artifact record, or apply() crashes in a fresh process."""
-    import json as json_mod
-
-    import autotuner.loop as loop_mod
-
-    class FailedE2E:
-        passed = False
-        veto_passed = False
-        checks = ()
-
-    monkeypatch.setattr(loop_mod, "run_e2e", lambda *a, **k: FailedE2E())
-    manifest = write_manifest(tmp_path, "planted_win.py", (4096, 1024))
-    runner = JobRunner(manifest, tmp_path / "work", judge_factory=winning_chain_judge, clock_pairs=8,
-                       refuse_degraded=False, session=Session())
-    runner.run()
-    assert runner.emitted == {}
-    art = runner.emit_artifact(tmp_path / "artifact")
-    table = json_mod.loads((art / "swap_table.json").read_text())
-    assert table == []
-
-
-def test_certification_failure_removes_patch_surface(tmp_path, monkeypatch):
-    """Audit finding 3: a failed identity certification must not leave the
-    tracing machinery wrapped around every op, or every later clock lies."""
-    import autotuner.loop as loop_mod
-
-    class FailedCert:
-        ok = False
-        reason = "forced by test"
-
-    monkeypatch.setattr(loop_mod, "certify_identity", lambda **k: FailedCert())
-    manifest = write_manifest(tmp_path, "planted_win.py", (4096, 1024))
-    runner = JobRunner(manifest, tmp_path / "work", judge_factory=winning_chain_judge, clock_pairs=8,
-                       refuse_degraded=False, session=Session())
-    report = runner.run()
-    assert not runner.tracer.patcher.installed
-    assert not [r for r in report.regions if r.get("s")]
-
-
-def test_judge_transport_error_costs_region_not_job(tmp_path):
-    """Audit finding F1: a transport failure (CLI exit, timeout) closes the
-    region with a named reason and the job completes."""
+def test_judge_transport_error_costs_region_not_job(tmp_path, monkeypatch):
+    """A transport failure (CLI exit, timeout) closes the region with a named
+    reason and the job completes."""
     class DeadTransport:
         def seed(self, meta):
             raise RuntimeError("claude CLI judge exited 3: no such model")
@@ -237,10 +183,11 @@ def test_judge_transport_error_costs_region_not_job(tmp_path):
         def next(self, meta, verdict):
             raise RuntimeError("unreachable")
 
+    only_the_chain(monkeypatch)
     manifest = write_manifest(tmp_path, "planted_win.py", (64, 1024))
     runner = JobRunner(manifest, tmp_path / "work",
                        judge_factory=lambda region: DeadTransport(),
-                       refuse_degraded=False, session=Session())
+                       refuse_degraded=False, session=Session(sleep=lambda s: None))
     report = runner.run()  # must complete
     assert all("judge unavailable" in (r.get("close") or r.get("close_rule") or "")
                or not r.get("s") for r in report.regions)
@@ -253,11 +200,7 @@ def test_failed_first_item_lets_the_judge_insert_a_fix(tmp_path, monkeypatch):
     next item is chosen, prepends a fix conditioned on that failure, and
     writes it in the same reply. The old cycle popped first and closed the
     region with the plan untouched."""
-    import autotuner.loop as loop_mod
-
-    # the test is about the cycle, not pricing: at this small shape the chain
-    # sits near the share floor and a noisy machine can drop it, so keep all
-    monkeypatch.setattr(loop_mod, "apply_floor", lambda regions, **k: regions)
+    only_the_chain(monkeypatch)
     broken = FUSED_CHAIN_SOURCE.replace("out0[i] =", "out0[i] = this_is_not_metal +")
     calls = []
 

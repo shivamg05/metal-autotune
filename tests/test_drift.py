@@ -14,7 +14,10 @@ import statistics
 import pytest
 
 from autotuner.measure.clocks import compare
+from tests.conftest import tracer_for_module
 from tests.drift import DriftingSession, costed, flip, ramp
+
+_module_tracer = tracer_for_module()
 
 BASELINE_S = 0.002   # 2 ms on a healthy machine
 CANDIDATE_S = 0.001  # 1 ms: a true 2x win

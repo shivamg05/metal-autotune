@@ -27,6 +27,7 @@ packages = ["autotuner", "autotuner_runtime"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "-ra --durations=10"
 markers = [
     "integration: runs whole jobs or live models; minutes, not seconds. Skip with -m 'not integration'",
 ]

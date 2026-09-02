@@ -304,7 +304,7 @@ names, in this order.
       ramp-warm bounded by work; peaks and the null before the step clock,
       raising on a machine that cannot measure; the null judged; weight
       sharing verified.
-- [ ] 9. Tests: one real job, rollback paths tested directly, skip reasons
+- [x] 9. Tests: one real job, rollback paths tested directly, skip reasons
       and durations printed, the second sandbox path retired, one shared
       tracer fixture.
 - [ ] 10. Leanness: dead code out, duplicate helpers folded, gate bodies in

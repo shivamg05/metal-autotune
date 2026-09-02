@@ -12,6 +12,7 @@ from autotuner.bind.certify import certify_identity, screen_scope
 from autotuner.bind.emit import MODULE_HEADER, Splice, emit_wrapper
 from autotuner.bind.verify import verify_retrace
 from autotuner.trace import Tracer
+from tests.conftest import current_tracer, tracer_for_module
 from autotuner_runtime.kernels import KernelSpec
 from autotuner_runtime.swap import install, uninstall
 
@@ -20,15 +21,11 @@ pytestmark = pytest.mark.integration
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
-_tracer = None
+_module_tracer = tracer_for_module()
 
 
 def tracer() -> Tracer:
-    global _tracer
-    if _tracer is None:
-        _tracer = Tracer()
-        _tracer.install()
-    return _tracer
+    return current_tracer()
 
 
 def load_fixture(name: str):
@@ -243,11 +240,3 @@ def test_screen_accepts_replayable_scope():
     trace, _ = tracer().trace(model, [x])
     layer_stack = next(sc.stack for sc in trace.scope_calls if sc.address == "layers.0@0")
     assert screen_scope(trace, layer_stack) is None
-
-
-def test_bind_uninstall_tracer_last():
-    tr = tracer()
-    tr.uninstall()
-    assert tr.verify_restored() == []
-    global _tracer
-    _tracer = None

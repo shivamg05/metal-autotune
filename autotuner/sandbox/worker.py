@@ -1,21 +1,17 @@
-"""Sandbox worker: one kernel evaluation per process (plan section 8).
+"""Sandbox worker: one kernel evaluation per process.
 
-Reads one JSON job spec on stdin, rebuilds everything from it (tensors from
-safetensors paths, the kernel via KernelSpec), and prints exactly one JSON
-verdict line to stdout as its last line. Any unexpected exception tracebacks
-to stderr and exits nonzero; the parent maps that to a "subprocess" verdict.
+Reads one ladder spec as JSON on stdin, rebuilds everything from it (tensors
+from safetensors paths, the kernel from its spec), runs the requested phase,
+and prints exactly one JSON verdict line to stdout as its last line. Any
+unexpected exception tracebacks to stderr and exits nonzero; the parent maps
+that to a "subprocess" verdict.
 
-Two spec kinds share this worker. The M5 JobSpec runs the minimal gate set
-(compile probe, watchdog, poison, allclose). The M6 LadderSpec runs the full
-ladder: phase "validate" runs gates 2-8, phase "score" re-runs smoke and
-determinism on the un-instrumented pipeline and then the ship clock.
-
-The worker is mode-agnostic: Metal read the validation env at launch, its
-"Invalid device load/store" lines land on this process's stderr, and the
-parent scans them after exit. A truly hanging kernel blocks mx.eval forever
-(verified on this machine), so the parent wall timeout is the hang half of
-the watchdog; the 10x rule here catches slow-but-terminating kernels, against
-a library region time re-measured in this same process.
+The worker never toggles a Metal mode: Metal read the validation variables at
+launch, its "Invalid device load/store" lines land on this process's stderr,
+and the parent scans them after exit. A kernel that truly hangs blocks
+mx.eval forever, so the parent's wall timeout is the hang half of the
+watchdog; the slow half here compares the kernel's timed passes against the
+library's, re-measured in this same process.
 
 Poison rule: every correctness launch runs with init_value=nan, except that
 atomic_outputs kernels get init_value=0.0, because atomic accumulation is
@@ -42,14 +38,7 @@ from autotuner.measure.clocks import compare as paired_compare
 from autotuner.measure.session import Session, time_once
 from autotuner.regions.store import load_set
 from autotuner.sandbox.poison import saturate_pool
-from autotuner.sandbox.protocol import (
-    GATES,
-    WATCHDOG_FACTOR,
-    JobSpec,
-    LadderSpec,
-    TensorSet,
-    Verdict,
-)
+from autotuner.sandbox.protocol import WATCHDOG_FACTOR, LadderSpec, Verdict
 from autotuner.trace.replay import replay
 from autotuner.trace.serialize import nodes_from_json
 from autotuner_runtime.kernels import KernelSpec, call, fallback_fires
@@ -87,124 +76,8 @@ _BITS = {"float16": mx.uint16, "bfloat16": mx.uint16, "float32": mx.uint32}
 
 
 def main() -> None:
-    text = sys.stdin.read()
-    if json.loads(text).get("kind") == "ladder":
-        verdict = evaluate_ladder(LadderSpec.from_json(text))
-    else:
-        verdict = evaluate(JobSpec.from_json(text))
+    verdict = evaluate_ladder(LadderSpec.from_json(sys.stdin.read()))
     print(verdict.to_json(), flush=True)
-
-
-def evaluate(spec: JobSpec) -> Verdict:
-    kspec = KernelSpec.from_json(json.dumps(spec.kernel))
-    inputs = _load(spec.inputs)
-    reference = _load(spec.reference)
-    if len(inputs) != len(kspec.input_names):
-        raise ValueError(
-            f"spec has {len(inputs)} input tensors for {len(kspec.input_names)} kernel inputs"
-        )
-    if len(reference) != len(kspec.output_names):
-        raise ValueError(
-            f"spec has {len(reference)} reference tensors for {len(kspec.output_names)} kernel outputs"
-        )
-    if spec.saturate_pool:
-        saturate_pool(a.nbytes for a in reference)
-
-    gates = tuple(g for g in GATES if g in spec.gates or g == "compile")
-    gates_passed: list[str] = []
-    timing: dict[str, float] = {"t_library_ms": spec.t_library_ms}
-
-    def fail(gate: str, detail: dict) -> Verdict:
-        return Verdict(False, gate, tuple(gates_passed), detail, timing)
-
-    # compile: the probe eval builds the pipeline; a broken build surfaces
-    # only here, as a RuntimeError (plan 5.10). The probe is also the first
-    # correctness launch, poisoned with init_value=nan, and its outputs feed
-    # the poison and allclose gates below.
-    outs: list[mx.array] = []
-
-    def poisoned_launch() -> list[mx.array]:
-        outs[:] = call(kspec, inputs, init_value=float("nan"))
-        return outs
-
-    try:
-        timing["first_run_ms"] = time_once(poisoned_launch) * 1e3
-    except RuntimeError as e:
-        if _BUILD_FAILURE in str(e):
-            return fail("compile", _compile_detail(str(e), _probe_offset(kspec, inputs)))
-        return fail("compile", {"probe_eval_error": str(e)[:_TEXT_CAP]})
-    gates_passed.append("compile")
-
-    # watchdog, slow half: one timed run against the library region time the
-    # parent measured. The probe above already paid the Metal compile, so this
-    # times the kernel itself. No init_value on timed runs (plan 5.10).
-    if "watchdog" in gates:
-        timing["timed_run_ms"] = time_once(lambda: call(kspec, inputs)) * 1e3
-        if timing["timed_run_ms"] > WATCHDOG_FACTOR * spec.t_library_ms:
-            return fail("watchdog", {
-                "timed_run_ms": timing["timed_run_ms"],
-                "t_library_ms": spec.t_library_ms,
-                "watchdog_factor": WATCHDOG_FACTOR,
-            })
-        gates_passed.append("watchdog")
-
-    # poison: with init_value=nan every unwritten output element is NaN
-    # deterministically; any non-finite value where the reference is finite
-    # fails.
-    if "poison" in gates:
-        counts = {}
-        for name, out, ref in zip(kspec.output_names, outs, reference):
-            _check_contract(name, out, ref)
-            bad = mx.logical_and(mx.logical_not(mx.isfinite(out)), mx.isfinite(ref))
-            counts[name] = int(mx.sum(bad).item())
-        if any(counts.values()):
-            return fail("poison", {"non_finite_over_finite_ref": counts})
-        gates_passed.append("poison")
-
-    # allclose: the bare numeric gate against the saved library reference,
-    # under harness-held tolerances.
-    if "allclose" in gates:
-        rtol = float(spec.tolerances["rtol"])
-        atol = float(spec.tolerances["atol"])
-        per_output = {}
-        ok = True
-        for name, out, ref in zip(kspec.output_names, outs, reference):
-            _check_contract(name, out, ref)
-            close = bool(mx.allclose(out, ref, rtol=rtol, atol=atol, equal_nan=True).item())
-            per_output[name] = {"allclose": close, "max_abs_diff": _max_abs_diff(out, ref)}
-            ok = ok and close
-        if not ok:
-            return fail("allclose", {"outputs": per_output})
-        gates_passed.append("allclose")
-
-    return Verdict(True, None, tuple(gates_passed), {}, timing)
-
-
-def _load(ts: TensorSet) -> list[mx.array]:
-    data = mx.load(ts.path)
-    missing = [n for n in ts.names if n not in data]
-    if missing:
-        raise ValueError(f"{ts.path} is missing tensors {missing}")
-    return [data[n] for n in ts.names]
-
-
-def _check_contract(name: str, out: mx.array, ref: mx.array) -> None:
-    # A shape or dtype mismatch against the reference is a spec-construction
-    # bug in M5 (gate 1 static checks own it from M6): crash, do not grade.
-    if tuple(out.shape) != tuple(ref.shape) or out.dtype != ref.dtype:
-        raise ValueError(
-            f"output {name!r} is {tuple(out.shape)} {out.dtype}, "
-            f"reference is {tuple(ref.shape)} {ref.dtype}"
-        )
-
-
-def _max_abs_diff(out: mx.array, ref: mx.array) -> float:
-    """Max abs difference where both sides are finite (JSON-safe)."""
-    if out.size == 0:
-        return 0.0
-    diff = mx.abs(out.astype(mx.float32) - ref.astype(mx.float32))
-    finite = mx.logical_and(mx.isfinite(out), mx.isfinite(ref))
-    return float(mx.max(mx.where(finite, diff, mx.zeros_like(diff))).item())
 
 
 def _probe_offset(kspec: KernelSpec, inputs: list[mx.array]) -> int | None:
@@ -325,7 +198,10 @@ def evaluate_ladder(spec: LadderSpec) -> Verdict:
     if validate:
         counts = {}
         for name, c, r in zip(out_names, outs0, prim_refs[0]):
-            _check_contract(name, c, r)
+            if tuple(c.shape) != tuple(r.shape) or c.dtype != r.dtype:
+                return fail("poison", {"output": name, "reason": "shape",
+                                       "note": f"{tuple(c.shape)} {c.dtype}, reference "
+                                               f"{tuple(r.shape)} {r.dtype}"})
             bad = mx.logical_and(mx.logical_not(mx.isfinite(c)), mx.isfinite(r))
             counts[name] = int(mx.sum(bad).item())
         if any(counts.values()):

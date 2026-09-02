@@ -13,21 +13,18 @@ import mlx.core as mx
 import pytest
 
 from autotuner.trace import Tracer
+from tests.conftest import current_tracer, tracer_for_module
 from autotuner.trace.recorder import OPAQUE_OP
 from autotuner.trace.replay import replay
 from autotuner.trace.types import Retention, TraceIncomplete
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
-_tracer = None
+_module_tracer = tracer_for_module()
 
 
 def tracer() -> Tracer:
-    global _tracer
-    if _tracer is None:
-        _tracer = Tracer()
-        _tracer.install()
-    return _tracer
+    return current_tracer()
 
 
 def load_fixture(name: str):
@@ -199,14 +196,3 @@ def test_setitem_renames_ssa():
     later_consumers = trace.liveness[buf_after].consumed_by
     assert later_consumers
     assert all(s > setitem.seq for s in later_consumers)
-
-
-def test_uninstall_restores_mx_exactly():
-    tr = tracer()
-    tr.uninstall()
-    assert tr.verify_restored() == []
-    x = mx.random.normal((4, 4), key=mx.random.key(0))
-    y = x + 1.0
-    mx.eval(y)
-    global _tracer
-    _tracer = None
