@@ -16,6 +16,7 @@ any other call to the wrapped module unchanged.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Mapping
 
 import mlx.core as mx
 
@@ -56,7 +57,7 @@ replaced by kernel calls; do not edit."""
 
 import mlx.core as mx
 from autotuner_runtime import kernels as _kernels
-from autotuner_runtime.swap import ReplayWrapper
+from autotuner_runtime.swap import ReplayWrapper, flatten_arrays
 '''
 
 _DUNDER_FMT = {
@@ -194,17 +195,23 @@ class _Emitter:
         scope argument, found by identity, else its path through the
         wrapped module."""
         ref = node.scalar_args.get("receiver") or {}
-        for i, entry in enumerate(self.scope.args_template):
-            found = _object_access(entry, self.scope.obj_ids, ref.get("id"), f"a{i}")
-            if found:
-                return found
-        for k, v in self.scope.kwargs_template.items():
-            found = _object_access(v, self.scope.obj_ids, ref.get("id"), k)
-            if found:
-                return found
+        for base, template in self.scope_args():
+            for index, expr in _object_refs(template, base):
+                if self.scope.obj_ids[index] == ref.get("id"):
+                    return expr
         if ref.get("path") is None:
             raise NotReplayable(f"{node.op} (seq {node.seq}) acts on an object the wrapper cannot reach")
         return self._through_wrapped(ref["path"], f"the object {node.op} acts on")
+
+    def scope_args(self) -> list[tuple[str, object]]:
+        """(parameter name, template) for every argument the scope was called with."""
+        args = [(f"a{i}", entry) for i, entry in enumerate(self.scope.args_template)]
+        return args + list(self.scope.kwargs_template.items())
+
+    def call_args(self, args_t: tuple, kwargs_t: Mapping) -> str:
+        pieces = [self.value_expr(a) for a in args_t]
+        pieces += [f"{k}={self.value_expr(v)}" for k, v in kwargs_t.items()]
+        return ", ".join(pieces)
 
     def emit_node(self, node: TraceNode) -> None:
         if node.op == OPAQUE_OP:
@@ -220,24 +227,14 @@ class _Emitter:
 
         if state_method(node.op):
             # the model's own state object, called as the model calls it
-            pieces = [self.value_expr(a) for a in args_t]
-            pieces += [f"{k}={self.value_expr(v)}" for k, v in kwargs_t.items()]
-            expr = f"{self._receiver(node)}.{state_method(node.op)}({', '.join(pieces)})"
-            if node.out_arrays:
-                self._assign(node, expr)
-            else:
-                self.lines.append(expr)
-                self.span_map.append((node.op, node.module_address, node.position_in_module))
+            call = f"{self._receiver(node)}.{state_method(node.op)}({self.call_args(args_t, kwargs_t)})"
+            self._assign(node, call, structured=True)
         elif compiled_path(node.op):
             # the model's own compiled section, called as the model calls it
-            pieces = [self.value_expr(a) for a in args_t]
-            pieces += [f"{k}={self.value_expr(v)}" for k, v in kwargs_t.items()]
-            self._assign(node, f"_kernels.imported({compiled_path(node.op)!r})({', '.join(pieces)})")
+            call = f"_kernels.imported({compiled_path(node.op)!r})({self.call_args(args_t, kwargs_t)})"
+            self._assign(node, call, structured=True)
         elif node.op.startswith("mx."):
-            pieces = [self.value_expr(a) for a in args_t]
-            pieces += [f"{k}={self.value_expr(v)}" for k, v in kwargs_t.items()]
-            expr = f"{node.op}({', '.join(pieces)})"
-            self._assign(node, expr)
+            self._assign(node, f"{node.op}({self.call_args(args_t, kwargs_t)})")
         elif short in _DUNDER_FMT:
             operands = [self.value_expr(a) for a in args_t]
             self._assign(node, _DUNDER_FMT[short].format(*operands))
@@ -259,16 +256,20 @@ class _Emitter:
             self._assign(node, f"{self.value_expr(args_t[0])}.T")
         elif node.op.startswith("array."):
             base = self.value_expr(args_t[0])
-            pieces = [self.value_expr(a) for a in args_t[1:]]
-            pieces += [f"{k}={self.value_expr(v)}" for k, v in kwargs_t.items()]
-            self._assign(node, f"{base}.{short}({', '.join(pieces)})")
+            self._assign(node, f"{base}.{short}({self.call_args(args_t[1:], kwargs_t)})")
         else:
             raise NotReplayable(f"no emission rule for op {node.op!r}")
 
-    def _assign(self, node: TraceNode, expr: str) -> None:
+    def _assign(self, node: TraceNode, expr: str, structured: bool = False) -> None:
+        """Bind the node's outputs to expr. A structured call (the model's
+        own method or compiled section) returns whatever shape its code
+        returns, so its arrays are taken in the recorder's flattening order."""
         outs = [self.name(a) for a in node.out_arrays]
-        if len(outs) == 1:
-            self.lines.append(f"{outs[0]} = {expr}")
+        if not outs:
+            self.lines.append(expr)
+        elif structured:
+            targets = ", ".join(outs) + ("," if len(outs) == 1 else "")
+            self.lines.append(f"{targets} = flatten_arrays({expr})")
         else:
             self.lines.append(f"{', '.join(outs)} = {expr}")
         self.bound.update(node.out_arrays)
@@ -286,7 +287,8 @@ class _Emitter:
         ins = ", ".join(self.name(a) for a in splice.input_ids)
         self.lines.append(f"_s = self._specs[{kid!r}]")
         self.lines.append(f"_ins = [{ins}]")
-        self.lines.append(f"if _kernels.fallback_fires(_s, _ins):")
+        self.lines.append("_outs = _kernels.try_call(_s, _ins)")
+        self.lines.append("if _outs is None:")
         saved = self.lines
         self.lines = []
         for node in span:
@@ -297,7 +299,6 @@ class _Emitter:
         for line in fallback_lines:
             self.lines.append("    " + line)
         self.lines.append("else:")
-        self.lines.append(f"    _outs = _kernels.call(_s, _ins)")
         for i, aid in enumerate(splice.output_ids):
             self.lines.append(f"    {self.name(aid)} = _outs[{i}]")
         self.bound.update(splice.output_ids)
@@ -305,32 +306,17 @@ class _Emitter:
         self.span_map.append(("custom_kernel", splice.fingerprint, kid))
 
 
-def _object_access(template: object, obj_ids: tuple, oid: int | None, base: str) -> str | None:
-    """The access expression for the object with id oid inside a call
-    argument template (a bare object, or one inside a list or dict)."""
+def _object_refs(template: object, base: str):
+    """(obj_ids index, access expression) for every object inside a call
+    argument template: a bare object, or one inside a list or dict."""
     if isinstance(template, ObjectRef):
-        return base if obj_ids[template.index] == oid else None
-    if isinstance(template, (list, tuple)):
+        yield template.index, base
+    elif isinstance(template, (list, tuple)):
         for i, v in enumerate(template):
-            found = _object_access(v, obj_ids, oid, f"{base}[{i}]")
-            if found:
-                return found
+            yield from _object_refs(v, f"{base}[{i}]")
     elif isinstance(template, dict):
         for k, v in template.items():
-            found = _object_access(v, obj_ids, oid, f"{base}[{k!r}]")
-            if found:
-                return found
-    return None
-
-
-def _holds_object(template: object) -> bool:
-    if isinstance(template, ObjectRef):
-        return True
-    if isinstance(template, (list, tuple)):
-        return any(_holds_object(v) for v in template)
-    if isinstance(template, dict):
-        return any(_holds_object(v) for v in template.values())
-    return False
+            yield from _object_refs(v, f"{base}[{k!r}]")
 
 
 def _shape_guard(trace: Trace, scope: ScopeCall, nodes: list[TraceNode]) -> list[str]:
@@ -364,24 +350,21 @@ def emit_wrapper(
         raise NotReplayable(f"scope {scope.address!r} recorded no ops")
     em = _Emitter(trace, scope)
 
-    # bind entering arrays from the call arguments; objects (a cache) pass
-    # through under their own names, for the state calls that act on them
+    # positional arguments arrive as the model passed them, so they take no
+    # defaults; keyword arguments default to the recorded literal, or None
+    # for an array or an object (a cache) the body reaches by name
     sig_parts = []
     for i, entry in enumerate(scope.args_template):
+        sig_parts.append(f"a{i}")
         if isinstance(entry, ArrayRef):
-            sig_parts.append(f"a{i}")
             em.lines.append(f"{em.name(scope.arg_ids[entry.index])} = a{i}")
             em.bound.add(scope.arg_ids[entry.index])
-        elif _holds_object(entry):
-            sig_parts.append(f"a{i}")
-        else:
-            sig_parts.append(f"a{i}={_literal(entry)}")
     for k, v in scope.kwargs_template.items():
         if isinstance(v, ArrayRef):
             sig_parts.append(f"{k}=None")
             em.lines.append(f"{em.name(scope.arg_ids[v.index])} = {k}")
             em.bound.add(scope.arg_ids[v.index])
-        elif _holds_object(v):
+        elif any(_object_refs(v, k)):
             sig_parts.append(f"{k}=None")
         else:
             sig_parts.append(f"{k}={_literal(v)}")

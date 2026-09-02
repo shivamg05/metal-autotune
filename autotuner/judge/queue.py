@@ -57,26 +57,26 @@ class Queue:
         return tuple(it.id for it in self._items)
 
     def seed(self, items: Sequence[QueueItem]) -> None:
-        """Load the judge's seed queue. Once per region, before any verdict."""
+        """Load the judge's seed queue: one batch of inserts, under the same
+        rules as any later batch. Once per region, before any verdict."""
         if self._items or self._verdicts:
             raise QueueError("seed is only legal on an empty queue with no verdicts")
-        seen: set[str] = set()
-        for it in items:
-            self._check_new_item(it, seen)
-            if it.depends_on is not None and it.depends_on not in seen:
-                raise QueueError(f"item {it.id!r} depends on {it.depends_on!r}, which is not an earlier item")
-            seen.add(it.id)
-        self._items = list(items)
+        self.apply_mutations([InsertItem(item=it) for it in items])
 
     def peek_ready(self) -> QueueItem | None:
         """The front item whose depends_on condition holds, left in place."""
         return next((item for item in self._items if self._satisfied(item)), None)
 
     def pop_ready(self, wanted: str | None = None) -> QueueItem | None:
-        """Remove and return the front ready item, or the ready item named by
-        wanted when there is one. Unsatisfied items are skipped, not consumed."""
+        """Remove and return the front ready item, or the item named by
+        wanted, which must itself be ready: a kernel written for one item is
+        never evaluated under another's name. Unsatisfied items are skipped,
+        not consumed."""
         ready = [item for item in self._items if self._satisfied(item)]
-        chosen = next((item for item in ready if item.id == wanted), ready[0] if ready else None)
+        if wanted is None:
+            chosen = ready[0] if ready else None
+        else:
+            chosen = next((item for item in ready if item.id == wanted), None)
         if chosen is None:
             return None
         self._items.remove(chosen)
@@ -96,9 +96,11 @@ class Queue:
 
     def apply_mutations(self, mutations: Iterable[Mutation]) -> None:
         """Insert, delete, reorder, as one batch: all of it lands or none of
-        it does, and a dependency is judged against the queue the batch
-        leaves behind, so deleting a parent together with its dependents is
-        legal in either order."""
+        it does, and the rules are judged against the queue the batch leaves
+        behind. A dependency names an earlier item: one already run, or one
+        queued ahead of the dependent, so deleting a parent together with its
+        dependents is legal in either order, and no item can wait on itself
+        or on one behind it."""
         items = list(self._items)
         for m in mutations:
             if isinstance(m, InsertItem):
@@ -109,12 +111,13 @@ class Queue:
                 items = self._reorder(items, m)
             else:
                 raise QueueError(f"unknown mutation {m!r}")
-        known = {it.id for it in items} | set(self._verdicts) | ({self._in_flight} - {None})
+        earlier = self._executed()
         for it in items:
-            if it.depends_on is not None and it.depends_on not in known:
+            if it.depends_on is not None and it.depends_on not in earlier:
                 raise QueueError(
-                    f"item {it.id!r} would be stranded: it depends on {it.depends_on!r}, "
-                    f"which the batch leaves neither queued nor executed")
+                    f"item {it.id!r} depends on {it.depends_on!r}, which is neither an item "
+                    f"already run nor one queued ahead of it")
+            earlier.add(it.id)
         self._items = items
 
     def snapshot(self) -> tuple[dict, ...]:
@@ -139,19 +142,19 @@ class Queue:
         outcome = self._verdicts.get(item.depends_on)
         return outcome is not None and outcome in _SATISFIES[item.condition]
 
-    def _check_new_item(self, item: QueueItem, earlier: set[str]) -> None:
-        if item.id in ("scaffold", "scafix"):
-            # these tag harness-built kernels; a judge item using one would
-            # silently overwrite the real kernel's identity
-            raise QueueError(f"item id {item.id!r} is reserved for harness kernels")
-        known = earlier | {it.id for it in self._items} | set(self._verdicts)
-        if self._in_flight is not None:
-            known.add(self._in_flight)
-        if item.id in known:
-            raise QueueError(f"item id {item.id!r} already exists in this region")
+    def _executed(self) -> set[str]:
+        """Ids that have run, or are running: a dependency may name them, and
+        no new item may reuse them."""
+        return set(self._verdicts) | ({self._in_flight} - {None})
 
     def _insert(self, items: list[QueueItem], m: InsertItem) -> list[QueueItem]:
-        self._check_new_item(m.item, {it.id for it in items})
+        new = m.item
+        if new.id in ("scaffold", "scafix"):
+            # these tag harness-built kernels; a judge item using one would
+            # silently overwrite the real kernel's identity
+            raise QueueError(f"item id {new.id!r} is reserved for harness kernels")
+        if new.id in self._executed() or any(it.id == new.id for it in items):
+            raise QueueError(f"item id {new.id!r} already exists in this region")
         if m.before is None:
             return items + [m.item]
         for i, it in enumerate(items):

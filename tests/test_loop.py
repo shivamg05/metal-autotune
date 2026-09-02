@@ -317,6 +317,49 @@ def test_failed_first_item_lets_the_judge_insert_a_fix(tmp_path, monkeypatch):
     assert refused and "yield" in refused[0]["reason"]
 
 
+def test_a_refused_seed_is_asked_again_not_closed(tmp_path, monkeypatch):
+    """The budget is the only close rule, at seed too: a seed queue the
+    harness refuses (here an id reserved for the starting kernel) comes back
+    to the judge as plan_refused, and its next reply may plan and write."""
+    only_the_chain(monkeypatch)
+    seen = []
+
+    def factory(region):
+        if len(region.ops) != 8:
+            return yielding_judge(region)
+        j = ScriptedJudge([
+            {"queue": [{"id": "scaffold", "kind": "on-chip", "assoc_tag": "preserving",
+                        "hypothesis": "an id the harness keeps for its own kernel"}]},
+            {"mutations": [{"op": "insert", "item": {
+                "id": "h1", "kind": "on-chip", "assoc_tag": "preserving",
+                "hypothesis": "keep the chain's intermediates in registers"}}],
+             "kernel": {
+                "source": FUSED_CHAIN_SOURCE, "parent_kernel_id": "scaffold", "item_id": "h1",
+                "grid": ["in0.shape[0] * in0.shape[1]", "1", "1"],
+                "threadgroup": ["min(in0.shape[0] * in0.shape[1], 256)", "1", "1"],
+                "output_shapes": [["in0.shape[0]", "in0.shape[1]"]],
+            }},
+        ])
+        orig = j.next
+
+        def recording_next(meta, verdict):
+            seen.append(verdict)
+            return orig(meta, verdict)
+
+        j.next = recording_next
+        return j
+
+    manifest = write_manifest(tmp_path, "planted_win.py", (64, 1024))
+    runner = JobRunner(manifest, tmp_path / "work", judge_factory=factory, clock_pairs=4,
+                       session=Session(sleep=lambda s: None))
+    report = runner.run()
+    chain = next(r for r in report.regions if len(r["ops"]) == 8)
+    assert "reserved" in seen[0]["plan_refused"]
+    rows = {h["id"]: h for h in report.hypotheses if h["region"] == chain["fingerprint"]}
+    assert rows["h1"]["verdict"] in ("correct_slower", "shipped"), rows
+    assert "budget is spent" in chain["close_rule"]
+
+
 def test_a_busy_or_throttled_machine_is_named_not_refused(tmp_path, monkeypatch):
     """A laptop's GPU is shared with whatever else is open, and every verdict
     is a paired comparison taken in one window, so the job goes on: the busy

@@ -332,7 +332,7 @@ judge_returns:
   a hypothesis queue in English  # Metal is written only for the front item</code></pre>
 <h3 id="hypothesis-queue-and-conditionals">Hypothesis queue and conditionals</h3>
 <p>The judge plans in English and pays in Metal, one item at a time. It seeds a queue of hypotheses; only the front item is turned into an actual kernel. After each verdict it may insert, delete, or reorder, so nobody knows in advance how many hypotheses a region needs. The loop runs until the region&rsquo;s budget is spent (Closing a region); an empty queue is not an end, the judge is asked for more.</p>
-<p>Plans are conditional, and that is normal: “get the intermediates into registers,” then “if that is correct, retile K,” then “if it ships, unroll.” Failure branches too: “if three correct-but-slow schedules never beat the library, yield and let the smaller overlapping region take its turn.” Mutually exclusive families (one-pass vs two-pass attention) delete each other once one ships. What never happens is writing the retile before the kernel it depends on exists: a dependency names an earlier item and the outcome it needs.</p>
+<p>Plans are conditional, and that is normal: “get the intermediates into registers,” then “if that is correct, retile K,” then “if it ships, unroll.” Failure branches too: “if three correct-but-slow schedules never beat the library, drop that family and open a different one.” Mutually exclusive families (one-pass vs two-pass attention) delete each other once one ships. What never happens is writing the retile before the kernel it depends on exists: a dependency names an earlier item and the outcome it needs.</p>
 <p>A queue, concretely:</p>
 <pre><code>queue item:
   id:         h2

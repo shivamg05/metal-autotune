@@ -213,8 +213,8 @@ class Patcher:
             "kernel_call": orig_kernel_call,
         }
 
-        def kernel_call_wrapper(spec, inputs, init_value=None):
-            result = orig_kernel_call(spec, inputs, init_value=init_value)
+        def kernel_call_wrapper(spec, inputs, init_value=None, launch=None):
+            result = orig_kernel_call(spec, inputs, init_value=init_value, launch=launch)
             recorder.maybe_record(
                 "custom_kernel", tuple(inputs), {"kernel_id": spec.kernel_id}, result
             )
@@ -277,12 +277,10 @@ class Patcher:
         return paths
 
     def _patch_state_holders(self, model: object) -> None:
-        """Every plain object holding model state (a KV cache) gets its
-        methods wrapped, once per class: a call on it while recording runs
-        with recording suppressed and records one state node, which a
-        generated wrapper replays by calling the same method on the same
-        object, so the cache write and whatever else the method does to its
-        state happen for real."""
+        """Every plain object holding arrays (a KV cache, a helper with a
+        table) gets its methods wrapped, once per class, so the recorder can
+        tell whether a call changed the object's state and collapse it into
+        one state call if it did."""
         holders = state_holders(model)
         recorder = self.recorder
         recorder.state_holders = {id(obj): path for path, obj in holders}
@@ -358,9 +356,13 @@ def _state_call(orig: Callable, name: str, recorder: Recorder) -> Callable:
     def wrapper(self_obj, *args, **kwargs):
         if not recorder.recording or id(self_obj) not in recorder.state_holders:
             return orig(self_obj, *args, **kwargs)
-        with recorder.suppressed():
+        recorder.state_enter(self_obj)
+        try:
             result = orig(self_obj, *args, **kwargs)
-        recorder.record_state_call(self_obj, name, args, kwargs, result)
+        except BaseException:
+            recorder.state_abort()
+            raise
+        recorder.state_exit(self_obj, name, args, kwargs, result)
         return result
     return wrapper
 

@@ -11,7 +11,28 @@ Module.__setattr__'s probe alive during __init__ (both platform-pinned).
 
 from __future__ import annotations
 
+import mlx.core as mx
 import mlx.nn as nn
+
+
+def flatten_arrays(tree: object) -> list[mx.array]:
+    """Every array in a nested tree of lists, tuples, and dicts, in order:
+    how the recorder counts a call's outputs, and how a generated wrapper
+    unpacks a replayed call that returns a structure."""
+    out: list[mx.array] = []
+
+    def walk(obj: object) -> None:
+        if isinstance(obj, mx.array):
+            out.append(obj)
+        elif isinstance(obj, (list, tuple)):
+            for v in obj:
+                walk(v)
+        elif isinstance(obj, dict):
+            for v in obj.values():
+                walk(v)
+
+    walk(tree)
+    return out
 
 
 class ReplayWrapper(nn.Module):

@@ -443,8 +443,17 @@ a fair one.
 - A yield costs an attempt after one free re-ask, so the budget is spent by
   the judge and never handed back.
 - `family_id` is the judge's own label; the harness counts nothing per family.
-- A reply may carry a one-sentence `lesson`; the job keeps them and every
-  later call shows them.
+- A reply may carry a one-sentence `lesson`; the job keeps the newest 24 and
+  every later call shows them.
+- (you ruled, 2026-09-02 evening) A busy or slow GPU reading is a warning,
+  never a refusal: this is a laptop, and every verdict is paired in one window.
+- (bug hunt, 2026-09-02 night) A method on a state holder collapses into a
+  state call only if it changed the object's arrays; a pure helper's ops stay
+  visible. A dependency names an earlier item, for seeds and batches alike. A
+  kernel the judge writes for an item that is not ready is refused, never
+  evaluated under another item's name. A refused seed is asked again like any
+  refused reply. The compiled clock is taken only when the manifest asks for
+  the compiled baseline.
 
 ## The plan
 
@@ -455,6 +464,17 @@ a fair one.
 - [x] 5. History, lessons, and closed regions in the briefing.
 - [x] 6. State calls: KV-cache scopes deliverable; fixture and real-model check.
 - [x] 6b. A busy or throttled machine is named in the log, not refused.
+- [x] 6c. The bug hunt before the next run (ten review angles over the
+      evening's commits): the generated wrapper's signature was invalid
+      Python whenever a literal argument preceded the cache (every attention
+      and block scope of the real model); caches returning their own buffer
+      or a nested structure broke delivery; the state-call rule hid pure
+      helpers' ops; a kernel named for a waiting item was evaluated under
+      another's name; seeds, cycles, and re-inserted ids had inconsistent
+      rules; refused replies were filed under queued items; the compiled
+      clock ran against a plain manifest; the fallback predicate was read
+      after the grid arithmetic; the wrapper paid two launch lookups per
+      call; the room line lost the cache bytes. All fixed with tests.
 - [ ] 7. The 4-bit Qwen3 job on a quiet GPU with the live judge.
 - [ ] 8. Starting kernels for attention, dequantize, and slice reads.
 - [ ] 9. Still open from the last audit: re-pricing after a close, the

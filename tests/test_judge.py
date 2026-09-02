@@ -207,8 +207,11 @@ def test_seed_rules():
     with pytest.raises(QueueError):
         q.seed([item("h1"), item("h1")])
     q = Queue()
-    with pytest.raises(QueueError):
+    with pytest.raises(QueueError, match="ahead of it"):  # a dependency names an earlier item
         q.seed([item("h1", depends_on="h2", condition="failed"), item("h2")])
+    q = Queue()
+    with pytest.raises(QueueError, match="ahead of it"):  # never itself
+        q.seed([item("h1", depends_on="h1", condition="failed")])
     q = Queue()
     q.seed([item("h1")])
     with pytest.raises(QueueError):
@@ -247,7 +250,7 @@ def test_mutation_errors():
 
     with pytest.raises(QueueError):             # duplicate id in region history
         q.apply_mutations(muts([{"op": "insert", "item": witem("h1")}]))
-    with pytest.raises(QueueError):             # dependency does not exist yet
+    with pytest.raises(QueueError):             # dependency names nothing earlier
         q.apply_mutations(muts([{"op": "insert",
                                  "item": witem("h5", depends_on="h9", condition="correct")}]))
     with pytest.raises(QueueError):
@@ -490,7 +493,7 @@ def test_client_valid_first_try():
     call = sdk.messages.calls[0]
     assert "temperature" not in call            # current models reject sampling params
     assert json.loads(call["messages"][0]["content"]) == {"region_state": {"stub": True}}
-    assert "Response schema (seed)" in call["system"]
+    assert "Response schema (seed)" in call["system"][0]["text"]
 
 
 def test_client_malformed_burns_one_reask_then_succeeds(monkeypatch):
@@ -596,17 +599,17 @@ def test_delete_that_strands_dependents_is_rejected():
 
     q = Queue()
     q.seed([_plain_item("a"), _plain_item("b", depends_on="a", condition="correct")])
-    with pytest.raises(QueueError, match="strand"):
+    with pytest.raises(QueueError, match="ahead of it"):
         q.apply_mutations([DeleteItem(item_id="a")])
     assert q.ids() == ("a", "b")
 
 
 def test_a_batch_lands_whole_or_not_at_all():
-    """The 13:54 Qwen run lost two regions to this: the judge deleted a
-    parent before its dependents in one reply, the first delete was refused
-    against the live queue, and the kernel written in that reply was thrown
-    away. A batch is judged by the queue it leaves behind, in either order,
-    and a batch that fails on its last edit changes nothing."""
+    """A live run lost two regions to this: the judge deleted a parent
+    before its dependents in one reply, the first delete was refused against
+    the live queue, and the kernel written in that reply was thrown away. A
+    batch is judged by the queue it leaves behind, in either order, and a
+    batch that fails on its last edit changes nothing."""
     from autotuner.judge.schema import DeleteItem, InsertItem
 
     for order in (("a", "b"), ("b", "a")):
@@ -620,10 +623,32 @@ def test_a_batch_lands_whole_or_not_at_all():
         q.apply_mutations([DeleteItem(item_id="a"), InsertItem(item=_plain_item("c")),
                            DeleteItem(item_id="zzz")])
     assert q.ids() == ("a", "b")
-    # a dependency on an item inserted later in the same batch is fine
-    q.apply_mutations([InsertItem(item=_plain_item("d", depends_on="e", condition="failed")),
-                       InsertItem(item=_plain_item("e"))])
-    assert q.ids() == ("a", "b", "d", "e")
+    # an item never run may be deleted and rewritten under its own id in one batch
+    q.apply_mutations([DeleteItem(item_id="a"), InsertItem(item=_plain_item("a"), before="b")])
+    assert q.ids() == ("a", "b")
+    # a dependency names an item ahead of it in the queue the batch leaves, never one behind or itself
+    q.apply_mutations([InsertItem(item=_plain_item("e")),
+                       InsertItem(item=_plain_item("d", depends_on="e", condition="failed"))])
+    assert q.ids() == ("a", "b", "e", "d")
+    with pytest.raises(QueueError, match="ahead of it"):
+        q.apply_mutations([InsertItem(item=_plain_item("f", depends_on="g", condition="failed")),
+                           InsertItem(item=_plain_item("g"))])
+    with pytest.raises(QueueError, match="ahead of it"):
+        q.apply_mutations([InsertItem(item=_plain_item("h", depends_on="h", condition="correct"))])
+    assert q.ids() == ("a", "b", "e", "d")
+
+
+def test_a_kernel_named_for_a_waiting_item_is_not_taken_for_another():
+    """The judge writes for h3, which waits on h1; h1 is ready. The kernel
+    must not be evaluated under h1's name: the pop returns nothing and the
+    loop refuses the reply with the reason."""
+    q = Queue()
+    q.seed([_plain_item("h1"), _plain_item("h3", depends_on="h1", condition="correct")])
+    assert q.pop_ready("h3") is None
+    assert q.pop_ready("nope") is None
+    assert q.pop_ready().id == "h1"
+    q.record_verdict("h1", "correct_slower")
+    assert q.pop_ready("h3").id == "h3"
 
 
 def test_client_transcript_records_every_ask_and_reply(tmp_path):

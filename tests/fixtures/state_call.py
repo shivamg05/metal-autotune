@@ -3,7 +3,8 @@ KV cache is. The write to the cache happens inside the method, so the
 recorder sees one state call rather than a slice write it could never
 replay, and the chains before and after it can be delivered at the layer
 scope: its wrapper calls the same method on the same object. The root
-rewinds the offset after every call so the step is repeatable."""
+rewinds the offset after every call so the step is repeatable, and hands
+the layer a literal before the cache, the way mlx_lm passes its mask."""
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -27,7 +28,7 @@ class Layer(nn.Module):
         self.g = mx.random.normal((16,))
         self.b = mx.random.normal((16,))
 
-    def __call__(self, x, cache):
+    def __call__(self, x, mask, cache):
         k = mx.tanh((x + self.g) * self.b)  # a chain one kernel can replace, before the state call
         kv = cache.update_and_fetch(k)     # the state call: a hidden write with real side effects
         return kv.sum(axis=0) + x          # a chain after it
@@ -40,7 +41,7 @@ class Step(nn.Module):
         self.cache = Cache()
 
     def __call__(self, x):
-        y = self.layer(x, self.cache)
+        y = self.layer(x, None, self.cache)  # a literal before the cache, as mlx_lm passes its mask
         self.cache.offset = 4              # rewind: every call is the same step
         return y
 

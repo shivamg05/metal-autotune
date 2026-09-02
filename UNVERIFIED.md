@@ -43,6 +43,12 @@ Every code path not yet executed on real hardware, and why. Delete entries as th
 - `autotuner/manifest.py` check_build timeout path: never hit.
 - Budget-only persistence with a live judge: refused yields, refused plan
   edits, and the attempts they cost are tested against scripted judges only.
+- Two known edges of delivery, neither exercised by a real model yet: a
+  weight or state object stored under a plain dict with an identifier key is
+  reached by attribute in the generated wrapper and fails at certification
+  with an AttributeError rather than a named reason; and a region that reads
+  what a state call returns (attention reading the cache slice) receives a
+  view, whose contiguity copy at the kernel call the region clock never priced.
 - State calls at model scale: the Qwen3 4-bit decode step traces with 28
   `state:KVCache.update_and_fetch` calls and 66 of 73 candidates pass the
   scope screen, and the attention and block scopes certify on the fixture; no

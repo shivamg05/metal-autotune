@@ -230,6 +230,48 @@ def test_a_step_that_keeps_state_gets_the_plain_baseline(tmp_path):
         assert r.tracer.verify_restored() == []
 
 
+def test_a_step_whose_cache_has_a_method_gets_the_plain_baseline(tmp_path):
+    """The same rule through the other door. mlx_lm's KV cache writes inside a
+    method, so the write records as one state call and the model keeps no
+    recorded array: the arrays-kept count alone would call this step
+    compilable, take a compiled clock that returns a plausible number, and
+    leave the model dead for every later call."""
+    r = _runner(tmp_path, "[4, 16]", fixture="state_call.py", baseline="compiled")
+    try:
+        assert not r.traces["main"].python_retained()  # the blind spot: nothing kept
+        x = r.tensors["main"]
+        before = r.model(*x)
+        mx.eval(before)
+        r._clock_steps()
+        assert r.baseline == "plain"
+        b = r.report.baseline
+        assert (b["requested"], b["choice"], b["compiled_available"]) == ("compiled", "plain", False)
+        assert "state calls" in b["reason"]
+        assert b["clocks_ms"]["main"]["compiled"] is None
+        after = r.model(*x)
+        mx.eval(after)
+        assert mx.array_equal(before, after).item()  # alive, and the same step every call
+    finally:
+        r.tracer.uninstall()
+        assert r.tracer.verify_restored() == []
+
+
+def test_a_compiled_clock_that_breaks_the_model_stops_the_job(tmp_path, monkeypatch):
+    """The guard behind the detector. If a step keeps state neither kind of
+    evidence shows, the compiled clock still returns a number and the model is
+    already broken; the job must stop there rather than measure every later
+    win against garbage."""
+    import autotuner.loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "_state_marks", lambda trace: "")  # blind the detector
+    r = _runner(tmp_path, "[4, 16]", fixture="state_call.py", baseline="compiled")
+    try:
+        with pytest.raises(RuntimeError, match="compiled baseline"):
+            r._clock_steps()
+    finally:
+        r.tracer.uninstall()
+
+
 def test_a_crash_mid_install_rolls_the_model_back(runner, tmp_path, monkeypatch):
     """An unexpected exception inside the install must leave the model, the
     artifact record, and the patch surface exactly as before, and be logged

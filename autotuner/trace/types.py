@@ -13,6 +13,7 @@ from enum import Enum
 from typing import Mapping
 
 Spec = tuple[tuple[int, ...], str]  # (shape, dtype name)
+STATE_PREFIX = "state:"             # a call on an object holding model state, recorded whole
 
 
 @dataclass(frozen=True)
@@ -57,11 +58,16 @@ class Trace:
     scope_calls: tuple["ScopeCall", ...] = ()   # per module call: entry/exit record
 
     def python_retained(self) -> list[int]:
-        """Arrays the model itself kept after the pass: a KV cache it wrote,
-        a value it stored on itself. A step with any cannot be compiled from
-        outside the model."""
+        """Arrays the model itself kept after the pass: a value it stored on
+        itself, a buffer it wrote in place outside any state call."""
         return sorted(a for a, live in self.liveness.items()
                       if live.kind is Retention.PYTHON_RETAINED)
+
+    def state_calls(self) -> list[int]:
+        """Seqs of the calls that changed an object's state (a KV cache
+        write), recorded whole because the wrapper replays them by calling
+        the same method on the same object."""
+        return [n.seq for n in self.nodes if n.op.startswith(STATE_PREFIX)]
 
     def span_specs(self, start: int, end: int) -> dict[int, Spec]:
         """array id -> (shape, dtype) for every array the span's calls touch."""

@@ -444,3 +444,19 @@ call, the harness's own chained, cache-cold, paired clock.
   (538 ops) costs 0.77 ms of CPU against a 5.4 to 6 ms evaluated step, so the step
   is GPU-bound and the call site's CPU cost is hidden in a model; it decided small
   regions only inside the clock.
+
+## spike_14_compile_state_call: compiling a step whose cache is written inside a method (2026-09-02)
+
+`spikes/spike_14_compile_state_call.py` on the Qwen3 0.6B 4-bit decode step, mlx 0.32.2.
+
+- **FACT state-call-hides-retention.** With the cache write recorded as one state
+  call, the trace reports no python-retained array (734 nodes, 28 state calls); the
+  count of kept arrays alone would call the step compilable. The baseline decision
+  therefore reads every recorded sign that the step is not a pure function: kept
+  arrays, state calls, an evaluation mid-step.
+- **FACT compile-breaks-on-the-second-call.** `mx.compile` over the step returns a
+  plausible result on its first compiled call and leaves the cache holding a tracer;
+  the second compile, and every plain call after it, fails with "attempting to eval
+  an array without a primitive". A missed detection is therefore silent for one
+  clock, which is why the compiled clock is followed by a plain call that must
+  return the same bits (loop._assert_survived_compile).

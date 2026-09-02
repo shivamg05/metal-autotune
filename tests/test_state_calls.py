@@ -1,23 +1,27 @@
 """A call on an object that holds model state (a KV cache) is one recorded
 state call: a barrier for regions, and replayed by the generated wrapper as
 the same call on the same object, so the chains on either side of a cache
-write can be delivered. The 13:54 Qwen run stranded 67 of 82 candidates on
-that write."""
+write can be delivered. Before this every fusion inside a decoder's
+attention block stranded on that write."""
 
 import importlib.util
 import sys
 from pathlib import Path
 
 import mlx.core as mx
+import mlx.nn as nn
 
 from autotuner.bind.certify import certify_identity, screen_scope
 from autotuner.bind.emit import MODULE_HEADER, Splice, emit_wrapper
 from autotuner.bind.verify import verify_retrace
 from autotuner.regions.build import build_stretches
+from autotuner.regions.roofline import step_floor
+from autotuner.measure.peaks import Peaks
 from autotuner.trace.replay import replay
 from autotuner.trace.types import Retention
+from autotuner.trace.walk import state_holders
 from autotuner_runtime.kernels import KernelSpec
-from autotuner_runtime.swap import install, uninstall
+from autotuner_runtime.swap import flatten_arrays, install, uninstall
 from tests.conftest import current_tracer, tracer_for_module
 
 _module_tracer = tracer_for_module()
@@ -50,9 +54,9 @@ def build_model():
     return mod.build()
 
 
-def traced():
-    model = build_model()
-    x = mx.random.normal((4, 16), key=mx.random.key(5))
+def traced(model=None, shape=(4, 16)):
+    model = model or build_model()
+    x = mx.random.normal(shape, key=mx.random.key(5))
     trace, _ = current_tracer().trace(model, [x])
     return model, x, trace
 
@@ -69,21 +73,42 @@ def outputs(model, x, calls=3):
     return outs
 
 
+def layer_scope(trace):
+    return next(sc for sc in trace.scope_calls if sc.address == "layer@0")
+
+
+def certify_layer(model, x, trace):
+    layer = layer_scope(trace)
+    assert screen_scope(trace, layer.stack) is None
+    cls = wrapper_class(emit_wrapper(trace, layer, [], "IdLayer"))
+
+    def install_cb(wrapper):
+        occupant = install(model, "layer", wrapper)
+        return lambda: uninstall(model, "layer", occupant)
+
+    return certify_identity(build_wrapper=lambda: cls(model.layer, {}),
+                            install=install_cb, runs=[lambda: model(x)])
+
+
 def test_the_cache_method_records_as_one_state_call():
     model, x, trace = traced()
     ops = [n.op for n in trace.nodes]
     assert ops == ["array.__add__", "array.__mul__", "mx.tanh", STATE_OP, "array.sum", "array.__add__"]
     state = trace.nodes[3]
     assert state.in_arrays == trace.nodes[2].out_arrays and len(state.out_arrays) == 1
-    assert state.scalar_args["receiver"] == {"id": id(model.cache), "path": "cache"}
+    receiver = state.scalar_args["receiver"]
+    assert (receiver["id"], receiver["path"]) == (id(model.cache), "cache")
+    # the ops the method ran, collapsed because one of them wrote the cache
+    assert receiver["inner_ops"] == ["array.__getitem__", "array.__setitem__", "array.__getitem__"]
     # the write inside the method is the method's business: nothing the
     # model keeps is a recorded production, and the buffer is a weight
-    assert not trace.python_retained()
+    assert not trace.python_retained() and trace.state_calls() == [3]
     assert "cache.keys" in trace.weight_paths.values()
     assert trace.liveness[state.out_arrays[0]].kind is Retention.CONSUMED
-    # the layer scope received the cache as an object argument
-    layer = next(sc for sc in trace.scope_calls if sc.address == "layer@0")
+    # the layer scope received the cache as an object argument, after a literal
+    layer = layer_scope(trace)
     assert layer.obj_ids == (id(model.cache),)
+    assert layer.args_template[1] is None
 
 
 def test_a_state_call_is_a_barrier_and_never_replays_in_process():
@@ -100,23 +125,28 @@ def test_a_state_call_is_a_barrier_and_never_replays_in_process():
         raise AssertionError("a state call must not replay in process")
 
 
+def test_the_scout_line_counts_the_state_a_step_reads_and_the_launches_it_fires():
+    """Hiding the cache write must not hide its physics: the bytes the state
+    call hands back are state read from memory, and its inner ops are
+    launches."""
+    _, _, trace = traced()
+    f = step_floor(trace, Peaks(bandwidth_gbps=100.0, flops_gflops={"float32": 3000.0}), step_ms=1.0)
+    x_bytes, g_bytes, kv_bytes = 4 * 16 * 4, 16 * 4, 5 * 16 * 4
+    assert f["bytes_mb"] * 1e6 == x_bytes + 2 * g_bytes + kv_bytes + x_bytes  # + the output
+    assert f["launches"] == 3 + 1 + 2  # the chain, the setitem inside the state call, sum and add
+
+
 def test_the_layer_scope_certifies_with_the_state_call_replayed():
     """The identity wrapper calls cache.update_and_fetch on the object the
-    layer was handed, so the write and the offset bump happen for real and
-    three repeated calls match the original bit for bit."""
+    layer was handed, after a literal argument, so the write and the offset
+    bump happen for real and three repeated calls match the original bit
+    for bit. Its signature must be valid Python: a positional parameter
+    after a literal one takes no default."""
     model, x, trace = traced()
-    layer = next(sc for sc in trace.scope_calls if sc.address == "layer@0")
-    assert screen_scope(trace, layer.stack) is None
-    emitted = emit_wrapper(trace, layer, [], "IdLayer")
-    assert "a1.update_and_fetch(" in emitted.source
-    cls = wrapper_class(emitted)
-
-    def install_cb(wrapper):
-        occupant = install(model, "layer", wrapper)
-        return lambda: uninstall(model, "layer", occupant)
-
-    result = certify_identity(build_wrapper=lambda: cls(model.layer, {}),
-                              install=install_cb, runs=[lambda: model(x)])
+    emitted = emit_wrapper(trace, layer_scope(trace), [], "IdLayer")
+    assert "def __call__(self, a0, a1, a2):" in emitted.source
+    assert "a2.update_and_fetch(" in emitted.source
+    result = certify_layer(model, x, trace)
     assert result.ok, result.reason
 
 
@@ -126,12 +156,12 @@ def test_a_kernel_ships_before_the_cache_write_and_the_state_advances():
     kernel wrote."""
     model, x, trace = traced()
     before = outputs(model, x)
-    layer = next(sc for sc in trace.scope_calls if sc.address == "layer@0")
     chain = trace.nodes[0:3]
     splice = Splice(kernel=FUSED_KERNEL, start_seq=0, end_seq=2,
                     input_ids=(chain[0].in_arrays[0], chain[0].in_arrays[1], chain[1].in_arrays[1]),
                     output_ids=chain[2].out_arrays, fingerprint="pre_cache")
-    emitted = emit_wrapper(trace, layer, [splice], "FusedLayer")
+    emitted = emit_wrapper(trace, layer_scope(trace), [splice], "FusedLayer")
+    assert "_kernels.try_call(_s, _ins)" in emitted.source
     cls = wrapper_class(emitted)
     occupant = install(model, "layer", cls(model.layer, {FUSED_KERNEL.kernel_id: FUSED_KERNEL}))
     try:
@@ -147,3 +177,110 @@ def test_a_kernel_ships_before_the_cache_write_and_the_state_advances():
     finally:
         uninstall(model, "layer", occupant)
     assert all(mx.array_equal(a, b).item() for a, b in zip(outputs(model, x), before))
+
+
+class Step(nn.Module):
+    """A root that hands its layer a cache object and rewinds it: the shape
+    of every decode step, with the cache class chosen per test."""
+
+    def __init__(self, layer, cache):
+        super().__init__()
+        self.layer = layer
+        self.cache = cache
+
+    def __call__(self, x):
+        y = self.layer(x, None, self.cache)
+        self.cache.offset = 4
+        return y
+
+
+class Layer(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.g = mx.ones((16,))
+
+    def __call__(self, x, mask, cache):
+        return sum(k.sum(axis=0) for k in flatten_arrays(cache.update_and_fetch(mx.tanh(x * self.g)))) + x
+
+
+class OwnBuffer:
+    """A cache that hands back its buffer itself, as mlx_lm's rotating and
+    concatenating caches do."""
+
+    def __init__(self):
+        self.keys = mx.zeros((8, 16))
+        self.offset = 4
+
+    def update_and_fetch(self, k):
+        self.keys[self.offset:self.offset + 1] = k[0:1]
+        self.offset += 1
+        return self.keys
+
+
+class Nested(OwnBuffer):
+    """A cache that returns a nested structure, as mlx_lm's quantized cache
+    does with two triples."""
+
+    def update_and_fetch(self, k):
+        keys = super().update_and_fetch(k)
+        return (keys[:self.offset], keys[:2]), (keys[:1],)
+
+
+class Rebinding(OwnBuffer):
+    """A cache whose write is a rebinding, not a write in place."""
+
+    def update_and_fetch(self, k):
+        self.keys = mx.concatenate([self.keys[:self.offset], k[0:1], self.keys[self.offset + 1:]])
+        self.offset += 1
+        return self.keys[:self.offset]
+
+
+class Callable(OwnBuffer):
+    """State on an object that is itself callable."""
+
+    def __call__(self, x):
+        return x
+
+
+def test_caches_that_return_their_buffer_or_a_structure_or_rebind_all_deliver():
+    for cache_cls in (OwnBuffer, Nested, Rebinding, Callable):
+        model = Step(Layer(), cache_cls())
+        model, x, trace = traced(model)
+        state = [n for n in trace.nodes if n.op.startswith("state:")]
+        assert len(state) == 1 and state[0].op == f"state:{cache_cls.__name__}.update_and_fetch", cache_cls
+        assert not trace.python_retained(), cache_cls
+        result = certify_layer(model, x, trace)
+        assert result.ok, (cache_cls, result.reason)
+        assert model.cache.offset == 4
+
+
+class Helper:
+    """A stateless helper that holds a table: its method is pure, so its
+    ops stay in the record and can be regions, and the step keeps no state."""
+
+    def __init__(self):
+        self.table = mx.arange(16, dtype=mx.float32)
+
+    def scale(self, x):
+        return x * self.table
+
+
+class PureLayer(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.helper = Helper()
+
+    def __call__(self, x, mask, cache):
+        return mx.tanh(self.helper.scale(x)) + x
+
+
+def test_a_pure_helper_stays_visible_and_keeps_no_state():
+    model = Step(PureLayer(), OwnBuffer())
+    model.layer.helper.scale(mx.ones((4, 16)))  # a call before tracing changes nothing below
+    model, x, trace = traced(model)
+    assert [n.op for n in trace.nodes] == ["array.__mul__", "mx.tanh", "array.__add__"]
+    assert not trace.state_calls() and not trace.python_retained()
+    assert "layer.helper.table" in trace.weight_paths.values()
+    assert dict(state_holders(model))["layer.helper"] is model.layer.helper
+    result = certify_layer(model, x, trace)
+    assert result.ok, result.reason

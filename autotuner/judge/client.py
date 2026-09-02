@@ -172,7 +172,9 @@ class AnthropicJudge(JsonJudge):
             kwargs["temperature"] = self._temperature
         response = self._sdk().messages.create(
             model=self._model, max_tokens=self._max_tokens,
-            system=system, messages=messages, **kwargs,
+            # the schema and examples are the same on every call of a job
+            system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
+            messages=messages, **kwargs,
         )
         if getattr(response, "stop_reason", None) == "refusal":
             return ""

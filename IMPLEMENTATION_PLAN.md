@@ -358,19 +358,28 @@ Mechanics:
   flow from the argument, not the recorded constant); the generator enforces this and
   certification backstops it.
 - **State calls.** A plain Python object reachable from the model that holds
-  arrays (mlx_lm's KVCache, a namespace of buffers) is a state holder. While
-  recording, its methods are wrapped like module calls: the call runs with
-  recording suppressed and records one opaque node, `state:<Class>.<method>`, with
-  the object's identity and model path. The generated wrapper replays it as the
-  same call on the same object, reached through the scope's call arguments (a
-  cache handed down the tree, found by identity, even inside a list) or through
-  the wrapped module by path, so the cache write and whatever else the method does
-  to its state happen for real, where the recorder could never see them. A state
-  call is a chain barrier, never inside a region, and never replays in process.
-  Scalars the model reads off the object (a rope offset) are recorded as the
-  constants they were, which certification over repeated calls checks. Before this
-  (2026-09-02) every fusion inside an attention block stranded on the KV-cache
-  write: 67 of 82 candidates on the Qwen3 decode job, 66 of 73 viable after.
+  arrays (mlx_lm's KVCache, a namespace of buffers, a helper with a table) is a
+  state holder. While recording, its methods are wrapped like module calls, and
+  the ops inside record as usual. If the call left the object's arrays alone, a
+  pure helper, nothing else happens and those ops can be regions like any other.
+  If it changed them (a write in place, a rebinding, or a call to a method that
+  did), the ops it ran collapse into one opaque node, `state:<Class>.<method>`,
+  carrying the object's identity, its model path, and the ops it absorbed (the
+  scout line counts their launches and the returned state's bytes). The
+  generated wrapper replays it as the same call on the same object, reached
+  through the scope's call arguments (a cache handed down the tree, found by
+  identity, even inside a list) or through the wrapped module by path, and takes
+  the returned arrays in the recorder's flattening order whatever structure the
+  method returns, so the cache write and whatever else the method does to its
+  state happen for real, where the recorder could never see them. What the call
+  returns is the method's business, never a kept value, even when it is the
+  buffer itself. A state call is a chain barrier, never inside a region, and never
+  replays in process. Scalars the model reads off the object (a rope offset) are
+  recorded as the constants they were, which certification over repeated calls
+  checks: a step whose state moves between calls must be rewound by the model
+  file. Before this (2026-09-02) every fusion inside an attention block stranded
+  on the KV-cache write: 67 of 82 candidates on the Qwen3 decode job, 66 of 73
+  viable after.
 - **Static replayability screen** (at region build): a scope qualifies only if its
   recorded stream has no opaque compiled calls ANYWHERE in the scope (the wrapper
   replays the whole scope, and an opaque call has no serializable callable to
@@ -637,7 +646,7 @@ Plan defaults (tunable, recorded):
 | Constant | Default | Spec language |
 |---|---|---|
 | Region floor | 2% of step (copies combined) | "about 2%" |
-| Roofline has_room | s_max >= 1.2, from the measured floor at pricing and again from the sandbox's clock when the region opens | "barely beats ... is skipped" |
+| Roofline has_room | s_max >= 1.2, from the floor probe clocked beside the region at pricing | "barely beats ... is skipped" |
 | Launch cost per kernel (T_launch) | measured at job start via empty-kernel chain; fallback 4 us | "a few us" |
 | Minimum absolute win | 30 us per step across copies | "a few tens of microseconds" |
 | Assoc-changing kappa | 1.25 | "around 1 to 1.5" |
@@ -1211,9 +1220,14 @@ region:
   s_max and the distance of head and shipped from T_roofline
 family: assoc tag of the kernel being edited (assoc-preserving | assoc-changing)
 budget: attempts left for the region and for the job
+history: every attempt on this region so far, each with its one-line outcome
+lessons: the sentences the judge wrote for later regions of this job (an optional
+  reply field), newest last
+regions_done: the regions this job already closed, what shipped there, how many attempts
 parent: kernel source + launch expressions being edited, and its verdict
 last_verdict: outcome, failed gate, gate detail (compiler diagnostics with fixed
-  line numbers, worst numeric excess, timing samples)
+  line numbers, worst numeric excess, timing samples); plan_refused when the
+  previous reply left nothing to evaluate, with the reason
 queue: current items with satisfied/unsatisfied conditions
 menu: on-chip intermediates, specialize launch/tiles, retile, re-layout
   (must round-trip exactly), same-math different algorithm, launch changes, fix

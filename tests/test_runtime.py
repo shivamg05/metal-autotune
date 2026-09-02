@@ -79,10 +79,36 @@ def test_fallback_predicate_and_poison():
     assert mx.array_equal(y[:16], mx.ones((16,))).item()
 
 
+def test_the_fallback_decides_before_the_launch_is_evaluated():
+    """A shape-specialized kernel's launch expressions need only hold on the
+    shapes it covers: at a shape its fallback predicate excludes, the grid
+    arithmetic may not even be defined, and the wrapper must take the
+    original ops instead of raising."""
+    from autotuner_runtime.kernels import LAUNCH_CACHE_MAX, try_call
+
+    spec = KernelSpec(kernel_id="guarded", name="rt_guarded_copy", input_names=("in0",),
+                      output_names=("out0",),
+                      source="uint i = thread_position_in_grid.x; out0[i] = in0[i];",
+                      grid=("in0.shape[0]", "1", "1"),
+                      threadgroup=("in0.shape[0] // (in0.shape[0] // 8)", "1", "1"),  # divides by zero under 8
+                      output_shapes=(("in0.shape[0]",),), output_dtypes=("float32",),
+                      fallback_predicate="in0.shape[0] < 8")
+    lk = LoadedKernel(spec)
+    assert lk.fallback_fires([mx.zeros((3,))])          # no ZeroDivisionError
+    assert try_call(spec, [mx.zeros((3,))]) is None
+    x = mx.arange(16, dtype=mx.float32)
+    assert try_call(spec, [x])[0].tolist() == x.tolist()
+    with pytest.raises(ValueError, match="fallback"):
+        lk([mx.zeros((3,))])
+    for n in range(LAUNCH_CACHE_MAX + 5):
+        lk.fallback_fires([mx.zeros((8 + n,))])
+    assert len(lk._launches) <= LAUNCH_CACHE_MAX      # a long shape sweep does not grow it forever
+
+
 def test_launch_is_evaluated_once_per_call_signature(monkeypatch):
-    """Spike 13: evaluating the launch grammar on every call cost a small
-    kernel more than its GPU time. The launch is a function of the inputs'
-    shapes and dtypes, so a repeat call must not touch the evaluator."""
+    """Evaluating the launch grammar on every call cost a small kernel more
+    than its GPU time. The launch is a function of the inputs' shapes and
+    dtypes, so a repeat call must not touch the evaluator."""
     from autotuner_runtime import grammar
 
     calls = []

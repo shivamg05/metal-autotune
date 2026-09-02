@@ -20,8 +20,8 @@ import math
 from typing import Iterable
 
 from ..measure.peaks import Peaks
-from ..trace.types import Trace, TraceNode
-from .build import is_view
+from ..trace.types import STATE_PREFIX, Trace, TraceNode
+from .build import VIEW_OPS, is_view
 from .types import Region, Roofline, Stretch
 
 _DTYPE_BYTES = {
@@ -119,9 +119,17 @@ def step_floor(trace: Trace, peaks: Peaks, step_ms: float) -> dict:
         for aid, spec in zip(node.in_arrays, node.in_specs):
             if aid not in produced:
                 outside.setdefault(aid, _bytes_of(spec))
+        if node.op.startswith(STATE_PREFIX):
+            # state the step reads back from memory, and the launches the
+            # object's own method fired
+            for aid, spec in zip(node.out_arrays, node.out_specs):
+                outside.setdefault(aid, _bytes_of(spec))
+            launches += sum(op not in VIEW_OPS and op != "array.__getitem__"
+                            for op in node.scalar_args["receiver"]["inner_ops"])
+        else:
+            launches += not is_view(node)
         produced.update(node.out_arrays)
         flops += node_flops(node)
-        launches += not is_view(node)
     specs = trace.span_specs(0, len(trace.nodes) - 1)
     total = sum(outside.values()) + sum(_bytes_of(specs[a]) for a in trace.step_outputs if a in specs)
     dtype = _dominant_dtype(trace.nodes)

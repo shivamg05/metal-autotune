@@ -21,7 +21,7 @@ import mlx.core as mx
 from ..trace.recorder import OPAQUE_OP
 from ..trace.types import Retention, ScopeCall, Trace
 from ..trace.walk import flatten_arrays
-from .emit import NotReplayable, emit_wrapper, scope_nodes
+from .emit import MODULE_HEADER, NotReplayable, emit_wrapper, scope_nodes
 
 
 def find_scope_call(trace: Trace, stack: tuple[str, ...]) -> ScopeCall | None:
@@ -56,9 +56,12 @@ def screen_scope(trace: Trace, stack: tuple[str, ...]) -> str | None:
                     f"reach the reference the model kept"
                 )
     try:
-        emit_wrapper(trace, scope, [], "_ScreenProbe")
+        emitted = emit_wrapper(trace, scope, [], "_ScreenProbe")
+        compile(MODULE_HEADER + emitted.source, "<screen>", "exec")
     except NotReplayable as e:
         return str(e)
+    except SyntaxError as e:
+        return f"the generated wrapper is not valid Python: {e.msg} at line {e.lineno}"
     return None
 
 
@@ -100,8 +103,10 @@ def certify_identity(
                     if not mx.array_equal(g, w).item():
                         return CertificationResult(
                             False,
-                            f"run {i} call {j} output {k}: identity replay is not "
-                            f"bitwise invisible",
+                            f"run {i} call {j} output {k}: identity replay is not bitwise "
+                            f"invisible (a step whose state moves between calls, such as a "
+                            f"cache offset, must be rewound by the model file so every call "
+                            f"is the same step)",
                         )
     finally:
         uninstall()

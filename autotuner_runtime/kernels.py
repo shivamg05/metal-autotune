@@ -15,6 +15,7 @@ import importlib
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import NamedTuple
 
 import mlx.core as mx
 
@@ -69,13 +70,26 @@ def load_spec(metal_path: str | Path) -> KernelSpec:
     return KernelSpec.from_json(json.dumps(launch))
 
 
+class Launch(NamedTuple):
+    """One call signature's launch, or the fact that the fallback covers it."""
+    fallback: bool
+    output_shapes: list | None = None
+    grid: tuple | None = None
+    threadgroup: tuple | None = None
+    template: list | None = None
+
+
+LAUNCH_CACHE_MAX = 64  # signatures kept per kernel; a shape sweep needs a handful
+
+
 class LoadedKernel:
     """A compiled-on-first-use kernel plus its parsed launch expressions.
 
-    The launch (output shapes, grid, threadgroup, template, fallback) is a
-    function of the inputs' shapes and dtypes, so it is evaluated once per
-    distinct call signature and reused: evaluating the grammar on every call
-    cost a small kernel more than its GPU time (spike 13)."""
+    The launch is a function of the inputs' shapes and dtypes, so it is
+    evaluated once per call signature and reused: evaluating the grammar on
+    every call cost a small kernel more than its GPU time. The fallback
+    predicate is read first, so the launch expressions are only evaluated
+    on the shapes the kernel covers."""
 
     def __init__(self, spec: KernelSpec):
         self.spec = spec
@@ -94,43 +108,52 @@ class LoadedKernel:
         self._out_shapes = tuple(tuple(Expr(e) for e in s) for s in spec.output_shapes)
         self._out_dtypes = [_DTYPES[d] for d in spec.output_dtypes]
         self._fallback = Expr(spec.fallback_predicate) if spec.fallback_predicate else None
-        self._launches: dict[tuple, tuple] = {}
+        self._launches: dict[tuple, Launch] = {}
 
-    def _launch(self, inputs: list[mx.array]) -> tuple:
-        key = tuple((tuple(a.shape), a.dtype) for a in inputs)
+    def launch(self, inputs: list[mx.array]) -> Launch:
+        key = tuple((a.shape, a.dtype) for a in inputs)
         launch = self._launches.get(key)
         if launch is None:
             shapes = [shape for shape, _ in key]
-            template = []
-            for name, dt in self.spec.template:
-                # "inN" borrows input N's dtype; anything else is a dtype name
-                # (the exact-match test matters: "int32" is a dtype, not input t32)
-                if dt.startswith("in") and dt[2:].isdigit():
-                    template.append((name, inputs[int(dt[2:])].dtype))
-                else:
-                    template.append((name, _DTYPES[dt]))
-            launch = (
-                [tuple(e.evaluate(shapes) for e in s) for s in self._out_shapes],
-                tuple(e.evaluate(shapes) for e in self._grid),
-                tuple(e.evaluate(shapes) for e in self._tg),
-                template,
-                bool(self._fallback.evaluate(shapes)) if self._fallback is not None else False,
-            )
+            if self._fallback is not None and self._fallback.evaluate(shapes):
+                launch = Launch(fallback=True)
+            else:
+                template = []
+                for name, dt in self.spec.template:
+                    # "inN" borrows input N's dtype; anything else is a dtype name
+                    # (the exact-match test matters: "int32" is a dtype, not input t32)
+                    if dt.startswith("in") and dt[2:].isdigit():
+                        template.append((name, inputs[int(dt[2:])].dtype))
+                    else:
+                        template.append((name, _DTYPES[dt]))
+                launch = Launch(
+                    fallback=False,
+                    output_shapes=[tuple(e.evaluate(shapes) for e in s) for s in self._out_shapes],
+                    grid=tuple(e.evaluate(shapes) for e in self._grid),
+                    threadgroup=tuple(e.evaluate(shapes) for e in self._tg),
+                    template=template,
+                )
+            if len(self._launches) >= LAUNCH_CACHE_MAX:
+                self._launches.clear()
             self._launches[key] = launch
         return launch
 
     def fallback_fires(self, inputs: list[mx.array]) -> bool:
-        return self._launch(inputs)[4]
+        return self.launch(inputs).fallback
 
-    def __call__(self, inputs: list[mx.array], init_value: float | None = None) -> list[mx.array]:
-        out_shapes, grid, threadgroup, template, _ = self._launch(inputs)
+    def __call__(self, inputs: list[mx.array], init_value: float | None = None,
+                 launch: Launch | None = None) -> list[mx.array]:
+        launch = launch or self.launch(inputs)
+        if launch.fallback:
+            raise ValueError(f"kernel {self.spec.kernel_id}: these shapes are the fallback's; "
+                             "the original ops take them")
         return self._kernel(
             inputs=inputs,
-            output_shapes=out_shapes,
+            output_shapes=launch.output_shapes,
             output_dtypes=self._out_dtypes,
-            grid=grid,
-            threadgroup=threadgroup,
-            template=template,
+            grid=launch.grid,
+            threadgroup=launch.threadgroup,
+            template=launch.template,
             init_value=init_value,
         )
 
@@ -159,7 +182,16 @@ def fallback_fires(spec: KernelSpec, inputs: list[mx.array]) -> bool:
     return _loaded(spec).fallback_fires(inputs)
 
 
-def call(spec: KernelSpec, inputs: list[mx.array], init_value: float | None = None) -> list[mx.array]:
+def call(spec: KernelSpec, inputs: list[mx.array], init_value: float | None = None,
+         launch: Launch | None = None) -> list[mx.array]:
     """The one kernel call site. Record mode patches this function, so the
     custom dispatch appears as a node in retraces."""
-    return _loaded(spec)(inputs, init_value=init_value)
+    return _loaded(spec)(inputs, init_value=init_value, launch=launch)
+
+
+def try_call(spec: KernelSpec, inputs: list[mx.array]) -> list[mx.array] | None:
+    """What a generated wrapper calls: the kernel's outputs, or None when
+    the fallback predicate covers these shapes and the wrapper must run the
+    original ops. One launch lookup serves both the decision and the call."""
+    launch = _loaded(spec).launch(inputs)
+    return None if launch.fallback else call(spec, inputs, launch=launch)

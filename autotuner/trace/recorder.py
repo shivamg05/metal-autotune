@@ -16,12 +16,12 @@ from typing import Any, Callable, Iterator
 import mlx.core as mx
 
 from .freeze import freeze
-from .types import ScopeCall, Trace, TraceNode
-from .walk import flatten_arrays, snapshot_arrays
+from .optable import MUTATING_METHODS
+from .types import STATE_PREFIX, ScopeCall, Trace, TraceNode
+from .walk import flatten_arrays, reachable, snapshot_arrays
 
 OPAQUE_OP = "compiled_fn"       # a compiled call the harness cannot name
 COMPILED_PREFIX = "compiled:"   # a compiled call named by its import path
-STATE_PREFIX = "state:"         # a method call on an object that holds model state
 
 
 def compiled_op(path: str | None) -> str:
@@ -103,6 +103,7 @@ class Recorder:
         self._call_counts: dict[int, int] = {}
         self._pos_counts: dict[tuple[str, str], int] = {}
         self._root_id: int | None = None
+        self._frames: list[list] = []  # open state-holder calls: [start, arrays before, mutated]
 
     @property
     def recording(self) -> bool:
@@ -162,13 +163,11 @@ class Recorder:
         self.armed = True
 
     def _register_reachable(self, model: object) -> None:
-        paths = snapshot_arrays(model)
-        found: list[mx.array] = []
-        _collect_objects(model, found)
-        for arr in found:
-            aid = self._register(arr)
-            self.weights.add(aid)
-            self.weight_paths[aid] = paths.get(id(arr), "?")
+        for path, obj in reachable(model):
+            if isinstance(obj, mx.array):
+                aid = self._register(obj)
+                self.weights.add(aid)
+                self.weight_paths.setdefault(aid, path)
 
     def step(self, model: Callable, args: tuple) -> object:
         """One traced call of the model: roots the address space, resets the
@@ -202,7 +201,8 @@ class Recorder:
     def freeze_pass(self) -> Trace:
         """Freeze after a step: retention via the positive snapshot walk (any
         produced array reachable from the model), then drop everything."""
-        produced = {aid for n in self.nodes for aid in n.out_arrays}
+        # what a state call returns is the method's own business, not a kept value
+        produced = {aid for n in self.nodes if not n.op.startswith(STATE_PREFIX) for aid in n.out_arrays}
         post = snapshot_arrays(self._model_for_walk) if self._model_for_walk else {}
         retained = {self._ids[oid] for oid in post if oid in self._ids} & produced
         trace = freeze(
@@ -300,16 +300,34 @@ class Recorder:
             return
         self._append_node(op_name, args, kwargs, out_objs)
 
-    def record_state_call(self, obj: object, method: str, args: tuple, kwargs: dict, result: Any) -> None:
-        """One node for a call on a state holder, outputs or not: the wrapper
-        replays it by calling the same method on the same object, so what
-        the method does to its state (a cache write, an offset bump) happens
-        for real, where the recorder cannot see it."""
-        if not self.recording:
+    def state_enter(self, obj: object) -> None:
+        """A call on a state holder begins: where the record stands, and
+        which arrays the object holds."""
+        self._frames.append([len(self.nodes), _array_ids(obj), False])
+
+    def state_abort(self) -> None:
+        self._frames.pop()
+
+    def state_exit(self, obj: object, method: str, args: tuple, kwargs: dict, result: Any) -> None:
+        """A method that left the object's state alone keeps its ops in the
+        record like any others. One that changed it (a write in place, a
+        rebinding) collapses into one opaque state call: the wrapper replays
+        it by calling the same method on the same object, so what it does to
+        its state happens for real, where the recorder cannot see it."""
+        start, before, mutated = self._frames.pop()
+        inner = self.nodes[start:]
+        if not (mutated or _array_ids(obj) != before or any(_mutates(n.op) for n in inner)):
             return
-        op = f"{STATE_PREFIX}{type(obj).__name__}.{method}"
-        receiver = {"id": id(obj), "path": self.state_holders.get(id(obj))}
-        self._append_node(op, args, kwargs, flatten_arrays(result), receiver=receiver)
+        if self._frames:
+            self._frames[-1][2] = True  # a method that calls a mutating one mutated state too
+        ops = []
+        for n in inner:
+            self._pos_counts[(n.module_address, n.op)] -= 1
+            ops += n.scalar_args["receiver"]["inner_ops"] if n.op.startswith(STATE_PREFIX) else [n.op]
+        del self.nodes[start:]
+        receiver = {"id": id(obj), "path": self.state_holders.get(id(obj)), "inner_ops": ops}
+        self._append_node(f"{STATE_PREFIX}{type(obj).__name__}.{method}", args, kwargs,
+                          flatten_arrays(result), receiver=receiver)
 
     def _append_node(self, op_name: str, args: tuple, kwargs: dict, out_objs: list,
                      receiver: dict | None = None) -> None:
@@ -339,42 +357,9 @@ class Recorder:
         ))
 
 
-def _collect_objects(root: object, out: list[mx.array]) -> None:
-    """Companion to snapshot_arrays that keeps the array objects themselves."""
-    seen: set[int] = set()
+def _array_ids(obj: object) -> frozenset[int]:
+    return frozenset(id(a) for _, a in reachable(obj) if isinstance(a, mx.array))
 
-    def visit(obj: object) -> None:
-        if id(obj) in seen or getattr(obj, "_trace_internal", False):
-            return
-        seen.add(id(obj))
-        if isinstance(obj, mx.array):
-            out.append(obj)
-            return
-        if isinstance(obj, dict):
-            for v in obj.values():
-                visit(v)
-            if hasattr(obj, "__dict__"):
-                for v in vars(obj).values():
-                    visit(v)
-            return
-        if isinstance(obj, (list, tuple)):
-            for v in obj:
-                visit(v)
-            return
-        if isinstance(obj, set):
-            for v in obj:
-                visit(v)
-            return
-        if callable(obj):
-            closure = getattr(obj, "__closure__", None)
-            if closure:
-                for cell in closure:
-                    visit(cell.cell_contents)
-            for v in getattr(obj, "__globals__", {}).values():
-                if isinstance(v, (mx.array, list, tuple, dict)) and not isinstance(v, type):
-                    visit(v)
-        if hasattr(obj, "__dict__"):
-            for v in vars(obj).values():
-                visit(v)
 
-    visit(root)
+def _mutates(op: str) -> bool:
+    return op.removeprefix("array.") in MUTATING_METHODS

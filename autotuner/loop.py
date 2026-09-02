@@ -54,6 +54,7 @@ from autotuner_runtime.kernels import KernelSpec
 
 MIN_WIN_MS = 0.030  # a win must save a few tens of microseconds per step across copies
 CLOCK_PAIRS = 32    # ABBA pairs behind the ship clock and the headline
+LESSONS_KEPT = 24   # the judge's newest lessons travel with every call
 
 
 @dataclass
@@ -64,16 +65,17 @@ class RegionRun:
     shipped: KernelSpec | None = None
     head_ms: float | None = None
     shipped_ms: float | None = None
-    library_ms: float | None = None   # the library beside head, from head's own clock
-    head_ratio: float | None = None   # head_ms over its library_ms: the drift-free number
+    head_ratio: float | None = None   # head_ms over the library beside it: the drift-free number
     shipped_ratio: float | None = None
     head_floor_ms: float | None = None     # the floor probe clocked beside head, same child
     shipped_floor_ms: float | None = None
     head_tag: str = "preserving"      # assoc tag of the edit that produced head
-    shipped_tag: str = "preserving"
     last_kernel: str | None = None    # the kernel the latest verdict was about
     attempts: dict[str, dict] = field(default_factory=dict)  # kernel id -> its verdict
     hypotheses: int = 0
+    errors: int = 0         # consecutive transport failures; three close the region
+    refused: int = 0        # consecutive replies with nothing to evaluate
+    empty_replies: int = 0  # all such replies, to name each one once
     close_rule: str | None = None
     kernels: dict[str, KernelSpec] = field(default_factory=dict)
 
@@ -109,11 +111,7 @@ class JobRunner:
         self.sweep_spans: dict[tuple[str, str], Stretch] = {}
         self.step_ms: dict[str, float] = {}
         self.peaks = None  # measured by measure_machine before any clock
-        # read before this process has done anything on the GPU: the counter
-        # trails by seconds, so a reading taken after the model loads reports
-        # the job's own work as another process (seen live: 81 to 89% on an
-        # idle laptop, 0 one sample later)
-        self.gpu_busy_at_start = gpu_utilization()
+        self.gpu_busy_at_start = gpu_utilization()  # the counter trails: read before any GPU work of ours
         self.total_hypotheses = 0
         self.lessons: list[dict] = []  # what the judge wrote down for later regions
         self.installed: dict[str, tuple] = {}  # scope -> (original module, splices, kernels)
@@ -286,17 +284,20 @@ class JobRunner:
 
     def _clock_steps(self) -> None:
         """The step clocks on every workload, and the baseline every share and
-        win is measured against. A step that keeps arrays in Python state (a
-        KV cache) cannot be compiled from outside the model: mx.compile swaps
-        only state handed to it in a dict or list, and one compiled call would
-        leave the model holding tracers. Such a step gets the plain baseline,
-        and its compiled clock is never taken."""
-        kept = {w: len(t.python_retained()) for w, t in self.traces.items() if t.python_retained()}
+        win is measured against. A step that keeps Python state (a KV cache)
+        cannot be compiled from outside the model: mx.compile swaps only state
+        handed to it in a dict or list, and one compiled call would leave the
+        model holding tracers. Such a step gets the plain baseline, and its
+        compiled clock is never taken. Where the compiled clock is taken, the
+        model is checked alive and unchanged afterwards, because a compiled
+        call on a state-keeping step returns a plausible number first and
+        breaks the model only on the next call."""
+        kept = {w: marks for w, t in self.traces.items() if (marks := _state_marks(t))}
         requested = self.manifest.baseline
         self.baseline = "plain" if kept else requested
         reason = None if not kept else (
-            "the step keeps arrays in Python state (" +
-            ", ".join(f"{w}: {n}" for w, n in kept.items()) +
+            "the step keeps Python state (" +
+            "; ".join(f"{w}: {marks}" for w, marks in kept.items()) +
             "); a compiled call would leave the model holding tracers")
         self.report.baseline = {"requested": requested, "choice": self.baseline,
                                 "compiled_available": not kept, "reason": reason, "clocks_ms": {}}
@@ -304,9 +305,16 @@ class JobRunner:
                         compiled_available=not kept, reason=reason)
         for w in self.manifest.workloads:
             tensors = self.tensors[w.name]
-            clocks = {"plain": step_clock(self.session, self._step_fn(self.model, tensors, "plain")).median_ms,
-                      "compiled": None if kept else step_clock(
-                          self.session, self._step_fn(self.model, tensors, "compiled")).median_ms}
+            clocks = {"plain": step_clock(self.session,
+                                          self._step_fn(self.model, tensors, "plain")).median_ms,
+                      "compiled": None}
+            if self.baseline == "compiled":
+                # mx.array copies: the step may return a buffer it writes
+                before = [mx.array(a) for a in flatten_arrays(self.model(*tensors))]
+                mx.eval(before)
+                clocks["compiled"] = step_clock(
+                    self.session, self._step_fn(self.model, tensors, "compiled")).median_ms
+                self._assert_survived_compile(w.name, tensors, before)
             self.report.baseline["clocks_ms"][w.name] = clocks
             self.step_ms[w.name] = clocks[self.baseline]
             self.report.step_ms[w.name] = {"before": clocks[self.baseline]}
@@ -319,6 +327,21 @@ class JobRunner:
                 floor = step_floor(self.traces[w.name], self.peaks, self.step_ms[w.name])
                 self.report.coverage.setdefault("step_floor", {})[w.name] = floor
                 self.log.append("step_floor", workload=w.name, **floor)
+
+    def _assert_survived_compile(self, workload: str, tensors, before) -> None:
+        """A compiled call on a step that keeps state the detector missed does
+        not raise: it returns a plausible number and leaves the model holding
+        tracers, so every later win would be measured against garbage. Take
+        the same step again and demand the same bits."""
+        advice = ("the step keeps state the trace did not show; rerun with baseline: plain "
+                  "in the manifest and report the model to the maintainer")
+        try:
+            after = flatten_arrays(self.model(*tensors))
+            mx.eval(after)
+        except Exception as e:
+            raise RuntimeError(f"the compiled baseline broke the model on {workload}: {e}; {advice}") from e
+        if len(after) != len(before) or not all(mx.array_equal(a, b).item() for a, b in zip(after, before)):
+            raise RuntimeError(f"the compiled baseline changed what {workload} returns; {advice}")
 
     def _price_and_rank(self, regions: list[Region]) -> list[Region]:
         """Each region's share of the step, its physical limit, the floor and
@@ -594,12 +617,14 @@ class JobRunner:
         verdict = _verdict_payload("scaffold", scaffold.kernel_id, "failed", result)
         writing_for = {"id": "scafix", "kind": "fix", "assoc_tag": "preserving",
                        "hypothesis": "repair the starting kernel so it passes the checks"}
+        meta = self._meta(run, Queue(), writing_for)
         try:
-            resp = judge.next(self._meta(run, Queue(), writing_for), verdict)
+            resp = judge.next(meta, verdict)
         except Exception as e:
             self.log.append("scaffold_fix", fingerprint=region.fingerprint,
                             outcome="judge_error", reason=str(e)[:200])
             return None
+        self._note_lesson(run, resp)
         if resp.kernel is None:
             self.log.append("scaffold_fix", fingerprint=region.fingerprint, outcome="yield")
             return None
@@ -621,26 +646,26 @@ class JobRunner:
         """One hypothesis at a time until the budget is spent. Every call to
         the judge carries the last verdict and the queue; the judge edits its
         plan first, then writes Metal for the front ready item; the ladder
-        decides; repeat. A reply with nothing to evaluate (a yield, plan
-        edits the queue refuses, a kernel for an item that is not ready) is
-        asked again once with the reason; each further one costs an attempt,
-        so the budget is spent by the judge and never handed back."""
+        decides; repeat. A reply with nothing to evaluate is asked again once
+        with the reason, then each further one costs an attempt, so the
+        budget is spent by the judge and never handed back."""
         region = run.region
         queue = Queue()
-        seed, failure = self._ask_judge(run, "seed", lambda: judge.seed(self._meta(run, queue, None)))
-        if seed is None:
-            run.close_rule = ("the judge babbled at seed" if failure == "babble"
-                              else f"judge unavailable at seed ({failure})")
-            return
-        self._note_lesson(run, seed)
-        try:
-            queue.seed(seed.queue)
-        except QueueError as e:
-            run.close_rule = f"the judge's seed queue was inconsistent ({e})"
-            return
         verdict = None
-        errors = 0    # consecutive transport failures; three close the region
-        refused = 0   # consecutive replies with nothing to evaluate
+        meta = self._meta(run, queue, None)
+        resp, failure = self._ask_judge(run, "seed", lambda: judge.seed(meta))
+        problem = None
+        if resp is not None:
+            self._note_lesson(run, resp)
+            try:
+                queue.seed(resp.queue)
+            except QueueError as e:
+                problem = f"your seed queue was refused: {e}"
+        if resp is None or problem:
+            verdict, close = self._empty_reply(run, None, failure, problem, verdict)
+            if close:
+                run.close_rule = close
+                return
 
         while True:
             rule = self._close_rule(run)
@@ -648,61 +673,34 @@ class JobRunner:
                 run.close_rule = rule
                 return
             front = queue.peek_ready()
-            resp, failure = self._ask_judge(run, "next", lambda: judge.next(
-                self._meta(run, queue, _item_view(front) if front else None), verdict))
-            hyp = front.id if front else "none"
-            if resp is None:
-                if failure == "babble":
-                    # a babbling judge burns budget, so it exhausts its region
-                    run.hypotheses += 1
-                    self.total_hypotheses += 1
-                    self._record_attempt(run, hyp, front.kind if front else "none",
-                                         front.hypothesis if front else "", None, None, None,
-                                         None, gate="judge_babble")
-                    verdict = {"hypothesis_id": hyp, "outcome": "failed", "failed_gate": "judge_babble"}
+            meta = self._meta(run, queue, _item_view(front) if front else None)
+            resp, failure = self._ask_judge(run, "next", lambda: judge.next(meta, verdict))
+            item = problem = None
+            if resp is not None:
+                run.errors = 0
+                self._note_lesson(run, resp)
+                try:
+                    queue.apply_mutations(resp.mutations)
+                except QueueError as e:
+                    problem = f"your plan edits were refused and none applied: {e}"
                 else:
-                    errors += 1
-                    self._record_attempt(run, hyp, front.kind if front else "none",
-                                         front.hypothesis if front else "", None, None, None,
-                                         None, gate="judge_error", reason=failure)
-                    verdict = {"hypothesis_id": hyp, "outcome": "failed",
-                               "failed_gate": "judge_error", "detail": {"reason": failure}}
-                    if errors >= 3:
-                        run.close_rule = f"judge unavailable (3 straight transport errors, last {failure})"
-                        return
-                continue
-            errors = 0
-            self._note_lesson(run, resp)
-            item = None
-            try:
-                queue.apply_mutations(resp.mutations)
-            except QueueError as e:
-                problem = f"your plan edits were refused and none applied: {e}"
-            else:
-                if resp.kernel is None:
-                    problem = (f"a yield is refused while the budget lasts: "
-                               f"{self._attempts_left(run)} attempts remain, propose")
-                else:
-                    item = queue.pop_ready(resp.kernel.item_id)
-                    problem = None if item is not None else (
-                        f"your kernel names no ready item: queued {', '.join(queue.ids()) or 'nothing'}"
-                        f", every one waiting on a verdict that has not come")
+                    if resp.kernel is None:
+                        problem = "a yield is refused while the budget lasts"
+                    else:
+                        item = queue.pop_ready(resp.kernel.item_id)
+                        if item is None:
+                            named = resp.kernel.item_id
+                            problem = (f"your kernel is for {named!r}, which is not a ready queued item"
+                                       if named else "no queued item is ready for your kernel") + \
+                                      f" (queued: {', '.join(queue.ids()) or 'nothing'})"
             if item is None:
-                self.log.append("plan_refused", fingerprint=region.fingerprint, reason=problem)
-                verdict = {**(verdict or {}), "plan_refused": problem}
-                refused += 1
-                if refused > 1:
-                    # the one free re-ask is spent; every further empty reply costs an attempt
-                    run.hypotheses += 1
-                    self.total_hypotheses += 1
-                    self._record_attempt(run, hyp, front.kind if front else "none",
-                                         front.hypothesis if front else "", None, None, None,
-                                         None, gate="plan_refused", reason=problem)
+                verdict, close = self._empty_reply(run, front, failure, problem, verdict)
+                if close:
+                    run.close_rule = close
+                    return
                 continue
-            refused = 0
-
-            run.hypotheses += 1
-            self.total_hypotheses += 1
+            run.refused = 0
+            self._spend(run)
             parent_spec = resolve_parent(run, resp.kernel.parent_kernel_id)
             parent = parent_spec.kernel_id if parent_spec else resp.kernel.parent_kernel_id
             kernel = self._kernel_from_proposal(run, region, resp.kernel, item.id)
@@ -726,15 +724,60 @@ class JobRunner:
 
     def _note_lesson(self, run: RegionRun, resp) -> None:
         """A sentence the judge wrote for later regions of this job; every
-        later call carries the list."""
+        later call carries the newest ones."""
         if resp.lesson:
             self.lessons.append({"region": run.region.fingerprint[:8], "ops": list(run.region.ops),
                                  "lesson": resp.lesson})
+            del self.lessons[:-LESSONS_KEPT]
             self.log.append("lesson", fingerprint=run.region.fingerprint, lesson=resp.lesson)
 
-    def _attempts_left(self, run: RegionRun) -> int:
-        return min(self.manifest.budget_per_region - run.hypotheses,
-                   self.manifest.budget_total - self.total_hypotheses)
+    def _budget(self, run: RegionRun) -> dict:
+        """Attempts left for the region and for the job: what the judge is
+        told and what the close rule reads."""
+        return {"attempts_left_region": self.manifest.budget_per_region - run.hypotheses,
+                "attempts_left_job": self.manifest.budget_total - self.total_hypotheses}
+
+    def _spend(self, run: RegionRun) -> None:
+        run.hypotheses += 1
+        self.total_hypotheses += 1
+
+    def _empty_reply(self, run: RegionRun, front, failure: str | None, problem: str | None,
+                     last: dict | None) -> tuple[dict, str | None]:
+        """Bookkeeping for a reply that left nothing to evaluate: babble, a
+        transport failure, or a refusal (a yield, refused plan edits, a
+        kernel for an item that is not ready, a refused seed). Returns the
+        verdict the next call carries and a close reason when the judge is
+        gone. A babble costs an attempt, since the transport already asked
+        once more; a refusal is asked again once for free, then charged."""
+        if failure == "babble":
+            self._spend(run)
+            hyp = self._record_empty(run, front, "judge_babble", None)
+            return {"hypothesis_id": hyp, "outcome": "failed", "failed_gate": "judge_babble"}, None
+        if failure is not None:
+            run.errors += 1
+            hyp = self._record_empty(run, front, "judge_error", failure)
+            verdict = {"hypothesis_id": hyp, "outcome": "failed", "failed_gate": "judge_error",
+                       "detail": {"reason": failure}}
+            close = (f"judge unavailable (3 straight transport errors, last {failure})"
+                     if run.errors >= 3 else None)
+            return verdict, close
+        run.refused += 1
+        if run.refused > 1:
+            self._spend(run)
+            self._record_empty(run, front, "plan_refused", problem)
+        problem = f"{problem}; {self._budget(run)['attempts_left_region']} attempts remain in this region"
+        self.log.append("plan_refused", fingerprint=run.region.fingerprint, reason=problem)
+        return {**(last or {}), "plan_refused": problem}, None
+
+    def _record_empty(self, run: RegionRun, front, gate: str, reason: str | None) -> str:
+        """An attempt row for a reply with nothing to evaluate, under its own
+        id: the queued item it was asked for stays queued and keeps its name."""
+        run.empty_replies += 1
+        hyp = f"{front.id if front else 'none'}_{gate}{run.empty_replies}"
+        self._record_attempt(run, hyp, front.kind if front else "none",
+                             front.hypothesis if front else "", None, None, None, None,
+                             gate=gate, reason=reason)
+        return hyp
 
     def _ask_judge(self, run: RegionRun, phase: str, call):
         """One judge call with its log row: (response, None), or (None, why)."""
@@ -764,7 +807,7 @@ class JobRunner:
         kernel's region_ms and library_ms."""
         get = clock.get if isinstance(clock, dict) else lambda k: getattr(clock, k)
         run.head, run.head_tag = kernel, tag
-        run.head_ms, run.library_ms = get("region_ms"), get("library_ms")
+        run.head_ms = get("region_ms")
         run.head_floor_ms = get("floor_ms")
         run.head_ratio = _ratio(clock)
 
@@ -788,7 +831,6 @@ class JobRunner:
                 return "rolled_back"
             run.shipped, run.shipped_ms, run.shipped_ratio = kernel, result.region_ms, ratio
             run.shipped_floor_ms = result.floor_ms
-            run.shipped_tag = item.assoc_tag
             self._set_head(run, kernel, result, item.assoc_tag)
             return "shipped"
         # correct but not a win: head moves only to a better correct kernel
@@ -891,8 +933,7 @@ class JobRunner:
             head_ms=run.head_ms, shipped_ms=run.shipped_ms, assoc_tag=run.head_tag,
             head_floor_ms=run.head_floor_ms, shipped_floor_ms=run.shipped_floor_ms,
             queue=queue, history=history, lessons=list(self.lessons), regions_done=done,
-            budget={"attempts_left_region": self.manifest.budget_per_region - run.hypotheses,
-                    "attempts_left_job": self.manifest.budget_total - self.total_hypotheses},
+            budget=self._budget(run),
             last_verdict=run.attempts.get(run.last_kernel) if run.last_kernel else None,
             writing_for=writing_for,
         )
@@ -900,9 +941,10 @@ class JobRunner:
     def _close_rule(self, run: RegionRun) -> str | None:
         """A region closes when its budget or the job's is spent, and for no
         other reason: the judge is asked until then, whatever the verdicts."""
-        if run.hypotheses >= self.manifest.budget_per_region:
+        left = self._budget(run)
+        if left["attempts_left_region"] <= 0:
             return "the region's hypothesis budget is spent"
-        if self.total_hypotheses >= self.manifest.budget_total:
+        if left["attempts_left_job"] <= 0:
             return "the job budget is spent"
         return None
 
@@ -1185,6 +1227,22 @@ class JobRunner:
             check_apply(out, self.manifest.model_path, tensors, flatten_arrays(self.model(*tensors)))
             self.log.append("artifact_checked", artifact=str(out), workload=first)
         return out
+
+
+def _state_marks(trace: Trace) -> str:
+    """Why this step cannot be compiled from outside the model, or "" if it
+    can: every recorded sign that the step is not a pure function of its
+    inputs. An array the model kept after the pass, a call that changed an
+    object's state (a KV cache write), or an evaluation mid-step (a branch on
+    a value): mx.compile breaks on each."""
+    marks = []
+    if arrays := len(trace.python_retained()):
+        marks.append(f"{arrays} arrays kept")
+    if calls := len(trace.state_calls()):
+        marks.append(f"{calls} state calls")
+    if trace.in_pass_evaluation:
+        marks.append("evaluates mid-step")
+    return ", ".join(marks)
 
 
 def _safe(path: str) -> str:
