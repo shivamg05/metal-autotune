@@ -77,13 +77,13 @@ class Report:
                        region_ms: float | None, hypothesis_text: str = "",
                        assoc_tag: str | None = None, kernel: str | None = None,
                        library_ms: float | None = None, win_ms: float | None = None,
-                       sigma_ms: float | None = None) -> None:
+                       sigma_ms: float | None = None, floor_ms: float | None = None) -> None:
         self.hypotheses.append({
             "id": hypothesis_id, "region": region, "kind": kind,
             "hypothesis": hypothesis_text, "assoc_tag": assoc_tag, "parent": parent,
             "kernel": kernel, "verdict": verdict, "failed_gate": failed_gate,
             "region_ms": region_ms, "library_ms": library_ms, "win_ms": win_ms,
-            "sigma_ms": sigma_ms,
+            "sigma_ms": sigma_ms, "floor_ms": floor_ms,
         })
 
     def stranded_by_reason(self) -> list[dict]:

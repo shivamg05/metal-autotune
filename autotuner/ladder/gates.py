@@ -62,6 +62,7 @@ class LadderJob:
     timeout_s: float = 300.0
     seed: int = 0
     weight_inputs: tuple[bool, ...] = ()  # per input id: a model weight, never perturbed
+    compute_floor_ms: float = 0.0     # the roofline's flops term; the child's probe covers bytes and launch
 
 
 @dataclass(frozen=True)
@@ -74,6 +75,7 @@ class LadderResult:
     win_ms: float | None
     sigma_ms: float | None
     gates_passed: list[str] = field(default_factory=list)
+    floor_ms: float | None = None     # the floor probe clocked beside the library in the same child
 
 
 def run_ladder(job: LadderJob) -> LadderResult:
@@ -113,7 +115,7 @@ def run_ladder(job: LadderJob) -> LadderResult:
     t = s.timing
     outcome = "tentative_ship" if s.detail.get("ship") else "correct_slower"
     return LadderResult(outcome, None, detail, t.get("region_ms"), t.get("library_ms"),
-                        t.get("win_ms"), t.get("sigma_ms"), gates)
+                        t.get("win_ms"), t.get("sigma_ms"), gates, floor_ms=t.get("floor_ms"))
 
 
 def _validate(job: LadderJob) -> None:
@@ -159,4 +161,5 @@ def _spec(job: LadderJob, phase: str) -> LadderSpec:
         clock_pairs=job.clock_pairs,
         seed=job.seed,
         weight_inputs=tuple(job.weight_inputs),
+        compute_floor_ms=job.compute_floor_ms,
     )

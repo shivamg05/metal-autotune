@@ -7,7 +7,9 @@ shape-derived scalar args (reshape targets, slice bounds, split sizes) are
 deliberately not part of the form, so the same sequence at two sizes is one
 region. Weights count by role, dtype, and shape: a weight never moves with a
 named dimension, and a projection against a different weight shape is a
-different kernel to write, price, and check.
+different kernel to write, price, and check. A view of a weight (the
+transpose a Linear takes) is a weight here too, or every projection in a
+model would fold into one region whatever its matrix.
 """
 
 from __future__ import annotations
@@ -17,7 +19,7 @@ from collections import defaultdict
 
 from ..trace.recorder import ArrayRef
 from ..trace.types import Trace
-from .build import VIEW_OPS
+from .build import VIEW_OPS, weight_like_ids
 from .types import Region, Stretch
 
 # Ops whose non-array scalar args are shape-derived and therefore excluded
@@ -37,7 +39,9 @@ def _canon_scalar(obj: object) -> object:
     return repr(obj)
 
 
-def canonical_form(trace: Trace, stretch: Stretch) -> tuple:
+def canonical_form(trace: Trace, stretch: Stretch, weight_like: frozenset[int] | None = None) -> tuple:
+    if weight_like is None:
+        weight_like = weight_like_ids(trace)
     nodes = trace.nodes[stretch.start_seq:stretch.end_seq + 1]
     roles: dict[int, tuple] = {}
     x_count = w_count = 0
@@ -50,7 +54,7 @@ def canonical_form(trace: Trace, stretch: Stretch) -> tuple:
         in_roles = []
         for aid, (shape, _) in zip(node.in_arrays, node.in_specs):
             if aid not in roles:
-                if aid in trace.weights:
+                if aid in weight_like:
                     roles[aid] = ("w", w_count, tuple(shape))
                     w_count += 1
                 else:
@@ -74,8 +78,8 @@ def canonical_form(trace: Trace, stretch: Stretch) -> tuple:
     return tuple(form)
 
 
-def fingerprint(trace: Trace, stretch: Stretch) -> str:
-    return hashlib.sha256(repr(canonical_form(trace, stretch)).encode()).hexdigest()[:16]
+def fingerprint(trace: Trace, stretch: Stretch, weight_like: frozenset[int] | None = None) -> str:
+    return hashlib.sha256(repr(canonical_form(trace, stretch, weight_like)).encode()).hexdigest()[:16]
 
 
 def group_copies(traces: dict[str, Trace], stretches: dict[str, list[Stretch]]) -> list[Region]:
@@ -84,8 +88,9 @@ def group_copies(traces: dict[str, Trace], stretches: dict[str, list[Stretch]]) 
     by_print: dict[str, Region] = {}
     taken: dict[tuple[str, str], list[tuple[int, int]]] = defaultdict(list)
     for workload, trace in traces.items():
+        weight_like = weight_like_ids(trace)
         for stretch in stretches[workload]:
-            fp = fingerprint(trace, stretch)
+            fp = fingerprint(trace, stretch, weight_like)
             spans = taken[(fp, workload)]
             if any(not (stretch.end_seq < a or stretch.start_seq > b) for a, b in spans):
                 continue  # a periodic op sequence: copies must not overlap

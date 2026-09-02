@@ -34,11 +34,11 @@ from .measure.controls import aa_null
 from .measure.peaks import (BUSY_GPU_PERCENT, best_of, gpu_core_count, gpu_utilization,
                             implausible as peaks_implausible, measure_peaks)
 from .measure.session import Session
-from .regions.build import build_stretches
+from .regions.build import build_stretches, is_view, weight_like_ids
 from .regions.fingerprint import group_copies
 from .regions.price import PRICE_PAIRS, capture_boundaries, price_region
-from .regions.rank import apply_floor, free_members, rank
-from .regions.roofline import stretch_roofline
+from .regions.rank import ROOFLINE_HAS_ROOM, apply_floor, free_members, rank
+from .regions.roofline import step_floor, stretch_roofline
 from .regions.store import BoundaryStore
 from .regions.types import Region, Stretch
 from .report import Report
@@ -72,6 +72,8 @@ class RegionRun:
     library_ms: float | None = None   # the library beside head, from head's own clock
     head_ratio: float | None = None   # head_ms over its library_ms: the drift-free number
     shipped_ratio: float | None = None
+    head_floor_ms: float | None = None     # the floor probe clocked beside head, same child
+    shipped_floor_ms: float | None = None
     head_tag: str = "preserving"      # assoc tag of the edit that produced head
     shipped_tag: str = "preserving"
     last_kernel: str | None = None    # the kernel the latest verdict was about
@@ -115,6 +117,7 @@ class JobRunner:
         self.sweep_tensors: dict[str, list[mx.array]] = {}
         self.sweep_spans: dict[tuple[str, str], Stretch] = {}
         self.step_ms: dict[str, float] = {}
+        self.peaks = None  # measured by measure_machine before any clock
         self.total_hypotheses = 0
         self.installed: dict[str, tuple] = {}  # scope -> (original module, splices, kernels)
         self.cuts: dict[str, dict[tuple[int, int], str]] = {}  # workload -> {span: kernel id}
@@ -313,6 +316,12 @@ class JobRunner:
             self.log.append("step_clock", workload=w.name, phase="before", baseline=self.baseline,
                             median_ms=clocks[self.baseline], plain_ms=clocks["plain"],
                             compiled_ms=clocks["compiled"])
+            if self.peaks is not None:  # a job measures the chip before it clocks; a test may not
+                # the scout line: how much of this step is physics no kernel
+                # can touch, and how much is room
+                floor = step_floor(self.traces[w.name], self.peaks, self.step_ms[w.name])
+                self.report.coverage.setdefault("step_floor", {})[w.name] = floor
+                self.log.append("step_floor", workload=w.name, **floor)
 
     def _price_and_rank(self, regions: list[Region]) -> list[Region]:
         """Each region's share of the step, its physical limit, the floor and
@@ -341,31 +350,43 @@ class JobRunner:
         self._record_peaks(best_of(self.peaks, measure_peaks(self.session)), "after_pricing")
         for r in regions:
             rep = r.members[0]
-            # one copy's cost against one copy's limit, both expressed in the
-            # frame the peaks were taken in, so a region priced while the chip
-            # was throttled does not report headroom it does not have
-            share = r.p_rep.get(rep.workload)
+            # one copy's cost against one copy's floor, both from one paired
+            # window, so nothing the machine did between pricing and the peak
+            # readings can open headroom that is not there
             r.roofline = stretch_roofline(
                 self.traces[rep.workload], rep, self.peaks,
-                t_orig_ms=(share * self.step_ms[rep.workload]) if share else 1e-9,
+                t_orig_ms=r.t_rep_ms.get(rep.workload) or 1e-9,
+                floor_ms=r.t_floor_ms.get(rep.workload),
             )
         kept = rank(apply_floor(regions))
-        # every compute op belongs to exactly one single-op region, so their
+        # every compute op belongs to exactly one atomic region, so their
         # shares sum to the fraction of the step that any candidate can reach;
         # the rest runs inside stranded scopes or ops no kernel can replace
-        self.report.coverage = {
+        self.report.coverage.update({
             "share_of_step_inside_candidates": {
-                w.name: sum(r.p.get(w.name, 0.0) for r in regions if len(r.ops) == 1)
+                w.name: sum(r.p.get(w.name, 0.0) for r in regions if self._atomic(r))
                 for w in self.manifest.workloads
             },
             "step_ms": dict(self.step_ms),
-        }
+        })
         for r in regions:
             if r.rejected:  # share floor and no-headroom cuts both belong in the report
                 self.report.stranded.append({"fingerprint": r.fingerprint, "ops": list(r.ops),
                                              "reason": r.rejected})
         self.log.append("ranked", kept=len(kept))
         return kept
+
+    def _atomic(self, region: Region) -> bool:
+        """One compute op, with any views in front of it taken of weights: a
+        projection through its transpose, or a lone op. Each compute op is in
+        exactly one such region."""
+        rep = region.members[0]
+        trace = self.traces[rep.workload]
+        nodes = trace.nodes[rep.start_seq:rep.end_seq + 1]
+        if sum(not is_view(n) for n in nodes) != 1:
+            return False
+        weight_like = weight_like_ids(trace)
+        return all(all(a in weight_like for a in n.in_arrays) for n in nodes if is_view(n))
 
     def measure_machine(self) -> None:
         """The chip's own limits, and whether this machine can measure at
@@ -495,6 +516,7 @@ class JobRunner:
             # whose one pass takes hundreds of ms needs minutes, not a fixed cap
             timeout_s=120.0 + 0.8 * one_copy_ms,
             weight_inputs=tuple(a in trace.weights for a in rep.input_ids),
+            compute_floor_ms=region.roofline.t_compute_ms if region.roofline else 0.0,
         )
 
     def _kernel_from_proposal(self, run: RegionRun, region: Region, proposal, hyp_id: str) -> KernelSpec:
@@ -556,6 +578,7 @@ class JobRunner:
             outcome = "shipped" if self._bind_and_promote(run, scaffold, result) else "rolled_back"
             if outcome == "shipped":
                 run.shipped, run.shipped_ms, run.shipped_ratio = scaffold, result.region_ms, _ratio(result)
+                run.shipped_floor_ms = result.floor_ms
                 run.recent_ship_gains.append(1.0 - _ratio(result))
         repaired = scaffold is not run.kernels.get(f"r{region.fingerprint[:6]}_scaffold")
         self._record_attempt(
@@ -741,6 +764,7 @@ class JobRunner:
         get = clock.get if isinstance(clock, dict) else lambda k: getattr(clock, k)
         run.head, run.head_tag = kernel, tag
         run.head_ms, run.library_ms = get("region_ms"), get("library_ms")
+        run.head_floor_ms = get("floor_ms")
         run.head_ratio = _ratio(clock)
 
     def _apply_verdict(self, run: RegionRun, item, kernel: KernelSpec, parent: str, result) -> str:
@@ -769,6 +793,7 @@ class JobRunner:
             gain = 1.0 - ratio / run.shipped_ratio if run.shipped_ratio else 1.0 - ratio
             run.recent_ship_gains.append(gain)
             run.shipped, run.shipped_ms, run.shipped_ratio = kernel, result.region_ms, ratio
+            run.shipped_floor_ms = result.floor_ms
             run.shipped_tag = item.assoc_tag
             self._set_head(run, kernel, result, item.assoc_tag)
             run.stale_streak = 0
@@ -788,31 +813,32 @@ class JobRunner:
         region = run.region
         if result is None:  # the judge produced nothing to evaluate
             outcome, detail = "failed", {"reason": reason} if reason else {}
-            region_ms = library_ms = win_ms = sigma_ms = None
+            region_ms = library_ms = win_ms = sigma_ms = floor_ms = None
         else:
             outcome = outcome or result.outcome
             gate, detail = result.failed_gate, result.detail
             region_ms, library_ms = result.region_ms, result.library_ms
-            win_ms, sigma_ms = result.win_ms, result.sigma_ms
+            win_ms, sigma_ms, floor_ms = result.win_ms, result.sigma_ms, result.floor_ms
         if kernel is not None:
             run.last_kernel = kernel.kernel_id
             run.attempts[kernel.kernel_id] = {
                 "hypothesis_id": hyp_id, "verdict": outcome, "failed_gate": gate,
                 "region_ms": region_ms, "library_ms": library_ms, "win_ms": win_ms,
+                "floor_ms": floor_ms,
             }
         self.report.add_hypothesis(
             hypothesis_id=hyp_id, region=region.fingerprint, kind=kind,
             hypothesis_text=text, assoc_tag=assoc_tag, parent=parent,
             kernel=kernel.kernel_id if kernel else None, verdict=outcome,
             failed_gate=gate, region_ms=region_ms, library_ms=library_ms,
-            win_ms=win_ms, sigma_ms=sigma_ms,
+            win_ms=win_ms, sigma_ms=sigma_ms, floor_ms=floor_ms,
         )
         self.log.append("verdict", fingerprint=region.fingerprint, hypothesis=hyp_id,
                         hypothesis_kind=kind, hypothesis_text=text, assoc_tag=assoc_tag,
                         kernel=kernel.kernel_id if kernel else None, parent=parent,
                         outcome=outcome, gate=gate, region_ms=region_ms,
                         library_ms=library_ms, win_ms=win_ms, sigma_ms=sigma_ms,
-                        detail=detail)
+                        floor_ms=floor_ms, detail=detail)
         if gate:
             how = f"{outcome} at {gate}: {_short_reason(detail)}"
         elif region_ms is not None and library_ms is not None:
@@ -867,6 +893,7 @@ class JobRunner:
             head=run.head.kernel_id if run.head else None,
             shipped=run.shipped.kernel_id if run.shipped else None,
             head_ms=run.head_ms, shipped_ms=run.shipped_ms, assoc_tag=run.head_tag,
+            head_floor_ms=run.head_floor_ms, shipped_floor_ms=run.shipped_floor_ms,
             families=families, queue=queue,
             last_verdict=run.attempts.get(run.last_kernel) if run.last_kernel else None,
             writing_for=writing_for,
@@ -894,20 +921,24 @@ class JobRunner:
         return self._roofline_rule(run)
 
     def _roofline_rule(self, run: RegionRun) -> str | None:
-        """The two close rules that need no queue: shipped or head so near
-        the physical limit that nothing worth the budget is left."""
+        """The close rules that need no queue: at open, the library re-measured
+        beside its floor with no room left (pricing's headroom is minutes old
+        on a machine that moves); then shipped or head so near the limit that
+        nothing worth the budget is left. Each clock holds a kernel against the
+        floor probe timed beside it, in the same child, so the machine's speed
+        at either moment cancels."""
         region = run.region
-        roof = region.roofline.t_roofline_ms if region.roofline else None
-        w = region.members[0].workload
-        step = self.step_ms[w]
-
-        def one_copy_ms(ratio: float) -> float:
-            return ratio * region.p_rep[w] * step  # in the frame the roofline was priced in
-
-        if roof and run.shipped_ratio is not None and one_copy_ms(run.shipped_ratio) <= SHIP_ROOFLINE_CLOSE * roof:
+        step = self.step_ms[region.members[0].workload]
+        if run.shipped is None and run.hypotheses == 0 and run.library_ms and run.head_floor_ms \
+                and run.library_ms / run.head_floor_ms < ROOFLINE_HAS_ROOM:
+            return (f"no headroom at open: the library runs at "
+                    f"{run.library_ms / run.head_floor_ms:.2f}x its floor "
+                    f"({run.library_ms:.4f} vs {run.head_floor_ms:.4f} ms per copy)")
+        if run.shipped_ms is not None and run.shipped_floor_ms and \
+                run.shipped_ms <= SHIP_ROOFLINE_CLOSE * run.shipped_floor_ms:
             return "shipped is within 5% of the roofline"
-        if roof and run.head_ratio is not None and \
-                (one_copy_ms(run.head_ratio) - roof) * region.copies < 0.01 * step:
+        if run.head_ms is not None and run.head_floor_ms and \
+                (run.head_ms - run.head_floor_ms) * region.copies < 0.01 * step:
             return "head's clock is within 1% of the step of the roofline, all copies counted"
         return None
 
@@ -1238,7 +1269,7 @@ def _verdict_payload(hyp_id: str, kernel_id: str, outcome: str, result) -> dict:
         "hypothesis_id": hyp_id, "kernel_id": kernel_id, "outcome": outcome,
         "failed_gate": result.failed_gate, "detail": _safe_detail(result.detail),
         "region_ms": result.region_ms, "library_ms": result.library_ms,
-        "win_ms": result.win_ms, "sigma_ms": result.sigma_ms,
+        "win_ms": result.win_ms, "sigma_ms": result.sigma_ms, "floor_ms": result.floor_ms,
     }
 
 

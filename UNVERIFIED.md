@@ -44,3 +44,13 @@ Every code path not yet executed on real hardware, and why. Delete entries as th
 - Family abandonment and the diminishing-ships / stale-hypotheses close rules: unit
   logic tested via the judge queue tests; no loop run has organically triggered
   them (the scripted judges yield first).
+- The measured floor at model scale: the stream probe has run beside bf16
+  matvecs and fixture chains, not yet beside a quantized projection (uint32
+  weights, scales and biases as separate inputs) or inside a real job's
+  pricing and sandbox clocks. The next 4-bit Qwen3 run is its test, and the
+  open-time close ("no headroom at open") has fired only under a faked ladder.
+- The flops term of the roofline is still arithmetic against the matmul peak
+  measured at job start, so a compute-bound region's headroom mixes a probe
+  from one window with a peak from another. Decode regions are memory-bound
+  and never touch it; a prefill job would.
+

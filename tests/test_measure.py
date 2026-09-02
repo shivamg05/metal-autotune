@@ -267,3 +267,53 @@ def test_chained_launches_do_not_overlap():
     t_un = min(time_once(unchained) for _ in range(5))
     t_ch = min(time_once(chained) for _ in range(5))
     assert t_ch > 2.0 * t_un, (t_un, t_ch)
+
+
+# -- the floor probe ------------------------------------------------------------
+
+def test_stream_probe_runs_on_odd_shapes_and_small_inputs():
+    """The probe must build and run for whatever a boundary holds: odd byte
+    counts, integers, bools, empty arrays, and inputs so small that
+    mx.fast.metal_kernel binds them in constant memory (under 8 elements; the
+    8-element input pins that boundary, since it is read through the vector
+    cast that only device memory allows)."""
+    from autotuner.measure.probe import MLX_CONSTANT_BELOW, stream_probe
+
+    ins = [((7, 3), "float16"), ((1,), "int32"), ((5,), "bool"), ((2, 3, 4), "bfloat16"),
+           ((0,), "float32"), ((MLX_CONSTANT_BELOW,), "float32")]
+    outs = [((3, 5), "float32"), ((1, 1, 1), "bfloat16"), ((9,), "uint8")]
+    arrays = [mx.zeros(s, dtype=getattr(mx, "bool_" if d == "bool" else d)) for s, d in ins]
+    res = stream_probe(ins, outs)(arrays)
+    mx.eval(res)
+    assert [tuple(r.shape) for r in res] == [s for s, _ in outs]
+    assert [str(r.dtype).removeprefix("mlx.core.") for r in res] == [d for _, d in outs]
+
+
+def test_mlx_matvec_sits_near_the_stream_floor():
+    """A floor is only a floor if the library cannot beat it. Paired in one
+    window, chained and cache-cold, MLX's bf16 matvec over a 4 MB matrix reads
+    between 0.9x and 1.5x the probe on this chip (spike 12: 1.0x to 1.2x)."""
+    from tests.conftest import require_healthy_gpu, require_quiet_load
+    from autotuner.measure.clocks import (CLOCK_TARGET_MS, chained_loop, compare, link_input,
+                                          link_loop, loop_iterations, timing_sets)
+    from autotuner.measure.probe import floor_from, stream_probe
+    from autotuner.measure.session import Session, time_once
+
+    require_healthy_gpu()
+    require_quiet_load()
+    x = mx.random.normal((1, 1, 1024)).astype(mx.bfloat16)
+    w = mx.random.normal((2048, 1024)).astype(mx.bfloat16)
+    mx.eval(x, w)
+    sets = timing_sets([{0: x, 1: w}])
+    link_id = link_input(sets[0], {1})
+    lib = lambda b: [b[0] @ b[1].T]
+    iters = loop_iterations(time_once, lambda n: chained_loop(lib, sets, n, link_id), CLOCK_TARGET_MS)
+    lib_loop = chained_loop(lib, sets, iters, link_id)
+    probe = stream_probe([((1, 1, 1024), "bfloat16"), ((2048, 1024), "bfloat16")], [((1, 1, 2048), "bfloat16")])
+    probe_loop = chained_loop(lambda b: probe([b[0], b[1]]), sets, iters, link_id)
+    session = Session()
+    net = compare(session, link_loop(sets, iters, link_id), lib_loop, pairs=8)
+    library_ms = -net.median_delta_ms / iters
+    floor = compare(session, probe_loop, lib_loop, pairs=8)
+    floor_ms = floor_from(floor, net.median_baseline_ms, iters, library_ms)
+    assert 0.9 <= library_ms / floor_ms <= 1.5

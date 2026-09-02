@@ -41,12 +41,22 @@ def wrap(model, cache, context: int):
     return step
 
 
-def build():
+def build_step(bits: int | None = None, group_size: int = 64):
+    """The decode step over the loaded model, quantized in memory first when
+    bits is given (what mlx_lm's own convert does), so no second checkpoint
+    is downloaded. Quantization is a choice of model, not a knob of the tool:
+    a manifest picks it by naming the model file."""
     from mlx_lm import load
     from mlx_lm.models.cache import make_prompt_cache
 
     model, _ = load(MODEL)
+    if bits is not None:
+        nn.quantize(model, group_size=group_size, bits=bits)
     cache = make_prompt_cache(model)
     prompt = mx.random.randint(0, VOCAB, (1, CONTEXT), key=mx.random.key(7))
     mx.eval(model(prompt, cache=cache))
     return wrap(model, cache, CONTEXT)
+
+
+def build():
+    return build_step()

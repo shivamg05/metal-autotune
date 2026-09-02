@@ -173,6 +173,7 @@ def test_capture_and_share_price_stability():
     p1 = region_share(session, trace, chain, [inputs], weights, step, pairs=8)
     p2 = region_share(session, trace, chain, [inputs], weights, step, pairs=8)
     assert p1.share > 0 and p2.share > 0
+    assert p1.floor_ms > 0 and p2.floor_ms > 0  # the probe was clocked beside the region
     assert abs(p1.share - p2.share) / max(p1.share, p2.share) < 0.5  # same clock within generous noise
 
 
@@ -449,6 +450,35 @@ def test_chains_end_before_a_matmul_that_consumes_an_earlier_matmul():
     assert (0, 1) in spans(build_stretches(t2, "w"))
 
 
+def test_projections_group_by_weight_through_the_transpose():
+    """nn.Linear reads its matrix through a transpose. The matmul alone is no
+    candidate (the chain from the transpose is the same cut with a better
+    boundary), and chains against different matrices are different regions:
+    the first Qwen run folded 197 projections over six matrices into one."""
+    model = load_fixture("llama_ish")
+    tokens = mx.random.randint(0, 512, (1, 4), key=mx.random.key(1))
+    trace, _ = tracer().trace(model, [tokens])
+    regions = group_copies({"w": trace}, {"w": build_stretches(trace, "w")})
+    assert not any(r.ops == ("array.__matmul__",) for r in regions)
+    proj = [r for r in regions if r.ops == ("array.T", "array.__matmul__")]
+    shapes = {}
+    for r in proj:
+        specs = {a: s for m in r.members for a, s in trace.span_specs(m.start_seq, m.end_seq).items()}
+        seen = {specs[a][0] for m in r.members for a in m.input_ids if a in trace.weights}
+        assert len(seen) == 1, "one region, one weight shape"
+        shapes[seen.pop()] = r.copies
+    # 4 square projections per layer, gate and up, down, and the tied head
+    assert shapes == {(256, 256): 32, (1024, 256): 16, (256, 1024): 8, (512, 256): 1}
+
+
+def test_a_weight_only_call_starts_a_chain():
+    """exp(0) T(1) matmul(2) in one module: the transpose reads only a weight,
+    so a chain starts there and the projection is a candidate by itself; the
+    matmul on the transposed view is not a candidate alone."""
+    _, _, trace = traced("weight_view_in_module", (4, 32))
+    assert spans(build_stretches(trace, "w")) == {(0, 0), (0, 2), (1, 2)}
+
+
 def test_weight_shapes_tell_copies_apart():
     """The same op against a different weight shape is a different kernel."""
     same_a = _fake(["array.__matmul__"], [(4, 4)])
@@ -457,6 +487,37 @@ def test_weight_shapes_tell_copies_apart():
     cut = lambda t: build_stretches(t, "w")[0]
     assert fingerprint(same_a, cut(same_a)) == fingerprint(same_b, cut(same_b))
     assert fingerprint(same_a, cut(same_a)) != fingerprint(other, cut(other))
+
+
+def test_a_measured_floor_replaces_the_bytes_and_launch_terms():
+    """With a probe clock the roofline is the larger of that floor and the
+    flops term; the bound still says which of bytes or launch the floor is
+    made of. Without one the arithmetic stands."""
+    _, _, trace = traced("norm_three_proj", (4, 32))
+    chain = next(s for s in build_stretches(trace, "w") if (s.start_seq, s.end_seq) == (0, 3))
+    peaks = Peaks(bandwidth_gbps=100.0, flops_gflops={"float32": 3000.0}, launch_us=4.0)
+    plain = stretch_roofline(trace, chain, peaks, t_orig_ms=1.0)
+    assert plain.t_floor_ms is None and plain.t_roofline_ms == max(plain.t_mem_ms, plain.t_compute_ms, plain.t_launch_ms)
+    measured = stretch_roofline(trace, chain, peaks, t_orig_ms=1.0, floor_ms=0.5)
+    assert measured.t_floor_ms == 0.5 and measured.t_roofline_ms == 0.5 and measured.s_max == 2.0
+    assert measured.bound == ("memory" if measured.t_mem_ms >= measured.t_launch_ms else "launch")
+    compute_bound = stretch_roofline(trace, chain, peaks, t_orig_ms=1.0, floor_ms=1e-9)
+    assert compute_bound.bound == "compute" and compute_bound.t_roofline_ms == plain.t_compute_ms
+
+
+def test_step_floor_counts_outside_bytes_flops_and_launches():
+    """The scout line: bytes the step must read from outside itself and write
+    out, flops of every op, launches the library fires, and the room left."""
+    from autotuner.regions.roofline import step_floor
+
+    _, _, trace = traced("norm_three_proj", (4, 32))
+    peaks = Peaks(bandwidth_gbps=100.0, flops_gflops={"float32": 3000.0}, launch_us=4.0)
+    f = step_floor(trace, peaks, step_ms=1.0)
+    x, g, w, out = 4 * 32 * 4, 32 * 4, 32 * 32 * 4, 4 * 32 * 4
+    assert f["bytes_mb"] == pytest.approx((x + g + 3 * w + 3 * out) / 1e6)
+    assert f["gflop"] == pytest.approx((4 * 4 * 32 + 3 * 2 * 4 * 32 * 32) / 1e9)
+    assert f["launches"] == 4
+    assert f["floor_ms"] == max(f["t_mem_ms"], f["t_compute_ms"]) and f["room"] == pytest.approx(1 - f["floor_ms"])
 
 
 def test_roofline_counts_the_fused_kernel_launch_once():

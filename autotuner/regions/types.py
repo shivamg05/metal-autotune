@@ -26,6 +26,7 @@ class Roofline:
     t_roofline_ms: float
     bound: str                        # memory | compute | launch
     s_max: float
+    t_floor_ms: float | None = None   # measured: one launch streaming the boundary, clocked beside the copy
 
 
 @dataclass
@@ -40,6 +41,7 @@ class Region:
     # (what the roofline's one-copy floor compares against)
     t_orig_ms: dict[str, float] = field(default_factory=dict)
     t_rep_ms: dict[str, float] = field(default_factory=dict)
+    t_floor_ms: dict[str, float] = field(default_factory=dict)   # one copy's probe, same window as t_rep_ms
     p: dict[str, float] = field(default_factory=dict)
     p_rep: dict[str, float] = field(default_factory=dict)   # one copy's share
     stability: dict[str, float] = field(default_factory=dict)  # 0..1 per workload

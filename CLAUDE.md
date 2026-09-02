@@ -21,7 +21,7 @@ Read the spec end to end before working on the loop, the ladder, regions, bind, 
 - **workload**: the real input shapes to optimize for. A dim named in a shape (an "L") is sweepable; integer dims are model constants and never move.
 - **trace**: the recorded op-call stream, per workload. Pass 1 records lazily with the patch surface installed; pass 2 is the step clock with the recorder fully removed.
 - **region**: a run of consecutive recorded calls one kernel could replace, plus its boundary inputs/outputs and live values. All copies of the same op sequence across the model are one region.
-- **roofline**: a region's physical speed limit from boundary bytes (never intermediates), flops, and launch count. Whichever term binds is recorded as `bound`: memory, compute, or launch.
+- **roofline**: a region's physical speed limit from boundary bytes (never intermediates), flops, and launch count. The bytes-and-launch part is measured by a probe (one launch streaming the boundary) clocked beside the region in the same window; the flops part is arithmetic. Whichever term binds is recorded as `bound`: memory, compute, or launch.
 - **scaffold**: the correct starting kernel the harness builds (stitched from MLX's shipped MSL where possible, naive lowering otherwise). Must pass the ladder before the judge may edit it; slow is normal.
 - **hypothesis**: one small proposed kernel edit. The judge plans a queue in English and writes Metal only for the front ready item, one at a time.
 - **the ladder**: the nine gates in order (static checks, compile, poison, watchdog, smoke, all workloads, shape sweep, determinism + numerics, region ship clock). First failure stops.
@@ -36,7 +36,7 @@ Read the spec end to end before working on the loop, the ladder, regions, bind, 
 - The baseline is what every win is measured against: the model under harness-applied `mx.compile` by default, or the plain model exactly as `build()` hands it when the manifest says `baseline: plain`. Both step clocks and the choice go in the report. The spec's end state, choosing the faster of the two by measurement, is not built yet. Tracing and every correctness check always use the plain model.
 - No CPU fallback for GPU-dependent logic. If the environment cannot measure, raise.
 - Every kernel evaluation runs out of process (Metal reads `MTL_SHADER_VALIDATION` at process launch; killing the process is how a wedged GPU recovers).
-- The measurement laws in plan section 6 are invariants, not conventions: pair and interleave every comparison, duty-cycle pacing, warm until stable, medians for comparisons and running max for peaks, no absolute-time vetoes, defeat laziness in every timed loop, and make every timed loop read its bytes from memory and run its passes one after another (a cache-defeating working set, passes chained so Metal cannot run them side by side).
+- The measurement laws in plan section 6 are invariants, not conventions: pair and interleave every comparison, duty-cycle pacing, warm until stable, medians for comparisons and running max for peaks, no absolute-time vetoes, defeat laziness in every timed loop, make every timed loop read its bytes from memory and run its passes one after another (a cache-defeating working set, passes chained so Metal cannot run them side by side), and measure a limit that decides beside the thing it limits (the floor probe, never a peak from another minute).
 
 ## Architecture
 

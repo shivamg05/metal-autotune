@@ -118,6 +118,7 @@ def test_correct_kernel_scores_with_the_clock(region):
     v = run_job(spec(region, ADD, "sbx_add_s", phase="score"), "score", timeout_s=120)
     assert v.passed, v.detail
     assert "ship" in v.detail and v.timing["library_ms"] > 0 and "win_ms" in v.timing
+    assert v.timing["floor_ms"] > 0  # the floor probe was clocked beside the library
 
 
 def test_compile_error_reports_structured_diagnostics(region):

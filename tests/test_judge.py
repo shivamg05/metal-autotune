@@ -407,8 +407,8 @@ def test_prompt_is_structurally_sealed():
     parameters, no tensor or tolerance parameter to pass."""
     params = inspect.signature(prompts.render_region_state).parameters
     assert set(params) == {"region", "io_specs", "ops", "kernels", "head", "shipped",
-                           "head_ms", "shipped_ms", "assoc_tag", "families", "queue",
-                           "last_verdict", "writing_for", "chip"}
+                           "head_ms", "shipped_ms", "head_floor_ms", "shipped_floor_ms",
+                           "assoc_tag", "families", "queue", "last_verdict", "writing_for", "chip"}
     assert all(p.kind is inspect.Parameter.KEYWORD_ONLY for p in params.values())
 
 

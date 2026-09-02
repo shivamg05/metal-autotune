@@ -20,14 +20,13 @@ import mlx.core as mx
 
 from ..measure.clocks import (CLOCK_TARGET_MS, chained_loop, compare, link_input, link_loop,
                               loop_iterations, timing_sets)
+from ..measure.probe import array_specs, floor_from, stream_probe
 from ..measure.session import Session
 from ..trace import Tracer
 from ..trace.types import Trace
 from ..trace.replay import replay
 from .types import Region, Stretch
 
-REGION_FLOOR_P = 0.02
-ROOFLINE_HAS_ROOM = 1.2
 PRICE_PAIRS = 8           # a share steers ranking and the floor; the ship clock decides wins
 
 
@@ -102,6 +101,7 @@ class RegionPrice:
     share: float      # one pass as a fraction of one step: the drift-immune number
     ms: float         # one pass in milliseconds, for logs and the ladder's floor
     stability: float  # 0..1 agreement of the paired ratios behind `share`
+    floor_ms: float   # the one-launch stream probe over the same boundary, in ms's frame
 
 
 def _looped_replay(
@@ -139,6 +139,22 @@ def _looped_replay(
     return chained_loop(one_pass, sets, iters, link_id), iters, link_id, sets
 
 
+def _probe_pass(trace: Trace, stretch: Stretch, binds, weight_bindings):
+    """The floor probe over this region's boundary: its inputs in order, its
+    recorded output shapes."""
+    nodes = trace.nodes[stretch.start_seq:stretch.end_seq + 1]
+    out_ids = list(stretch.output_ids) or [nodes[-1].out_arrays[0]]
+    specs = trace.span_specs(stretch.start_seq, stretch.end_seq)
+    merged = {**weight_bindings, **binds}
+    probe = stream_probe(array_specs([merged[a] for a in stretch.input_ids]),
+                         [specs[a] for a in out_ids])
+
+    def one_pass(bindings):
+        merged = {**weight_bindings, **bindings}
+        return probe([merged[a] for a in stretch.input_ids])
+    return one_pass
+
+
 def region_share(
     session: Session,
     trace: Trace,
@@ -163,15 +179,23 @@ def region_share(
         session, trace, stretch, input_sets, weight_bindings, target_ms, baseline)
     comp = compare(session, step_fn, loop_fn, pairs=pairs, warm_baseline=warm_step)
     region_ms = statistics.median(comp.candidate_ms) / iters
+    link_loop_ms = 0.0
     if link_id is not None:
         # the chain link's own cost comes out through a paired comparison
         # against the same loop around a pass that only hands its input back
         net = compare(session, link_loop(sets, iters, link_id), loop_fn, pairs=pairs)
         region_ms = max(-net.median_delta_ms / iters, 0.0)
+        link_loop_ms = net.median_baseline_ms
+    # the floor beside the region, in one window: the same loop around one
+    # launch that streams the boundary, so region over floor is a paired ratio
+    probe_loop = chained_loop(_probe_pass(trace, stretch, sets[0], weight_bindings),
+                              sets, iters, link_id)
+    floor = compare(session, probe_loop, loop_fn, pairs=pairs)
     return RegionPrice(
         share=region_ms / comp.median_baseline_ms,
         ms=region_ms,
         stability=comp.stability,
+        floor_ms=floor_from(floor, link_loop_ms, iters, region_ms),
     )
 
 
@@ -220,6 +244,7 @@ def price_region(
         per_workload_ms[m.workload] = per_workload_ms.get(m.workload, 0.0) + price.ms
         per_workload_share[m.workload] = per_workload_share.get(m.workload, 0.0) + price.share
         region.t_rep_ms.setdefault(m.workload, price.ms)
+        region.t_floor_ms.setdefault(m.workload, price.floor_ms)
         region.p_rep.setdefault(m.workload, price.share)
         region.stability.setdefault(m.workload, price.stability)
     for w, total in per_workload_ms.items():

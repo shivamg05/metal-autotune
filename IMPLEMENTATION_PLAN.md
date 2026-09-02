@@ -110,7 +110,9 @@ autotuner/
     price.py         # boundary tensor capture, region clock share, the floor
     roofline.py      # boundary bytes (region inputs + outputs ONLY, never
                      # intermediates), flops summed over ops, launch count;
-                     # T_mem/T_compute/T_launch, bound, s_max
+                     # T_mem/T_compute/T_launch, bound, s_max; the bytes-and-
+                     # launch floor comes measured from measure/probe.py; the
+                     # whole step's floor (the scout line)
     rank.py          # ordering, tie-breaks, overlap bookkeeping
   scaffold/
     lower.py         # naive lowering: region ops -> one correct Metal kernel
@@ -200,7 +202,7 @@ from a node, or the trace aborts naming the offending call.
 
 **Region**: the spec's record: `{ops: [TraceNode refs], copies: int, inputs, outputs
 (live values included), workloads: [name], p, T_orig_ms, bound: memory|compute|launch,
-roofline: {T_mem, T_compute, T_launch, T_roofline, s_max}}`, plus `fingerprint`
+roofline: {T_mem, T_compute, T_launch, T_floor, T_roofline, s_max}}`, plus `fingerprint`
 (Section 5.5), `sweep_instances` (per sweep size: the matched node span, shapes, and
 scalar_args at that size; Section 5.6), and `boundary_store` (paths to saved
 input/output tensor sets, k per workload; Section 5.7).
@@ -614,9 +616,9 @@ Spec-fixed:
 | Watchdog | 20x library region time (raised from 10x by maintainer decision 2026-08-31: correct fused-chain starting kernels sit near 10x, and the gate exists to catch wedged kernels, not honest slowness) |
 | Ship margin | max(1% of the library region time re-measured in this verdict, 3 sigma of the interleaved samples) |
 | Fail-streak close | 5 straight compile/static fails on one parent |
-| Roofline close | shipped within 5% of roofline |
+| Roofline close | shipped within 5% of the floor probe clocked beside it |
 | Diminishing-ships close | 3 ships in a row, each under 2% better than the last |
-| Head-near-roofline close | head minus roofline under ~1% of the step |
+| Head-near-roofline close | head minus the floor clocked beside it, all copies counted, under ~1% of the step |
 | Family abandonment | 8 correct-but-slower without ever beating the library |
 | Scaffold fix attempts | 1 |
 | Determinism runs at gate 8 | 3 |
@@ -627,7 +629,7 @@ Plan defaults (tunable, recorded):
 | Constant | Default | Spec language |
 |---|---|---|
 | Region floor | 2% of step (copies combined) | "about 2%" |
-| Roofline has_room | s_max >= 1.2 | "barely beats ... is skipped" |
+| Roofline has_room | s_max >= 1.2, from the measured floor at pricing and again from the sandbox's clock when the region opens | "barely beats ... is skipped" |
 | Launch cost per kernel (T_launch) | measured at job start via empty-kernel chain; fallback 4 us | "a few us" |
 | Minimum absolute win | 30 us per step across copies | "a few tens of microseconds" |
 | Assoc-changing kappa | 1.25 | "around 1 to 1.5" |
@@ -758,6 +760,21 @@ relies on have M0 spikes.
     pairing the loop against the chain alone, which takes out the link's cost and the
     sample's fixed submit-and-sync cost alike; a win is the paired difference between
     the two arms, which pay the link equally.
+14. **A limit that decides is measured beside the thing it limits.** The bytes-and-
+    launch part of a region's roofline is a probe: one launch that streams the
+    boundary bytes (`measure/probe.py`), run in the same chained, rotated loop as the
+    region and paired against it in one window, at pricing and again beside every
+    kernel in the sandbox (`floor_ms`). Region over probe is then a ratio the
+    machine's speed cannot move. The arithmetic limit was wrong two ways at decode
+    sizes: a dependent kernel pays its launch and its stream in series, where
+    `max(T_mem, T_launch)` assumed overlap, and the peak from a 512 MB pass is out
+    of reach for a 2 MB weight; and dividing a clock from one minute of a job by a
+    peak from another read 15% of machine drift as headroom (the 10:54 Qwen run:
+    1.29 to 1.40x priced, 1.05 to 1.17x at open). The flops term stays arithmetic
+    against the matmul peak, so a compute-bound region's ceiling is MLX's own GEMM.
+    The whole step gets the same accounting once, as the scout line: outside bytes,
+    flops, launches, floor, and room, so a manifest with no room says so before
+    any search.
 
 ## 7. The ladder, bind, and e2e
 

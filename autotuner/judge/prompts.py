@@ -60,8 +60,12 @@ LEGEND = {
     "bound": "the resource that limits the region: memory (bytes moved), compute (flops), or launch (kernel count)",
     "T_orig_ms": "the library's time for all copies, per workload",
     "T_rep_ms": "the library's time for one copy, per workload; every other ms figure here is one copy",
-    "roofline_ms": "the physical limit for one copy on this chip",
-    "s_max": "speedup ceiling for one copy: T_rep_ms over roofline_ms",
+    "roofline_ms": "the physical limit for one copy on this chip: one launch streaming the region's "
+                   "boundary bytes, clocked beside the library in the same window, or the flops limit "
+                   "when that is larger",
+    "s_max": "speedup ceiling for one copy: T_rep_ms over roofline_ms, both from one paired clock",
+    "floor_ms": "in a verdict: that same one-launch floor clocked beside the kernel; a kernel at "
+                "floor_ms has nothing left to gain",
     "head_ms": "one copy's time for head, the kernel being edited; null until it is clocked",
     "shipped_ms": "one copy's time for the installed kernel; null when none is installed",
     "library_ms": "the library's time measured beside a kernel in the same clock",
@@ -93,6 +97,8 @@ def render_region_state(
     last_verdict: Mapping | None,
     writing_for: Mapping | None,
     chip: Mapping | None = None,
+    head_floor_ms: float | None = None,
+    shipped_floor_ms: float | None = None,
 ) -> dict:
     """The one prompt contract, rendered per call. io_specs maps workload ->
     {"inputs": [(shape, dtype)], "outputs": [...]}; ops lists the recorded
@@ -124,8 +130,8 @@ def render_region_state(
             "s_max": roofline.s_max if roofline else None,
             "head_ms": head_ms,
             "shipped_ms": shipped_ms,
-            "head_minus_roofline_ms": _distance(head_ms, roofline),
-            "shipped_minus_roofline_ms": _distance(shipped_ms, roofline),
+            "head_minus_roofline_ms": _distance(head_ms, head_floor_ms, roofline),
+            "shipped_minus_roofline_ms": _distance(shipped_ms, shipped_floor_ms, roofline),
         },
         "head": head,
         "shipped": shipped,
@@ -151,10 +157,14 @@ def render_region_state(
     return rendered
 
 
-def _distance(clock_ms: float | None, roofline) -> float | None:
-    if clock_ms is None or roofline is None:
+def _distance(clock_ms: float | None, floor_ms: float | None, roofline) -> float | None:
+    """How far a kernel sits above its floor: the probe clocked beside it
+    when there is one, else the region's priced roofline."""
+    if clock_ms is None:
         return None
-    return clock_ms - roofline.t_roofline_ms
+    if floor_ms:
+        return clock_ms - floor_ms
+    return clock_ms - roofline.t_roofline_ms if roofline is not None else None
 
 
 def _refuse_tolerances(obj: object, where: str) -> None:

@@ -372,3 +372,37 @@ own matmul fills the GPU alone and barely moves (0.053 to 0.063 hot, 0.073 to
 0.081 cold). Pinned in tests/test_measure.py (test_chained_launches_do_not_overlap).
 Every timed loop in the harness now chains its passes and rotates a
 cache-defeating working set (measure/clocks.py).
+
+## spike_12_stream_probe: dependent kernels pay launch and stream in series (2026-09-02)
+
+Measured on the M4 (10 GPU cores, 24 GB) with the clock laws (chained, cache-cold,
+paired in one window), `spikes/spike_12_stream_probe.py`, and the open-time clocks
+of work-2026-09-02-1054-est.
+
+- **FACT launch-plus-stream.** MLX's bf16 matvec over a 2 MB matrix takes 29 to 32 us
+  chained, against 22 us of stream at the measured 94.7 GB/s and a 7.1 us launch: the
+  sum, not the larger of the two. 4 MB: 52 us measured, 44 + 7 arithmetic. 6 MB: 70
+  measured, 66 + 7. The computed roofline `max(T_mem, T_compute, T_launch)` overstates
+  headroom by a third at these sizes; the harness now measures the bytes-and-launch
+  floor with a probe (`autotuner/measure/probe.py`) beside every region clock.
+- **FACT matvec-at-the-wire.** Paired against the one-launch stream probe in one
+  window, MLX's matvec reads 1.00 to 1.04x the probe at 2 MB, 1.01 to 1.04x at 4 MB,
+  1.00 to 1.17x at 6 MB (five runs, stability 0.8 to 0.97). Separate measurements of
+  the same two loops taken a minute apart read 0.6x to 1.5x on a GPU another process
+  had at 89%, which is the case for the paired ratio. Pinned by
+  `tests/test_measure.py::test_mlx_matvec_sits_near_the_stream_floor` (0.9x to 1.5x,
+  health-gated).
+- **FACT reductions-stream-slower.** `mx.sum(w, axis=1)` unchained reads 58 to 68 GB/s
+  over the same matrices, slower than the matvec; MLX's own reduce is not a floor.
+- **FACT constant-under-8.** `mx.fast.metal_kernel` binds an input with fewer than 8
+  elements, whatever its dtype, in Metal's `constant` address space (8 or more:
+  `device`); a `device` pointer cast to it fails to compile. The probe reads no input
+  under 8 elements. Pinned by
+  `tests/test_measure.py::test_stream_probe_runs_on_odd_shapes_and_small_inputs`,
+  which reads an 8-element input through the cast.
+- **FACT rms_norm-under-the-launch-figure.** MLX's rms_norm over 1024 elements runs
+  in 4.7 to 5.9 us chained, under the 7.1 us the launch probe (a chain of scalar
+  adds) reports per kernel, and 1.08x the stream probe over the same boundary. The
+  computed roofline put its library under its own limit and reported 1.3 to 1.6x
+  headroom on two such regions in the 1054 run.
+

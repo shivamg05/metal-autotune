@@ -29,6 +29,7 @@ from autotuner.ladder.numeric import REGIMES, max_abs_diff, value_regimes
 from autotuner.ladder.numeric import compare as numeric_compare
 from autotuner.measure.clocks import (CLOCK_TARGET_MS, chained_loop, compare as paired_compare,
                                       link_input, link_loop, loop_iterations, timing_sets)
+from autotuner.measure.probe import array_specs, floor_from, stream_probe
 from autotuner.measure.session import Session, time_once
 from autotuner.regions.store import load_set
 from autotuner.sandbox.poison import saturate_pool
@@ -413,18 +414,28 @@ def evaluate_ladder(spec: LadderSpec) -> Verdict:
         win_ms = comp.median_delta_ms / iters  # both arms pay the link; the win is exact
         sigma_ms = comp.sigma_ms / iters
         library_ms = comp.median_baseline_ms / iters
+        link_loop_ms = 0.0
         if link_id is not None:
             # the library's own per-pass time, with the chain link and the
             # sample's fixed submit-and-sync cost taken out by pairing
             net = paired_compare(session, link_loop(timing_binds, iters, link_id), lib_loop,
                                  pairs=max(spec.clock_pairs // 2, 4))
             library_ms = max(-net.median_delta_ms / iters, 1e-6)
+            link_loop_ms = net.median_baseline_ms
         region_ms = max(library_ms - win_ms, 1e-6)
+        # the floor beside the library, in this child: one launch streaming
+        # the region's boundary, chained and rotated like the library, so
+        # library over floor is a paired ratio; the flops term stays arithmetic
+        probe = stream_probe(array_specs([prim_binds[0][i] for i in in_ids]), array_specs(prim_refs[0]))
+        probe_loop = chained_loop(lambda b: probe([b[i] for i in in_ids]), timing_binds, iters, link_id)
+        floor = paired_compare(session, probe_loop, lib_loop, pairs=max(spec.clock_pairs // 2, 4))
+        floor_ms = max(floor_from(floor, link_loop_ms, iters, library_ms), spec.compute_floor_ms)
         margin_ms = max(0.01 * library_ms, 3.0 * sigma_ms)
         ship = bool(win_ms > margin_ms and win_ms >= spec.min_win_ms)
         timing.update({
             "region_ms": region_ms,
             "library_ms": library_ms,
+            "floor_ms": floor_ms,
             "win_ms": win_ms,
             "sigma_ms": sigma_ms,
             "clock_iters": iters,

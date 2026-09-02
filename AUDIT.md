@@ -297,6 +297,24 @@ Made in this refactor, each open to veto:
   from outside the model, since mx.compile swaps only state handed to it in a
   dict or list; the job detects that from the trace and takes the plain
   baseline with the reason recorded (found by the first Qwen run).
+- (2026-09-02, you asked for this after the 10:54 Qwen run) The bytes-and-launch
+  part of a region's roofline is measured, not computed: a one-launch probe
+  streams the boundary beside the region in one paired window, at pricing and
+  again beside every kernel in the sandbox. The arithmetic overstated headroom
+  by a third at decode sizes (launch and stream are paid in series, and the
+  512 MB peak is out of reach at 2 MB), and pricing's clock came from another
+  minute of a job on a machine that moved 15%. A region whose library reads
+  under 1.2x its floor at open closes before any plan is asked for; the two
+  roofline close rules compare each kernel to the floor clocked beside it. The
+  flops term stays arithmetic. The spec's roofline section says so now.
+- (2026-09-02) A view of a weight is a weight to the fingerprint, a call that
+  reads only weights starts a chain, and a lone op on a transposed weight is
+  not a candidate: the 10:54 run had folded 197 projections over six matrices
+  into one region because nn.Linear reads its matrix through a transpose.
+- (2026-09-02) The report and log carry a scout line per workload: the step's
+  outside bytes, flops, launches, physical floor, and room. On bf16 Qwen3 0.6B
+  decode the room is 8% of the step; the manifest now points at a 4-bit model
+  file, where it is 27%.
 
 Left for you:
 

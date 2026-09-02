@@ -70,6 +70,18 @@ def _is_barrier(node: TraceNode, trace: Trace) -> bool:
     return False
 
 
+def weight_like_ids(trace: Trace) -> frozenset[int]:
+    """The weights plus every view taken of one. A transposed or reshaped
+    weight is still a weight to the kernel that reads it: fixed in shape and
+    value across calls, and a projection against a different one is a
+    different kernel."""
+    ids = set(trace.weights)
+    for node in trace.nodes:
+        if is_view(node) and node.in_arrays and all(a in ids for a in node.in_arrays):
+            ids.update(node.out_arrays)
+    return frozenset(ids)
+
+
 def _boundary(trace: Trace, workload: str, start: int, end: int) -> Stretch:
     """Derive one stretch's inputs, live outputs, and scope."""
     nodes = trace.nodes[start:end + 1]
@@ -122,12 +134,16 @@ def build_stretches(trace: Trace, workload: str) -> list[Stretch]:
     barrier (or the cap), keeping each compute-ending prefix."""
     n = len(trace.nodes)
     barrier = [_is_barrier(node, trace) for node in trace.nodes]
+    weight_like = weight_like_ids(trace)
 
     anchors = set()
     for i, node in enumerate(trace.nodes):
         if barrier[i]:
             continue
-        if i == 0 or barrier[i - 1] or node.module_address != trace.nodes[i - 1].module_address:
+        # a call that reads only weights (a Linear transposing its matrix)
+        # starts a chain too, so the projection is a candidate on its own
+        if i == 0 or barrier[i - 1] or node.module_address != trace.nodes[i - 1].module_address \
+                or all(a in weight_like for a in node.in_arrays):
             anchors.add(i)
 
     stretches: list[Stretch] = []
@@ -140,8 +156,14 @@ def build_stretches(trace: Trace, workload: str) -> list[Stretch]:
             stretches.append(_boundary(trace, workload, start, end))
 
     for i, node in enumerate(trace.nodes):
-        if not barrier[i] and not is_view(node):
-            add(i, i)
+        if barrier[i] or is_view(node):
+            continue
+        if any(a in weight_like and a not in trace.weights for a in node.in_arrays):
+            # a lone op on a transposed weight is the chain that starts at the
+            # transpose, with a worse boundary: a kernel gets its inputs made
+            # contiguous, so the view would be copied on every call
+            continue
+        add(i, i)
 
     for a in sorted(anchors):
         compute_seen = 0

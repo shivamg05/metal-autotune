@@ -53,6 +53,15 @@ you break them:
 `build()` is called more than once per job to get untouched copies of the
 model, so it must return the same model every time.
 
+The model file also decides what there is to win. The tool never changes a
+model's dtypes or quantization, and on a small model decoding one token at a
+time those decide almost everything: `models/qwen3_0.6b_decode.py` (bf16)
+spends 92% of its step streaming weights no kernel can shorten, so at most 8%
+of the step is on the table, while `models/qwen3_0.6b_4bit_decode.py` (the
+same model quantized in memory) leaves 27%. The `step_floor` line in the log
+and `coverage.step_floor` in the report say this for your model before any
+search starts: `room` is the fraction of the step that is not physics.
+
 ## 2. Write the manifest
 
 The manifest is the job order: which model, which input shapes matter to you,
@@ -131,7 +140,7 @@ The stages arrive in this order:
 | stage | log lines you see | typical time | what is happening |
 |---|---|---|---|
 | load and map | `model`, `trace`, `regions` | 1-2 min | loads the model twice (weights shared, memory does not double) and finds the spots worth trying |
-| measure | quiet, then `peaks`, `aa_floor`, `step_clock`, quiet again until `ranked` | 5-10 min | records reference data, measures the machine's limits and its noise, times the untouched model, prices every spot |
+| measure | quiet, then `peaks`, `aa_floor`, `step_clock`, `step_floor`, quiet again until `ranked` | 5-10 min | records reference data, measures the machine's limits and its noise, times the untouched model and says how much of it is physics, prices every spot beside its floor |
 | search | `region_open` ... `region_closed`, one block per spot | minutes per attempt | builds starting code, asks the AI for improvements, verifies each one |
 | finish | `step_clock`, then the summary on stdout | 1-2 min | re-times the model and writes the artifact |
 
@@ -149,6 +158,7 @@ create false ones.
 | the job stops with `job_refused` before searching | the GPU is busy with another process or reading far below normal, usually heat; nothing can be measured honestly; wait for it to go quiet and cool, then start a fresh run |
 | the log shows `env_warning` | the machine's noise is lopsided, or the model's weights could not be shared between its copies; the run continues and its results stay valid, but small wins may go unnoticed |
 | a spot is skipped (`region_skip`, `scaffold_failed`) | normal; the log line names the reason; report it plainly and move on |
+| a spot closes with `no headroom at open` | normal: the library was re-timed beside its physical floor and there is nothing to win; no AI time is spent on it |
 | the AI's replies keep getting discarded (`babble`) | one or two is normal noise; every call failing means a real bug: capture the log and report to the maintainer |
 | the job crashes or hangs | a bug in the tool; capture `run.jsonl` and console output for the maintainer; do not edit the tool and rerun |
 | it finishes with nothing installed | a real answer, not a failure: nothing beat the library while keeping outputs identical, and the model is unchanged |
@@ -158,8 +168,9 @@ create false ones.
 The job prints how many spots got a proven speedup and the model's time per
 step before and after, against the baseline the manifest chose (compiled
 unless you said otherwise). `<work-dir>/report.json` has the full account:
-every spot, why work on it ended, every attempt with its verdict, and both
-step timings, plain and compiled.
+every spot, why work on it ended, every attempt with its verdict (each with
+`floor_ms`, the physical floor timed beside that kernel), and both step
+timings, plain and compiled.
 
 The artifact folder (default `artifact/`) is self-contained and needs nothing
 from this repo:
