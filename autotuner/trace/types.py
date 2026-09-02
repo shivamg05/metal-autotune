@@ -56,6 +56,13 @@ class Trace:
     eval_sites: tuple[tuple[str, ...], ...] = ()  # addr stacks where the model evaluated
     scope_calls: tuple["ScopeCall", ...] = ()   # per module call: entry/exit record
 
+    def python_retained(self) -> list[int]:
+        """Arrays the model itself kept after the pass: a KV cache it wrote,
+        a value it stored on itself. A step with any cannot be compiled from
+        outside the model."""
+        return sorted(a for a, live in self.liveness.items()
+                      if live.kind is Retention.PYTHON_RETAINED)
+
     def span_specs(self, start: int, end: int) -> dict[int, Spec]:
         """array id -> (shape, dtype) for every array the span's calls touch."""
         specs: dict[int, Spec] = {}

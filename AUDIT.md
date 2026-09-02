@@ -286,6 +286,10 @@ Made in this refactor, each open to veto:
   a win is measured: the step clocks, pricing's step and replay arms, the
   child's library arm, the veto, and the headline. Both step clocks are
   recorded. Choosing by measurement, as the spec says, is still to build.
+  A step that keeps arrays in Python state (a KV cache) cannot be compiled
+  from outside the model, since mx.compile swaps only state handed to it in a
+  dict or list; the job detects that from the trace and takes the plain
+  baseline with the reason recorded (found by the first Qwen run).
 
 Left for you:
 

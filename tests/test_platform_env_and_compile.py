@@ -9,6 +9,7 @@ import subprocess
 import sys
 
 import mlx.core as mx
+import pytest
 import mlx.nn as nn
 
 # Child for the launch-time-only env var facts. Reads 48KB past the end of a
@@ -224,3 +225,53 @@ def test_compiled_elementwise_chain_matches_plain_in_fp16():
     compiled = mx.compile(chain)(a, b)
     mx.eval(plain, compiled)
     assert mx.array_equal(plain, compiled).item()
+
+
+def test_compile_cannot_swap_state_held_as_an_attribute():
+    """Protects: the plain baseline for a step that keeps state, such as a KV
+    cache. A buffer a model writes in place through a plain attribute is not
+    declarable compile state: declaring it raises, and an undeclared compiled
+    call leaves the buffer holding a tracer, so the next plain call raises
+    (spike_11)."""
+    import types
+
+    class Stateful(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.cache = types.SimpleNamespace(buf=mx.zeros((4,)))
+
+        def __call__(self, t):
+            self.cache.buf[1:2] = t[:1]
+            return self.cache.buf * 2
+
+    x = mx.array([1.0, 2.0, 3.0])
+    m = Stateful()
+    mx.eval(m(x))
+    with pytest.raises(ValueError, match="uncaptured"):
+        mx.eval(mx.compile(lambda t: m(t), inputs=[m.cache.buf], outputs=[m.cache.buf])(x))
+    m = Stateful()
+    mx.eval(m(x))
+    mx.eval(mx.compile(lambda t: m(t))(x))  # the compiled call itself succeeds
+    with pytest.raises(RuntimeError, match="without a primitive"):
+        mx.eval(m(x))
+
+
+def test_compile_swaps_state_held_in_a_dict():
+    """Protects: how a model file can make a stateful step compilable if it
+    wants the compiled baseline: keep the state in a dict or list and declare
+    that container as inputs and outputs. An in-place write then flows
+    through the compiled call, and the plain call still works after."""
+    state = {"buf": mx.zeros((4,))}
+
+    def step(t):
+        state["buf"][1:2] = t[:1]
+        return state["buf"] * 2
+
+    x = mx.array([1.0, 2.0, 3.0])
+    y = mx.compile(step, inputs=state, outputs=state)(x)
+    mx.eval(y)
+    assert y.tolist() == [0.0, 2.0, 0.0, 0.0]
+    assert state["buf"].tolist() == [0.0, 1.0, 0.0, 0.0]
+    z = step(x)
+    mx.eval(z)
+    assert z.tolist() == [0.0, 2.0, 0.0, 0.0]

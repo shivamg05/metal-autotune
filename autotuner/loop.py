@@ -98,6 +98,7 @@ class JobRunner:
         self.judge_factory = judge_factory
         self.clock_pairs = clock_pairs
         self.refuse_degraded = refuse_degraded  # a machine that cannot measure stops the job
+        self.baseline = self.manifest.baseline  # settled by _clock_steps once the traces are in
         self.session = session or Session(log_path=self.work_dir / "session.jsonl")
         self.log = RunLog(self.work_dir / "run.jsonl")
         self.candidates = TextLog(self.work_dir / "candidates.log")
@@ -270,7 +271,7 @@ class JobRunner:
         """One step of the model as the baseline runs it. Compiled means a
         fresh mx.compile closure, built here and never reused across a swap:
         compile caches on the callable, so an old closure keeps the old graph."""
-        if (baseline or self.manifest.baseline) == "compiled":
+        if (baseline or self.baseline) == "compiled":
             compiled = mx.compile(lambda *t: model(*t))
             mx.eval(compiled(*tensors))  # compile now, not inside a timed sample
             return lambda: compiled(*tensors)
@@ -283,19 +284,33 @@ class JobRunner:
         return self._step_fn(self.baseline_model, first), self._step_fn(self.model, first)
 
     def _clock_steps(self) -> None:
-        """Both step clocks, plain and compiled, on every workload; the
-        manifest's baseline is the one every share and win is measured against."""
-        choice = self.manifest.baseline
-        self.report.baseline = {"choice": choice, "chosen_by": "manifest", "clocks_ms": {}}
+        """The step clocks on every workload, and the baseline every share and
+        win is measured against. A step that keeps arrays in Python state (a
+        KV cache) cannot be compiled from outside the model: mx.compile swaps
+        only state handed to it in a dict or list, and one compiled call would
+        leave the model holding tracers. Such a step gets the plain baseline,
+        and its compiled clock is never taken."""
+        kept = {w: len(t.python_retained()) for w, t in self.traces.items() if t.python_retained()}
+        requested = self.manifest.baseline
+        self.baseline = "plain" if kept else requested
+        reason = None if not kept else (
+            "the step keeps arrays in Python state (" +
+            ", ".join(f"{w}: {n}" for w, n in kept.items()) +
+            "); a compiled call would leave the model holding tracers")
+        self.report.baseline = {"requested": requested, "choice": self.baseline,
+                                "compiled_available": not kept, "reason": reason, "clocks_ms": {}}
+        self.log.append("baseline", requested=requested, choice=self.baseline,
+                        compiled_available=not kept, reason=reason)
         for w in self.manifest.workloads:
             tensors = self.tensors[w.name]
-            clocks = {b: step_clock(self.session, self._step_fn(self.model, tensors, b)).median_ms
-                      for b in ("plain", "compiled")}
+            clocks = {"plain": step_clock(self.session, self._step_fn(self.model, tensors, "plain")).median_ms,
+                      "compiled": None if kept else step_clock(
+                          self.session, self._step_fn(self.model, tensors, "compiled")).median_ms}
             self.report.baseline["clocks_ms"][w.name] = clocks
-            self.step_ms[w.name] = clocks[choice]
-            self.report.step_ms[w.name] = {"before": clocks[choice]}
-            self.log.append("step_clock", workload=w.name, phase="before", baseline=choice,
-                            median_ms=clocks[choice], plain_ms=clocks["plain"],
+            self.step_ms[w.name] = clocks[self.baseline]
+            self.report.step_ms[w.name] = {"before": clocks[self.baseline]}
+            self.log.append("step_clock", workload=w.name, phase="before", baseline=self.baseline,
+                            median_ms=clocks[self.baseline], plain_ms=clocks["plain"],
                             compiled_ms=clocks["compiled"])
 
     def _price_and_rank(self, regions: list[Region]) -> list[Region]:
@@ -318,7 +333,7 @@ class JobRunner:
                 if sets:
                     sets_for[(m.workload, m.start_seq)] = sets
             price_region(r, self.session, self.traces, sets_for, weights, step_fns,
-                         baseline=self.manifest.baseline,
+                         baseline=self.baseline,
                          pairs=PRICE_PAIRS, warmed_steps=warmed_steps)
         # a second look at the peaks now that the chip has been working: only
         # a higher reading can be truer, and the rooflines below use the best
@@ -463,7 +478,7 @@ class JobRunner:
         )
         one_copy_ms = region.t_rep_ms.get(rep.workload) or 0.0
         return LadderJob(
-            baseline=self.manifest.baseline,
+            baseline=self.baseline,
             kernel=kernel,
             contract=contract,
             assoc_tag=assoc_tag,

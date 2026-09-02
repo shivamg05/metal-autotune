@@ -89,7 +89,10 @@ Optional settings:
 - `baseline: compiled` (the default) means "faster" is measured against the
   model run under `mx.compile`, which is the faster way to run it and so the
   honest bar; `baseline: plain` measures against the model exactly as
-  `build()` returns it. Both timings are recorded either way.
+  `build()` returns it. A step that keeps state in Python, such as a decode
+  step writing its KV cache, cannot be compiled from outside the model, so
+  the job uses the plain baseline for it and says so in the log (`baseline`
+  line) and the report. Both timings are recorded whenever both can be taken.
 
 Precision and quantization are not settings: the model is optimized exactly
 as `build()` hands it over.

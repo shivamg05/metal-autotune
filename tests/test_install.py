@@ -28,13 +28,18 @@ def elementwise(kernel_id: str, body: str, inputs=("in0",)) -> KernelSpec:
     )
 
 
-def _runner(tmp_path, shape: str, extra: str = ""):
+def _runner(tmp_path, shape: str, extra: str = "", fixture: str = "planted_win.py",
+            baseline: str = "plain"):
+    """A plain baseline unless a test says otherwise: these tests are about
+    the install path, and their elementwise wins are no wins against
+    mx.compile, which fuses such chains itself."""
     manifest = tmp_path / "manifest.yaml"
     manifest.write_text(textwrap.dedent(f"""
-        model: {FIXTURES / "planted_win.py"}
+        model: {FIXTURES / fixture}
         workloads:
           - inputs: [{{shape: {shape}, dtype: float32}}]
             name: main
+        baseline: {baseline}
         {extra}
     """))
     r = JobRunner(manifest, tmp_path / "work", judge_factory=lambda region: None,
@@ -185,6 +190,33 @@ def test_the_sweep_checks_every_kernel_at_the_other_sizes(swept, tmp_path):
     swept._final_check()
     assert [(c["name"], c["passed"]) for c in swept.report.final["checks"]] == [
         ("main", True), ("main@L=7", True)]
+
+
+def test_a_step_that_keeps_state_gets_the_plain_baseline(tmp_path):
+    """A step that writes a buffer it holds, as a KV cache does, cannot be
+    compiled from outside the model: the job takes the plain baseline, says
+    why, never takes the compiled clock, and leaves the model working."""
+    r = _runner(tmp_path, "[4, 16]", fixture="kv_step.py", baseline="compiled")
+    try:
+        assert r.traces["main"].python_retained()
+        x = r.tensors["main"]
+        before = r.model(*x)
+        mx.eval(before)
+        r._clock_steps()
+        assert r.baseline == "plain"
+        b = r.report.baseline
+        assert (b["requested"], b["choice"], b["compiled_available"]) == ("compiled", "plain", False)
+        assert "Python state" in b["reason"]
+        assert b["clocks_ms"]["main"]["plain"] > 0 and b["clocks_ms"]["main"]["compiled"] is None
+        assert r.report.step_ms["main"]["before"] == b["clocks_ms"]["main"]["plain"]
+        after = r.model(*x)
+        mx.eval(after)
+        assert mx.array_equal(before, after).item()  # alive, and the same step every call
+        row = next(row for row in r.log.rows() if row["kind"] == "baseline")
+        assert row["choice"] == "plain" and row["reason"]
+    finally:
+        r.tracer.uninstall()
+        assert r.tracer.verify_restored() == []
 
 
 def test_a_crash_mid_install_rolls_the_model_back(runner, tmp_path, monkeypatch):

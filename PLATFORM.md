@@ -352,3 +352,12 @@ Check `ioreg -r -c IOAccelerator -d 4 | grep Utilization` reads ~0 at idle first
 - Compile halves the planted-win fixture's step (0.80 to 0.40 ms) and its
   8-op chain replay (0.81 to 0.40 ms): mx.compile already fuses an elementwise
   chain into one kernel, so under the compiled baseline that fusion is no win.
+- Declared compile state (mx.compile inputs= and outputs=) is swapped inside
+  the dict or list handed over, so a function must read the state through
+  that container. State reached through a bare variable or an object
+  attribute, which is where mlx_lm's KVCache keeps its arrays, raises
+  "uncaptured inputs" when declared, and an undeclared compiled call leaves
+  the array holding a tracer with no primitive, killing the model for every
+  later call. Seen live on the 2026-09-01 23:48 Qwen decode run; pinned in
+  tests/test_platform_env_and_compile.py. The harness therefore never
+  compiles a step whose trace shows Python-retained arrays.
