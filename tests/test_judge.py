@@ -92,7 +92,8 @@ def test_validate_rejects_shapes_and_items():
     rejects({"queue": []}, "non-empty")
     rejects({"queue": [witem()], "kernel": None}, "seed response")
     rejects({"mutations": []}, "keys must be")
-    rejects({"queue": [witem(kind="vibes")]}, "not on the menu")
+    rejects({"queue": [witem(kind="x" * 41)]}, "short label")
+    rejects({"queue": [witem(kind="two\nlines")]}, "short label")
     rejects({"queue": [witem(assoc_tag="exact")]}, "assoc_tag")
     rejects({"queue": [{"id": "h1", "kind": "fix", "assoc_tag": "preserving"}]}, "hypothesis")
     rejects({"queue": [witem(depends_on="h0")]}, "come together")
@@ -667,3 +668,45 @@ def test_scratch_buffers_are_validated():
     rejects({"mutations": [], "kernel": proposal(scratch=[["tmp0", "float99", ["1"]]])}, "unknown dtype")
     rejects({"mutations": [], "kernel": proposal(scratch=[["tmp0", "float32", ["x"]]])}, "scratch tmp0")
     rejects({"mutations": [], "kernel": proposal(scratch=[["tmp0", "float32"]])}, "[name, dtype")
+
+
+def test_kind_is_the_judges_own_label():
+    """The seven menu kinds are suggestions; any short label passes, so the
+    judge can name a move the menu never listed."""
+    resp = validate_response({"queue": [
+        witem("h1", kind="fold rope into the matmul epilogue"),
+        witem("h2", kind="split-K/2"),
+    ]})
+    assert [it.kind for it in resp.queue] == ["fold rope into the matmul epilogue", "split-K/2"]
+
+
+def test_worked_examples_are_valid_replies_and_reach_the_prompt():
+    """Every example reply must pass the same validator the judge faces, the
+    fused example must be the kernel the planted-win test ships, and each call
+    kind's examples must sit in that call's system prompt."""
+    from autotuner.judge.client import JsonJudge
+    from autotuner.judge.examples import (FUSED_CHAIN_SOURCE, NEXT_EXAMPLES, SEED_EXAMPLES,
+                                          render_examples)
+    from autotuner.judge.schema import NextResponse, SeedResponse
+    from tests.test_loop import FUSED_CHAIN_SOURCE as SHIPPED
+
+    for ex in SEED_EXAMPLES:
+        assert isinstance(validate_response(ex["reply"]), SeedResponse), ex["title"]
+    for ex in NEXT_EXAMPLES:
+        assert isinstance(validate_response(ex["reply"]), NextResponse), ex["title"]
+    assert FUSED_CHAIN_SOURCE == SHIPPED
+    assert "Worked examples" in render_examples("seed") and "h1_fix" in render_examples("next")
+
+    seen = {}
+
+    class Capturing(JsonJudge):
+        def _ask(self, system, messages):
+            seen[len(seen)] = system
+            return json.dumps({"queue": [witem()]}) if "schema (seed)" in system \
+                else json.dumps({"mutations": [], "kernel": None})
+
+    j = Capturing()
+    j.seed({"region": {}})
+    j.next({"region": {}}, {"outcome": "failed"})
+    assert "Example 1 (seed" in seen[0] and "Example 1 (next" not in seen[0]
+    assert "Example 1 (next" in seen[1] and "insert" in seen[1]

@@ -275,6 +275,11 @@ Made in this refactor, each open to veto:
   inside the cut, contains it, or straddles its edge. Until the loop re-prices
   survivors on the patched model, a cut reaching past a shipped kernel has no
   honest library clock to be judged against.
+- The hypothesis kind is the judge's own short label (you asked for this on
+  2026-09-01): the seven menu kinds are suggestions, the laws are the only
+  limit, and nothing in the harness ever keyed on the kind. Every call now
+  carries worked examples (autotuner/judge/examples.py) whose replies pass
+  the validator in a test, plus a short list of where wins come from.
 - The baseline is the compiled model by default (you asked for this on
   2026-09-01, after mlx-metal-kernels found compile faster), with
   `baseline: plain` in the manifest as the alternative. It applies everywhere

@@ -16,9 +16,10 @@ from autotuner_runtime import grammar
 
 from ..regions.types import Region
 from .queue import FamilyBook, Queue
-from .schema import ASSOC_TAGS, KINDS
+from .examples import MOVES
+from .schema import ASSOC_TAGS, SUGGESTED_KINDS
 
-# the spec's menu, one line per kind
+# common kinds with one line each; a suggestion list, not a limit
 MENU = {
     "on-chip": "keep intermediates in registers or threadgroup memory between stages",
     "specialize": "specialize launch and tiles for this workload's shapes, without breaking other shapes",
@@ -28,7 +29,7 @@ MENU = {
     "launch": "grid, threadgroup size, threadgroup-memory budget",
     "fix": "repair whatever just failed to compile or match; always legal",
 }
-assert tuple(MENU) == KINDS
+assert tuple(MENU) == SUGGESTED_KINDS
 
 LAWS = (
     "boundary dtypes are frozen",
@@ -131,6 +132,7 @@ def render_region_state(
         "verdicts": queue.verdicts,
         "writing_for": dict(writing_for) if writing_for is not None else None,
         "menu": dict(MENU),
+        "moves": list(MOVES),
         "laws": list(LAWS),
         "launch_grammar": LAUNCH_GRAMMAR_DOC,
         "body": BODY,

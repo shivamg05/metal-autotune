@@ -15,7 +15,8 @@ from autotuner_runtime.grammar import Expr, GrammarError
 from autotuner_runtime.kernels import _DTYPES
 
 # the spec's menu; every hypothesis kind is one of these
-KINDS = ("on-chip", "specialize", "retile", "re-layout", "algorithm", "launch", "fix")
+# common kinds, offered as suggestions; a kind is any short label the judge chooses
+SUGGESTED_KINDS = ("on-chip", "specialize", "retile", "re-layout", "algorithm", "launch", "fix")
 ASSOC_TAGS = ("preserving", "changing")
 CONDITIONS = ("correct", "shipped", "failed")
 # verdict outcomes the queue's conditions read
@@ -23,6 +24,7 @@ OUTCOMES = ("failed", "correct_slower", "tentative_ship", "shipped", "rolled_bac
 
 _DTYPE_NAMES = frozenset(_DTYPES)  # one source of truth with the kernel call site
 _IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+_KIND = re.compile(r"[A-Za-z0-9][A-Za-z0-9 _\-/+.]{0,39}\Z")  # a short label, the judge's own words
 _IN_REF = re.compile(r"in\d+\Z")
 _SCRATCH = re.compile(r"tmp\d+\Z")
 
@@ -45,7 +47,7 @@ class QueueItem:
     item whose parent has no family (the scaffold) starts a new one."""
 
     id: str
-    kind: str                      # one of KINDS; carries the assoc tag
+    kind: str                      # a short label for the move, in the judge's words
     assoc_tag: str                 # preserving | changing
     hypothesis: str                # English, not Metal
     family_id: str | None = None
@@ -150,8 +152,10 @@ def _item(obj: object) -> QueueItem:
         raise MalformedResponse(
             f"item id {item_id!r} must be letters, digits, and underscores: ids become kernel names")
     kind = _str(obj, "kind", f"item {item_id!r}")
-    if kind not in KINDS:
-        raise MalformedResponse(f"item {item_id!r}: kind {kind!r} is not on the menu {list(KINDS)}")
+    if not _KIND.match(kind):
+        raise MalformedResponse(
+            f"item {item_id!r}: kind {kind!r} must be a short label of up to 40 characters: "
+            f"letters, digits, spaces, and _-/+.")
     assoc = _str(obj, "assoc_tag", f"item {item_id!r}")
     if assoc not in ASSOC_TAGS:
         raise MalformedResponse(f"item {item_id!r}: assoc_tag {assoc!r} must be one of {list(ASSOC_TAGS)}")

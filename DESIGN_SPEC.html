@@ -308,7 +308,7 @@ head    = scaffold                      # the current editing base
 shipped = none                          # best correct-and-faster; only this ever installs</code></pre>
 <h2 id="what-the-judge-is-allowed-to-propose">What the judge is allowed to propose</h2>
 <p>The judge never sees tensors, weights, or activations. It is prompted with metadata: the region’s shapes and dtypes, p, which resource binds it (memory, compute, or launch), the source of the kernel it is editing, the last verdict, how far head and shipped sit from the roofline, and the menu below. It proposes one move at a time; nothing is generated in batches.</p>
-<p>One clarification before the menu: whether ops merge is not on it. A multi-op region is one kernel by definition; that was decided when the region was built, and the scaffold is already that one kernel, just naively scheduled (stages back to back, intermediates still travelling through memory). The menu is about making that kernel fast.</p><p>The menu:</p>
+<p>One clarification before the menu: whether ops merge is not on it. A multi-op region is one kernel by definition; that was decided when the region was built, and the scaffold is already that one kernel, just naively scheduled (stages back to back, intermediates still travelling through memory). The moves below are about making that kernel fast. They are common kinds, offered as suggestions: the judge names each hypothesis's kind in its own words and may propose any move the rules that follow allow, acting on what it sees in the region and its verdicts.</p><p>Common kinds:</p>
 <ul>
 <li>Keep intermediates on-chip: hold values in registers or threadgroup memory between stages instead of letting them touch device memory. This is the move that makes a fused region pay.</li>
 <li>Specialize launch and tiles for this workload’s shapes, without breaking other shapes.</li>
@@ -318,14 +318,15 @@ shipped = none                          # best correct-and-faster; only this eve
 <li>Launch changes: grid, threadgroup size, threadgroup-memory budget.</li>
 <li>Fix: repair whatever just failed to compile or match. Always legal.</li>
 </ul>
-<p>Off the menu entirely: quantization or casts that the recorded ops do not already contain, approximate math (a cheaper softmax that is almost right), and anything that changes what the model computes. Fusing a quantize or cast that is already in the record is normal work; inventing a new one is not.</p>
-<p>Every kind carries one more tag, and it decides which correctness test applies later. Floating-point addition is not associative: add the same numbers in a different order and the last bits differ, without either answer being wrong. Some moves keep the arithmetic order exactly (fusing elementwise ops, layout and launch changes that leave reductions alone); their output should match the library almost bit for bit. Other moves reorder the arithmetic on purpose (split-K, retiling, loop order); their output is legitimately, deterministically different in the last bits. The first group is tagged assoc-preserving, the second assoc-changing. Reordering is not banned, and it is not waved through as noise either; the ladder gives each tag its own gate.</p>
+<p>Not allowed at all, whatever the kind is called: quantization or casts that the recorded ops do not already contain, approximate math (a cheaper softmax that is almost right), and anything that changes what the model computes. Fusing a quantize or cast that is already in the record is normal work; inventing a new one is not.</p>
+<p>Every hypothesis carries one more tag, and it decides which correctness test applies later. Floating-point addition is not associative: add the same numbers in a different order and the last bits differ, without either answer being wrong. Some moves keep the arithmetic order exactly (fusing elementwise ops, layout and launch changes that leave reductions alone); their output should match the library almost bit for bit. Other moves reorder the arithmetic on purpose (split-K, retiling, loop order); their output is legitimately, deterministically different in the last bits. The first group is tagged assoc-preserving, the second assoc-changing. Reordering is not banned, and it is not waved through as noise either; the ladder gives each tag its own gate.</p>
 <p>What crosses the boundary between harness and judge:</p>
 <pre><code>judge_sees:                      # metadata only; never weights or activations
   region:  shapes and dtypes, p, binding resource (memory / compute / launch)
   history: parent kernel source, last verdict, distance of head and shipped from roofline
   family:  assoc-preserving | assoc-changing
-  menu:    the kinds above
+  menu:    the common kinds above, as suggestions; the rules are the only limit
+  examples: worked replies, a few per call kind
 judge_returns:
   a hypothesis queue in English  # Metal is written only for the front item</code></pre>
 <h3 id="hypothesis-queue-and-conditionals">Hypothesis queue and conditionals</h3>

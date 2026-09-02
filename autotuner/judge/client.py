@@ -18,6 +18,7 @@ import json
 from pathlib import Path
 
 from ..log import json_safe, wall_now
+from .examples import render_examples
 from .schema import (
     JudgeBabble,
     MalformedResponse,
@@ -40,13 +41,18 @@ are final, and it owns the call site: kernel names, init_value, math_mode, \
 and streams are not yours to set.
 
 You plan a queue of hypotheses in English and write Metal only for the item \
-named in writing_for, as an edit of a named parent kernel. Respond with \
+named in writing_for, as an edit of a named parent kernel. Each hypothesis \
+carries a kind, a short label in your own words for the move it makes. The \
+menu lists common kinds and moves lists where wins tend to come from; neither \
+is a limit. Anything the laws allow is fair game, and what you see in the \
+region and its verdicts is yours to act on, including ideas that turn out \
+slower: a correct kernel is never wasted, it becomes a parent. Respond with \
 exactly one JSON object and nothing else: no prose, no code fences, no keys \
 beyond the schema.
 
 {schema}"""
 
-_ITEM_SCHEMA = """item: {"id": str, "kind": "on-chip"|"specialize"|"retile"|"re-layout"|"algorithm"|"launch"|"fix",
+_ITEM_SCHEMA = """item: {"id": str, "kind": short label in your own words (menu lists common ones),
        "assoc_tag": "preserving"|"changing", "hypothesis": English string,
        optional "family_id": str,
        optional "depends_on": an earlier item's id, with "condition": "correct"|"shipped"|"failed"}
@@ -100,7 +106,8 @@ class JsonJudge:
                               _NEXT_SCHEMA, NextResponse)
 
     def _exchange(self, payload: dict, schema_doc: str, want: type):
-        system = _SYSTEM.format(schema=schema_doc)
+        system = _SYSTEM.format(schema=schema_doc) + "\n\n" + render_examples(
+            "seed" if want is SeedResponse else "next")
         messages = [{"role": "user", "content": json.dumps(payload)}]
         reason = None
         for _attempt in range(2):  # the original ask, then the one re-ask
