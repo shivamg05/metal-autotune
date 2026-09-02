@@ -57,9 +57,3 @@ def materialize(workload: Workload, dims: Mapping[str, int], seed: int) -> list[
         tensors.append(_materialize_input(spec, shape, keys[i]))
     mx.eval(tensors)
     return tensors
-
-
-def primary_tensors(manifest: Manifest, workload: Workload, k: int) -> list[list[mx.array]]:
-    """The k input sets for one workload at its primary dim binding."""
-    seeds = workload_seeds(manifest.seed, workload.name, k)
-    return [materialize(workload, manifest.primary, s) for s in seeds]

@@ -167,7 +167,19 @@ class JobRunner:
         return viable
 
     def capture_and_price(self, regions: list[Region]) -> list[Region]:
-        # capture: k input sets per workload, boundaries of every viable region
+        """Save every viable region's boundary tensors, then measure: the
+        machine, the step, and each region's share of it."""
+        self._capture(regions)
+        # the recorder must be fully removed before any timing
+        self.tracer.uninstall()
+        mx.clear_cache()  # capture's activation buffers; warm-up refills what clocks need
+        self.measure_machine()
+        self._clock_steps()
+        return self._price_and_rank(regions)
+
+    def _capture(self, regions: list[Region]) -> None:
+        """k input sets per workload, the boundary arrays of every viable
+        region saved from a recorded pass at each."""
         for w in self.manifest.workloads:
             wanted: set[int] = set()
             for r in regions:
@@ -196,10 +208,7 @@ class JobRunner:
                         self.store.save(r.fingerprint, w.name, si, "outputs", outs)
                         break  # sets are per representative member; copies share the clock
 
-        # the recorder must be fully removed before any timing (law: pass 2)
-        self.tracer.uninstall()
-        mx.clear_cache()  # capture's activation buffers; warm-up refills what clocks need
-        self.measure_machine()
+    def _clock_steps(self) -> None:
         for w in self.manifest.workloads:
             tensors = self.tensors[w.name]
             clock = step_clock(self.session, lambda t=tensors: self.model(*t))
@@ -208,6 +217,11 @@ class JobRunner:
             self.log.append("step_clock", workload=w.name, phase="before",
                             median_ms=clock.median_ms)
 
+    def _price_and_rank(self, regions: list[Region]) -> list[Region]:
+        """Each region's share of the step, its physical limit, the floor and
+        headroom filters, and the ranking."""
+        step_fns = {w.name: (lambda t=self.tensors[w.name]: self.model(*t))
+                    for w in self.manifest.workloads}
         warmed_steps: set[str] = set()
         for r in regions:
             sets_for = {}
@@ -222,8 +236,6 @@ class JobRunner:
                         for si in range(self.store.set_count(r.fingerprint, m.workload))]
                 if sets:
                     sets_for[(m.workload, m.start_seq)] = sets
-            step_fns = {w.name: (lambda t=self.tensors[w.name]: self.model(*t))
-                        for w in self.manifest.workloads}
             price_region(r, self.session, self.traces, sets_for, weights, step_fns,
                          pairs=PRICE_PAIRS, warmed_steps=warmed_steps)
         # a second look at the peaks now that the chip has been working: only
@@ -231,12 +243,9 @@ class JobRunner:
         self._record_peaks(best_of(self.peaks, measure_peaks(self.session)), "after_pricing")
         for r in regions:
             rep = r.members[0]
-            # One-copy cost against the one-copy floor; the all-copies total
-            # would inflate s_max by the copy count. The cost is the measured
-            # share re-expressed in the frame the peaks were taken in, so both
-            # sides of s_max come from one machine state: priced while the chip
-            # is throttled and divided by a healthy peak, a region at its
-            # roofline reports headroom it does not have.
+            # one copy's cost against one copy's limit, both expressed in the
+            # frame the peaks were taken in, so a region priced while the chip
+            # was throttled does not report headroom it does not have
             share = r.p_rep.get(rep.workload)
             r.roofline = stretch_roofline(
                 self.traces[rep.workload], rep, self.peaks,
@@ -988,6 +997,7 @@ class JobRunner:
                             stability=round(comp.stability, 3))
 
         self._final_check()
+        self.report.session["idled_s"] = round(self.session.idled_s, 1)
         self.report.constants = {
             "min_win_ms": MIN_WIN_MS, "budget_per_region": self.manifest.budget_per_region,
             "budget_total": self.manifest.budget_total, "seed": self.manifest.seed,

@@ -56,12 +56,6 @@ class Trace:
     eval_sites: tuple[tuple[str, ...], ...] = ()  # addr stacks where the model evaluated
     scope_calls: tuple["ScopeCall", ...] = ()   # per module call: entry/exit record
 
-    def producer_of(self, array_id: int) -> TraceNode | None:
-        for node in self.nodes:
-            if array_id in node.out_arrays:
-                return node
-        return None
-
 
 @dataclass(frozen=True)
 class ScopeCall:

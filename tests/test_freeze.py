@@ -29,7 +29,7 @@ def test_edges_and_liveness():
     assert t.liveness[10].kind is Retention.CONSUMED
     assert t.liveness[10].consumed_by == (1, 2)
     assert t.liveness[12].kind is Retention.STEP_OUTPUT
-    assert t.producer_of(11).op == "maximum"
+    assert next(n for n in t.nodes if 11 in n.out_arrays).op == "maximum"
 
 
 def test_retained_wins_over_consumed_and_step_output():

@@ -121,11 +121,6 @@ class _Emitter:
     def name(self, aid: int) -> str:
         return f"v{aid}"
 
-    def _arg_expr(self, obj: object, aid: int) -> str:
-        if isinstance(obj, ArrayRef):
-            return self.name(self.scope.arg_ids[obj.index])
-        raise NotReplayable("nested argument structures are not emitted yet")
-
     def value_expr(self, obj: object) -> str:
         """A template entry: ArrayRef -> variable, else literal, recursing into
         containers that may hold refs (getitem keys, op arg lists)."""

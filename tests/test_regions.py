@@ -21,7 +21,7 @@ from autotuner.regions.price import (
     price_region,
     region_clock,
 )
-from autotuner.regions.rank import apply_floor, covered_by, overlaps, rank
+from autotuner.regions.rank import apply_floor, covered_by, rank
 from autotuner.regions.roofline import node_flops, stretch_roofline
 from autotuner.regions.sweep import SweepDivergence, locate_span
 from autotuner.regions.types import Region, Roofline, Stretch
@@ -353,7 +353,7 @@ def test_rank_and_floor_and_overlap():
     big.members.append(Stretch("w", 0, 3, (), (), ("@0",)))
     small = Region(fingerprint="small", ops=("x",))
     small.members.append(Stretch("w", 1, 1, (), (), ("@0",)))
-    assert overlaps(big, small) and covered_by(small, big)
+    assert covered_by(small, big)
     assert not covered_by(big, small)
 
 

@@ -29,12 +29,6 @@ class Peaks:
     flops_gflops: dict[str, float] = field(default_factory=dict)
     launch_us: float = FALLBACK_LAUNCH_US
 
-    def flops_for(self, dtype: str) -> float:
-        """A region's roofline uses its own compute dtype's peak."""
-        if dtype not in self.flops_gflops:
-            raise KeyError(f"no flops peak measured for dtype {dtype!r}")
-        return self.flops_gflops[dtype]
-
 
 # floors no Apple-Silicon GPU plausibly sits under (same bounds as the pinned
 # physics test); readings below them mean a degraded machine, not a slow chip

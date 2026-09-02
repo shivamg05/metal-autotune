@@ -21,10 +21,6 @@ from autotuner.ladder.static_checks import Failure, RegionContract, check
 from autotuner.sandbox.protocol import EvalSetSpec, LadderSpec, run_job
 from autotuner_runtime.kernels import KernelSpec
 
-LADDER_GATES = ("static", "compile", "poison", "watchdog", "smoke",
-                "workloads", "sweep", "determinism", "clock")
-
-
 @dataclass
 class EvalSet:
     """One eval set: k saved input files and k library-reference files

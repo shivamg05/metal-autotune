@@ -35,16 +35,6 @@ def rank(regions: list[Region]) -> list[Region]:
     )
 
 
-def overlaps(a: Region, b: Region) -> bool:
-    """Two regions overlap if any member spans share a node in any workload."""
-    for ma in a.members:
-        for mb in b.members:
-            if ma.workload == mb.workload and \
-               not (ma.end_seq < mb.start_seq or ma.start_seq > mb.end_seq):
-                return True
-    return False
-
-
 def free_members(candidate: Region, shipped: list[Region]) -> list:
     """The candidate's copies that no shipped cut already owns: a copy
     inside a shipped span belongs to the bigger kernel now."""

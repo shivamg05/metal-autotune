@@ -60,7 +60,7 @@ def test_operator_soup_records_completely():
     assert all(n.module_address for n in trace.nodes)
     # the step output is produced by a recorded call
     assert trace.step_outputs
-    assert trace.producer_of(trace.step_outputs[0]) is not None
+    assert any(trace.step_outputs[0] in n.out_arrays for n in trace.nodes)
 
 
 def test_recording_is_lazy():

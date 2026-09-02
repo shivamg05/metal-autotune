@@ -21,14 +21,8 @@ from autotuner.judge.schema import (
     SeedResponse,
     validate_response,
 )
-from autotuner.judge.scripted import (
-    ScriptedJudge,
-    ScriptExhausted,
-    babbling_judge,
-    fix_judge,
-    proposal,
-    winning_judge,
-)
+from autotuner.judge.scripted import ScriptedJudge, ScriptExhausted
+from tests.judges import babbling_judge, fix_judge, proposal, winning_judge
 from autotuner.regions.types import Region, Roofline, Stretch
 from autotuner_runtime import grammar
 
