@@ -266,19 +266,42 @@ class JobRunner:
                 self.store.save(r.fingerprint, label, 0, "inputs", ins)
                 self.store.save(r.fingerprint, label, 0, "outputs", outs)
 
+    def _step_fn(self, model, tensors: list[mx.array], baseline: str | None = None):
+        """One step of the model as the baseline runs it. Compiled means a
+        fresh mx.compile closure, built here and never reused across a swap:
+        compile caches on the callable, so an old closure keeps the old graph."""
+        if (baseline or self.manifest.baseline) == "compiled":
+            compiled = mx.compile(lambda *t: model(*t))
+            mx.eval(compiled(*tensors))  # compile now, not inside a timed sample
+            return lambda: compiled(*tensors)
+        return lambda: model(*tensors)
+
+    def _timed_arms(self):
+        """The untouched and the patched model on the first workload, each as
+        the baseline runs it, for the step-time veto."""
+        first = self.tensors[self.manifest.workloads[0].name]
+        return self._step_fn(self.baseline_model, first), self._step_fn(self.model, first)
+
     def _clock_steps(self) -> None:
+        """Both step clocks, plain and compiled, on every workload; the
+        manifest's baseline is the one every share and win is measured against."""
+        choice = self.manifest.baseline
+        self.report.baseline = {"choice": choice, "chosen_by": "manifest", "clocks_ms": {}}
         for w in self.manifest.workloads:
             tensors = self.tensors[w.name]
-            clock = step_clock(self.session, lambda t=tensors: self.model(*t))
-            self.step_ms[w.name] = clock.median_ms
-            self.report.step_ms[w.name] = {"before": clock.median_ms}
-            self.log.append("step_clock", workload=w.name, phase="before",
-                            median_ms=clock.median_ms)
+            clocks = {b: step_clock(self.session, self._step_fn(self.model, tensors, b)).median_ms
+                      for b in ("plain", "compiled")}
+            self.report.baseline["clocks_ms"][w.name] = clocks
+            self.step_ms[w.name] = clocks[choice]
+            self.report.step_ms[w.name] = {"before": clocks[choice]}
+            self.log.append("step_clock", workload=w.name, phase="before", baseline=choice,
+                            median_ms=clocks[choice], plain_ms=clocks["plain"],
+                            compiled_ms=clocks["compiled"])
 
     def _price_and_rank(self, regions: list[Region]) -> list[Region]:
         """Each region's share of the step, its physical limit, the floor and
         headroom filters, and the ranking."""
-        step_fns = {w.name: (lambda t=self.tensors[w.name]: self.model(*t))
+        step_fns = {w.name: self._step_fn(self.model, self.tensors[w.name])
                     for w in self.manifest.workloads}
         warmed_steps: set[str] = set()
         for r in regions:
@@ -295,6 +318,7 @@ class JobRunner:
                 if sets:
                     sets_for[(m.workload, m.start_seq)] = sets
             price_region(r, self.session, self.traces, sets_for, weights, step_fns,
+                         baseline=self.manifest.baseline,
                          pairs=PRICE_PAIRS, warmed_steps=warmed_steps)
         # a second look at the peaks now that the chip has been working: only
         # a higher reading can be truer, and the rooflines below use the best
@@ -439,6 +463,7 @@ class JobRunner:
         )
         one_copy_ms = region.t_rep_ms.get(rep.workload) or 0.0
         return LadderJob(
+            baseline=self.manifest.baseline,
             kernel=kernel,
             contract=contract,
             assoc_tag=assoc_tag,
@@ -959,6 +984,7 @@ class JobRunner:
             e2e = run_e2e(
                 self.session, self.baseline_model, self.model,
                 workloads=[(w.name, self.tensors[w.name]) for w in self.manifest.workloads],
+                timed=self._timed_arms(),
                 veto_pairs=8,
             )
             if not e2e.passed:
@@ -1060,8 +1086,8 @@ class JobRunner:
             tensors = self.tensors[w.name]
             comp = compare(
                 self.session,
-                lambda t=tensors: self.baseline_model(*t),
-                lambda t=tensors: self.model(*t),
+                self._step_fn(self.baseline_model, tensors),
+                self._step_fn(self.model, tensors),
                 pairs=self.clock_pairs,
             )
             after = statistics.median(comp.candidate_ms)
@@ -1098,6 +1124,7 @@ class JobRunner:
             self.session, self.baseline_model, self.model,
             workloads=[(w.name, self.tensors[w.name]) for w in self.manifest.workloads]
             + sorted(self.sweep_tensors.items()),
+            timed=self._timed_arms(),
             veto_pairs=8,
         )
         self.final_ok = final.passed

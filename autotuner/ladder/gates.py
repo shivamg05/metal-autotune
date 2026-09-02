@@ -58,6 +58,7 @@ class LadderJob:
     min_win_ms: float = 0.03
     run_clock: bool = True            # False for scaffold runs (gates 1-8 only)
     clock_pairs: int = 32             # ABBA pairs behind the ship clock
+    baseline: str = "plain"  # what the library arm runs as: plain ops or one compiled graph
     timeout_s: float = 300.0
     seed: int = 0
     weight_inputs: tuple[bool, ...] = ()  # per input id: a model weight, never perturbed
@@ -154,6 +155,7 @@ def _spec(job: LadderJob, phase: str) -> LadderSpec:
         changing_floor=job.changing_floor,
         min_win_ms=job.min_win_ms,
         phase=phase,
+        baseline=job.baseline,
         clock_pairs=job.clock_pairs,
         seed=job.seed,
         weight_inputs=tuple(job.weight_inputs),

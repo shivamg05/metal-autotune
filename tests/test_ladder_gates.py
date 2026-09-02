@@ -163,7 +163,7 @@ def red32(tr, tmp_path_factory):
 
 
 def make_job(ctx, spec, *, tag="preserving", tol=FP32_TOL, contract_over=None,
-             run_clock=False, min_win_ms=0.01, changing_floor=None):
+             run_clock=False, min_win_ms=0.01, changing_floor=None, baseline="plain"):
     contract = dict(ctx.contract)
     contract.update(contract_over or {})
     return LadderJob(
@@ -179,6 +179,7 @@ def make_job(ctx, spec, *, tag="preserving", tol=FP32_TOL, contract_over=None,
         min_win_ms=min_win_ms,
         run_clock=run_clock,
         clock_pairs=8,
+        baseline=baseline,
         timeout_s=TIMEOUT_S,
     )
 

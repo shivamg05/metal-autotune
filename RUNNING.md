@@ -59,7 +59,7 @@ The manifest is the job order: which model, which input shapes matter to you,
 how much searching to pay for.
 
 ```yaml
-model: llama8b.py
+model: models/llama8b.py
 workloads:
   - name: prefill
     inputs:
@@ -70,7 +70,10 @@ workloads:
 budget: {per_region: 8, total: 40}
 ```
 
-That is a complete manifest. Optional settings:
+That is a complete manifest. Model files live in `models/`; the manifests in
+the repo root are ready-made jobs (`manifest.yaml` is a decode step of Qwen3
+0.6B Base, the two `manifest_llama_*.yaml` files the Llama 3 8B jobs).
+Optional settings:
 
 - Write a letter instead of a number (`shape: [1, L]`) for a size that varies
   in real use. `primary: {L: 512}` picks the size that is traced and timed
@@ -83,6 +86,10 @@ That is a complete manifest. Optional settings:
   25 and 250). Each attempt costs minutes, so this is the run-length dial.
 - `tolerances: {rtol: ..., atol: ...}` changes how exactly outputs must
   match. Leave it out unless you know why you need it.
+- `baseline: compiled` (the default) means "faster" is measured against the
+  model run under `mx.compile`, which is the faster way to run it and so the
+  honest bar; `baseline: plain` measures against the model exactly as
+  `build()` returns it. Both timings are recorded either way.
 
 Precision and quantization are not settings: the model is optimized exactly
 as `build()` hands it over.
@@ -146,8 +153,10 @@ create false ones.
 ## 6. Read the result and use the artifact
 
 The job prints how many spots got a proven speedup and the model's time per
-step before and after. `<work-dir>/report.json` has the full account: every
-spot, why work on it ended, and every attempt with its verdict.
+step before and after, against the baseline the manifest chose (compiled
+unless you said otherwise). `<work-dir>/report.json` has the full account:
+every spot, why work on it ended, every attempt with its verdict, and both
+step timings, plain and compiled.
 
 The artifact folder (default `artifact/`) is self-contained and needs nothing
 from this repo:

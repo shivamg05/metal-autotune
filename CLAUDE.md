@@ -33,7 +33,7 @@ Read the spec end to end before working on the loop, the ladder, regions, bind, 
 
 - Dtypes and quantization stay frozen. Faster-but-wrong is discarded. Correct-but-slower never ships.
 - The judge sees metadata only: never tensors, weights, activations, or tolerance values. It never overrides a failed check and never grades its own work. The harness owns every kernel call site, so `init_value`, `math_mode`, and streams are not the judge's to set.
-- The baseline is chosen by measurement, per job: time the step both plain, exactly as `build()` hands the model, and under harness-applied `mx.compile`, and the faster one becomes the baseline. Both clocks and the choice go in the report. Tracing always records the plain model.
+- The baseline is what every win is measured against: the model under harness-applied `mx.compile` by default, or the plain model exactly as `build()` hands it when the manifest says `baseline: plain`. Both step clocks and the choice go in the report. The spec's end state, choosing the faster of the two by measurement, is not built yet. Tracing and every correctness check always use the plain model.
 - No CPU fallback for GPU-dependent logic. If the environment cannot measure, raise.
 - Every kernel evaluation runs out of process (Metal reads `MTL_SHADER_VALIDATION` at process launch; killing the process is how a wedged GPU recovers).
 - The measurement laws in plan section 6 are invariants, not conventions: pair and interleave every comparison, duty-cycle pacing, warm until stable, medians for comparisons and running max for peaks, no absolute-time vetoes, defeat laziness in every timed loop.

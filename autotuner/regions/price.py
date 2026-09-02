@@ -126,10 +126,13 @@ def _looped_replay(
     input_sets: list[dict[int, mx.array]],
     weight_bindings: dict[int, mx.array],
     target_ms: float,
+    baseline: str = "plain",
 ):
     """The replay loop and how many passes one sample holds. Input sets rotate;
     synthesized sets are added if the rotated working set is too small to defeat
-    the cache (capped, recorded by the caller)."""
+    the cache (capped, recorded by the caller). Under a compiled baseline the
+    replay runs as one compiled graph, which is what the model itself would do
+    with these ops."""
     nodes = trace.nodes[stretch.start_seq:stretch.end_seq + 1]
     out_ids = list(stretch.output_ids) or [nodes[-1].out_arrays[0]]
 
@@ -140,8 +143,17 @@ def _looped_replay(
         sets.append({**sets[0], **_synthesize_like(sets[0], 7000 + seed)})
         seed += 1
 
-    def one_pass(bindings):
-        return list(replay(nodes, {**weight_bindings, **bindings}, out_ids).values())
+    if baseline == "compiled":
+        ids = sorted(sets[0])
+        compiled = mx.compile(lambda *arrays: list(
+            replay(nodes, {**weight_bindings, **dict(zip(ids, arrays))}, out_ids).values()))
+        mx.eval(compiled(*[sets[0][a] for a in ids]))  # compile before anything is timed
+
+        def one_pass(bindings):
+            return compiled(*[bindings[a] for a in ids])
+    else:
+        def one_pass(bindings):
+            return list(replay(nodes, {**weight_bindings, **bindings}, out_ids).values())
 
     iters = loop_iterations(session.timed, lambda i: one_pass(sets[i % len(sets)]), target_ms)
 
@@ -164,6 +176,7 @@ def region_share(
     target_ms: float = CLOCK_TARGET_MS,
     pairs: int = PRICE_PAIRS,
     warm_step: bool = True,
+    baseline: str = "plain",
 ) -> RegionPrice:
     """The region's cost as a fraction of one step, from a paired interleaved
     comparison against the step itself.
@@ -174,7 +187,7 @@ def region_share(
     step, and the same region priced 44.9 ms in one run and 91.5 ms in the next.
     """
     loop_fn, iters = _looped_replay(
-        session, trace, stretch, input_sets, weight_bindings, target_ms)
+        session, trace, stretch, input_sets, weight_bindings, target_ms, baseline)
     comp = compare(session, step_fn, loop_fn, pairs=pairs, warm_baseline=warm_step)
     return RegionPrice(
         share=comp.median_ratio / iters,
@@ -190,6 +203,7 @@ def price_region(
     input_sets_for: Mapping[tuple[str, int], list[dict[int, mx.array]]],
     weight_bindings: Mapping[str, dict[int, mx.array]],
     step_fns: Mapping[str, object],
+    baseline: str = "plain",
     pairs: int = PRICE_PAIRS,
     warmed_steps: set[str] | None = None,
 ) -> None:
@@ -220,6 +234,7 @@ def price_region(
                 priced[shape_key] = region_share(
                     session, trace, m, sets, weight_bindings[m.workload],
                     step_fns[m.workload], pairs=pairs, warm_step=m.workload not in warmed,
+                    baseline=baseline,
                 )
                 warmed.add(m.workload)
         price = priced[shape_key]

@@ -84,6 +84,7 @@ class LadderSpec:
     seed: int = 0
     clock_pairs: int = 32             # ABBA pairs behind the ship clock
     weight_inputs: tuple[bool, ...] = ()  # per input: a model weight, never perturbed
+    baseline: str = "plain"           # "compiled": time the library span as one compiled graph
     kind: str = "ladder"
 
     def to_json(self) -> str:

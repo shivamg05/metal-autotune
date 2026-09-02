@@ -51,8 +51,9 @@ def main(argv=None) -> int:
         # the job-start clock is a different window and never enters this line
         if clocks.get("speedup"):
             print(f"  {w}: patched {clocks['after']:.3f} ms vs untouched "
-                  f"{clocks['baseline_at_end']:.3f} ms, measured together: "
-                  f"{clocks['speedup']:.3f}x (pair agreement {clocks['stability']:.2f})")
+                  f"{clocks['baseline_at_end']:.3f} ms ({report.baseline.get('choice')} "
+                  f"baseline), measured together: {clocks['speedup']:.3f}x "
+                  f"(pair agreement {clocks['stability']:.2f})")
     print(f"artifact: {artifact}")
     return 0
 

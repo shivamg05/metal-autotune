@@ -193,9 +193,21 @@ def evaluate_ladder(spec: LadderSpec) -> Verdict:
 
     kins = [[b[i] for i in in_ids] for b in prim_binds]
 
-    def lib_pass(i: int) -> list[mx.array]:
-        res = replay(primary_nodes, prim_binds[i % len(prim_binds)], out_ids)
-        return [res[o] for o in out_ids]
+    if spec.baseline == "compiled":
+        # the library arm as the baseline runs it: one compiled graph over the
+        # span, compiled before the watchdog's first timed pass
+        lib_ids = sorted(prim_binds[0])
+        compiled_lib = mx.compile(lambda *arrays: [
+            replay(primary_nodes, dict(zip(lib_ids, arrays)), out_ids)[o] for o in out_ids])
+        mx.eval(compiled_lib(*[prim_binds[0][a] for a in lib_ids]))
+
+        def lib_pass(i: int) -> list[mx.array]:
+            binds = prim_binds[i % len(prim_binds)]
+            return compiled_lib(*[binds[a] for a in lib_ids])
+    else:
+        def lib_pass(i: int) -> list[mx.array]:
+            res = replay(primary_nodes, prim_binds[i % len(prim_binds)], out_ids)
+            return [res[o] for o in out_ids]
 
     def cand_pass(i: int) -> list[mx.array]:
         return call(kspec, kins[i % len(kins)])

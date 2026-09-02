@@ -79,8 +79,11 @@ def test_planted_win_job_ships(tmp_path):
     require_healthy_gpu()  # ships a real measured win; a mid-test throttle crossing can hide it
     # the row count is a named dim: the job traces and captures it at 7 rows
     # too, gate 7 checks every kernel there, and the final check runs there
+    # a plain baseline: this test is about the mechanics of a ship, and under
+    # the compiled baseline this chain is no win at all (see the next test)
     manifest = write_manifest(tmp_path, "planted_win.py", ("L", 1024),
-                              "sweep: {L: [7, 4096]}\n        primary: {L: 4096}")
+                              "sweep: {L: [7, 4096]}\n        primary: {L: 4096}\n"
+                              "        baseline: plain")
     next_payloads = []
 
     def factory(region):
@@ -150,6 +153,28 @@ def test_planted_win_job_ships(tmp_path):
     finally:
         runner.tracer.uninstall()
     assert not any(n.op == "custom_kernel" for n in retrace7.nodes)
+
+
+def test_compiled_baseline_refuses_a_fusion_compile_already_does(tmp_path):
+    """Under the default baseline the library arm is the region's ops as one
+    compiled graph, and mx.compile already fuses an elementwise chain into one
+    kernel, so the planted fusion is no win: nothing ships, the report names
+    the choice, and both step clocks are recorded."""
+    from tests.conftest import require_healthy_gpu
+
+    manifest = write_manifest(tmp_path, "planted_win.py", (4096, 1024))
+    runner = JobRunner(manifest, tmp_path / "work", judge_factory=winning_chain_judge,
+                       clock_pairs=8, refuse_degraded=False, session=Session(sleep=lambda s: None))
+    report = runner.run()
+    assert report.baseline["choice"] == "compiled"
+    clocks = report.baseline["clocks_ms"]["main"]
+    assert clocks["plain"] > 0 and clocks["compiled"] > 0
+    assert report.step_ms["main"]["before"] == clocks["compiled"]
+    rows = [r for r in runner.log.rows() if r["kind"] == "step_clock" and r["phase"] == "before"]
+    assert rows and rows[0]["baseline"] == "compiled" and "plain_ms" in rows[0]
+    require_healthy_gpu()  # the verdicts below are measured; the fields above are not
+    assert not [r for r in report.regions if r.get("s")], report.regions
+    assert not runner.installed
 
 
 def test_vendor_parity_job_ships_nothing(tmp_path):

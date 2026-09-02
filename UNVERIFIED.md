@@ -19,8 +19,13 @@ Every code path not yet executed on real hardware, and why. Delete entries as th
 - Root-scope delivery (a region whose only scope is the top-level callable, e.g. a
   plain-function model): the loop rejects it with a named reason; apply() handles a
   "" scope but no run has exercised it.
-- The plain-vs-compiled baseline choice: the loop times only the plain step, so
-  the choice and the fresh-callable rule after a swap are not wired.
+- The compiled baseline at model scale: every clock now runs against the
+  manifest's baseline (compiled by default: step clocks, pricing, the child's
+  library arm, the veto, the headline), verified on fixtures and pinned by
+  platform tests. No 8B or Qwen job has run under it. Choosing the baseline
+  by measurement is not built; the manifest decides.
+- `models/qwen3_0.6b_decode.py`: the decode wrapper is verified on a tiny
+  random Qwen3; the real build() (a 1.2 GB download on first use) has not run.
 - The whole-model check for a reordered-math (assoc-changing) win: the
   region-scale fp32 golden is tested; the model-scale check is not built. A
   quantized decode job needs it.

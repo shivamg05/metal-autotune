@@ -22,6 +22,7 @@ DEFAULT_SWEEP_SIZES = (1, 13, 50, 4096)
 DEFAULT_BUDGET_PER_REGION = 25
 DEFAULT_BUDGET_TOTAL = 250
 DEFAULT_INT_RANGE = (0, 100)
+BASELINES = ("compiled", "plain")
 DEFAULT_JOB_SEED = 0x4D455441  # fixed by the harness, recorded, never supplied
 BOUNDARY_INPUT_SETS = 3
 
@@ -97,6 +98,7 @@ class Manifest:
     budget_total: int
     seed: int
     defaulted: tuple[str, ...]
+    baseline: str = "compiled"     # "compiled" | "plain": what a win is measured against
 
     def named_dims(self) -> frozenset[str]:
         return frozenset().union(*(w.named_dims() for w in self.workloads))
@@ -178,7 +180,7 @@ def load(path: str | Path) -> Manifest:
     if not isinstance(raw, dict):
         raise ManifestError(f"manifest must be a mapping, got {type(raw).__name__}")
 
-    known = {"model", "workloads", "sweep", "primary", "tolerances", "budget"}
+    known = {"model", "workloads", "sweep", "primary", "tolerances", "budget", "baseline"}
     unknown = set(raw) - known
     if unknown:
         raise ManifestError(
@@ -249,6 +251,15 @@ def load(path: str | Path) -> Manifest:
     else:
         defaulted.append("tolerances")
 
+    # What "faster" is measured against: the model under mx.compile (the
+    # faster way to run it, so the honest bar) or exactly as build() returns
+    # it. Choosing by measurement is not built; the manifest decides.
+    baseline = raw.get("baseline", "compiled")
+    if baseline not in BASELINES:
+        raise ManifestError(f"baseline must be one of {list(BASELINES)}, got {baseline!r}")
+    if "baseline" not in raw:
+        defaulted.append("baseline")
+
     raw_budget = raw.get("budget", {})
     if not isinstance(raw_budget, dict) or set(raw_budget) - {"per_region", "total"}:
         raise ManifestError("budget must be {per_region?, total?}")
@@ -273,6 +284,7 @@ def load(path: str | Path) -> Manifest:
         budget_per_region=per_region,
         budget_total=total,
         seed=DEFAULT_JOB_SEED,
+        baseline=baseline,
         defaulted=tuple(defaulted),
     )
 

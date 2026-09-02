@@ -337,3 +337,18 @@ Check `ioreg -r -c IOAccelerator -d 4 | grep Utilization` reads ~0 at idle first
   by enforcing idle time. tests/conftest.py gates clock-sensitive tests on a
   quick bandwidth probe (floor 30 GB/s), the same floor as the harness's own
   in-run env_warning.
+
+## spike_11_compile_patched: mx.compile over patched models and replays (2026-09-01)
+
+- A compiled closure over a model holding a generated wrapper (with its shape
+  guard) and a custom metal kernel compiles, and its outputs are bitwise equal
+  to the plain call. Pinned: tests/test_platform_env_and_compile.py.
+- A compiled closure built before a module swap keeps running the old graph
+  after the swap; a fresh closure sees the new module. So every timed pass of
+  the patched model comes from a closure built after the last swap
+  (loop._step_fn).
+- A compiled replay of a region's recorded ops equals the plain replay bitwise
+  for an elementwise chain, in fp32 and fp16. Pinned in the same file.
+- Compile halves the planted-win fixture's step (0.80 to 0.40 ms) and its
+  8-op chain replay (0.81 to 0.40 ms): mx.compile already fuses an elementwise
+  chain into one kernel, so under the compiled baseline that fusion is no win.

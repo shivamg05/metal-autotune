@@ -126,7 +126,11 @@ def run_e2e(
     patched_model: Callable,
     workloads: Sequence[tuple[str, list[mx.array]]],
     veto_pairs: int = 16,
+    timed: tuple[Callable[[], object], Callable[[], object]] | None = None,
 ) -> E2EResult:
+    """Outputs are always checked on the plain models. The veto times the
+    first workload through `timed` (baseline step, patched step) when given,
+    which is how a compiled baseline is raced against a compiled patched model."""
     result = E2EResult()
     for name, tensors in workloads:
         result.checks.append(preserving_check(
@@ -135,12 +139,10 @@ def run_e2e(
             name,
         ))
     first = workloads[0][1]
+    baseline_step, patched_step = timed or (
+        lambda: baseline_model(*first), lambda: patched_model(*first))
     result.veto, result.veto_passed = step_veto(
-        session,
-        lambda: baseline_model(*first),
-        lambda: patched_model(*first),
-        pairs=veto_pairs,
-    )
+        session, baseline_step, patched_step, pairs=veto_pairs)
     return result
 
 

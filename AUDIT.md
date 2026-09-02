@@ -275,6 +275,12 @@ Made in this refactor, each open to veto:
   inside the cut, contains it, or straddles its edge. Until the loop re-prices
   survivors on the patched model, a cut reaching past a shipped kernel has no
   honest library clock to be judged against.
+- The baseline is the compiled model by default (you asked for this on
+  2026-09-01, after mlx-metal-kernels found compile faster), with
+  `baseline: plain` in the manifest as the alternative. It applies everywhere
+  a win is measured: the step clocks, pricing's step and replay arms, the
+  child's library arm, the veto, and the headline. Both step clocks are
+  recorded. Choosing by measurement, as the spec says, is still to build.
 
 Left for you:
 
@@ -322,4 +328,6 @@ names, in this order.
 - [ ] 12. Remaining spec gaps, in this order as time allows: the shape sweep
       inside a job (done: traced, captured, checked by gate 7, and the wrapper
       hands unrecorded shapes to the original module), the plain-versus-compiled
-      baseline, the reordered-math whole-model check, re-pricing after a close.
+      baseline (done as a manifest choice, compiled by default; the measured
+      choice remains), the reordered-math whole-model check, re-pricing after a
+      close.

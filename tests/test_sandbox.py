@@ -103,6 +103,17 @@ def test_correct_kernel_passes_validation_with_no_validation_detail(region):
     assert v.gates_passed[0] == "compile" and "determinism" in v.gates_passed
 
 
+def test_compiled_library_arm_scores_the_clock(region):
+    """Under the compiled baseline the child times the library span as one
+    compiled graph; the clock still runs and reports a library time."""
+    import dataclasses
+
+    s = dataclasses.replace(spec(region, ADD, "sbx_add_c", phase="score"), baseline="compiled")
+    v = run_job(s, "score", timeout_s=120)
+    assert v.passed, v.detail
+    assert v.timing["library_ms"] > 0 and "win_ms" in v.timing
+
+
 def test_correct_kernel_scores_with_the_clock(region):
     v = run_job(spec(region, ADD, "sbx_add_s", phase="score"), "score", timeout_s=120)
     assert v.passed, v.detail

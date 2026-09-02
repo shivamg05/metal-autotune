@@ -43,7 +43,16 @@ def test_good_manifest_loads_with_defaults(tmp_path):
     assert m.budget_per_region == DEFAULT_BUDGET_PER_REGION
     assert m.budget_total == DEFAULT_BUDGET_TOTAL
     assert m.tolerances is None
-    assert set(m.defaulted) == {"primary.L", "tolerances", "budget.per_region", "budget.total", "seed"}
+    assert set(m.defaulted) == {"primary.L", "tolerances", "budget.per_region", "budget.total", "seed", "baseline"}
+
+
+def test_baseline_defaults_to_compiled_and_accepts_plain(tmp_path):
+    m = load(write_manifest(tmp_path, GOOD))
+    assert m.baseline == "compiled" and "baseline" in m.defaulted
+    m = load(write_manifest(tmp_path, GOOD + "baseline: plain\n"))
+    assert m.baseline == "plain" and "baseline" not in m.defaulted
+    with pytest.raises(ManifestError, match="baseline must be one of"):
+        load(write_manifest(tmp_path, GOOD + "baseline: fastest\n"))
 
 
 def test_primary_override_and_explicit_budget(tmp_path):

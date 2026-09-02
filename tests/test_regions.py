@@ -219,6 +219,23 @@ def test_region_loop_is_sized_from_an_amortizing_estimate():
     assert session.passes == 2 * CLOCK_EST_ITERS
 
 
+def test_compiled_replay_arm_matches_the_plain_arm():
+    """Under a compiled baseline the pricing loop runs the region's ops as one
+    compiled graph; its outputs must equal the plain replay's, set by set."""
+    _, _, trace = traced("norm_three_proj", (8, 32))
+    stretches = build_stretches(trace, "w")
+    chain = next(s for s in stretches if (s.start_seq, s.end_seq) == (0, 3))
+    inputs, weights = _bindings_for(trace, chain)
+    session = Session(sleep=lambda _s: None)
+    plain_loop, n1 = _looped_replay(session, trace, chain, [inputs], weights, 20.0, "plain")
+    compiled_loop, n2 = _looped_replay(session, trace, chain, [inputs], weights, 20.0, "compiled")
+    plain, compiled = plain_loop(), compiled_loop()
+    mx.eval(plain, compiled)
+    assert len(plain) == n1 and len(compiled) == n2
+    for p_outs, c_outs in zip(plain, compiled):
+        assert all(mx.array_equal(a, b).item() for a, b in zip(p_outs, c_outs))
+
+
 def test_region_loop_agrees_with_a_long_amortizing_loop():
     """The region clock and a plain long loop over the same replay must agree.
     They are the two halves of the same comparison: pricing sets s_max and the

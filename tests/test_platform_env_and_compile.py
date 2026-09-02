@@ -184,3 +184,43 @@ def test_compiled_per_shape_retrace():
     for inp in (a, a, b, b, a):
         mx.eval(compiled(inp))
     assert traced == [(2, 3), (4, 3)]
+
+
+def test_compiled_graph_accepts_a_custom_kernel_bitwise():
+    """Protects: the compiled baseline. The patched model is timed under
+    mx.compile, so a graph holding a custom metal kernel must compile and
+    match the plain call bit for bit (spike_11)."""
+    kernel = mx.fast.metal_kernel(
+        name="pin_compile_custom", input_names=["inp"], output_names=["out"],
+        source="uint i = thread_position_in_grid.x; out[i] = inp[i] * 2.0f + 1.0f;")
+
+    class Patched(nn.Module):
+        def __call__(self, x):
+            y = kernel(inputs=[x], grid=(x.size, 1, 1), threadgroup=(256, 1, 1),
+                       output_shapes=[x.shape], output_dtypes=[x.dtype])[0]
+            return y - 0.5
+
+    model = Patched()
+    x = mx.random.normal((64, 128), key=mx.random.key(3))
+    plain = model(x)
+    compiled = mx.compile(lambda a: model(a))(x)
+    mx.eval(plain, compiled)
+    assert mx.array_equal(plain, compiled).item()
+
+
+def test_compiled_elementwise_chain_matches_plain_in_fp16():
+    """Protects: the compiled library arm. Pricing and the ship clock replay a
+    region's ops as one compiled graph under the compiled baseline, so the
+    fused graph must give the plain ops' bits, including in half precision
+    (spike_11)."""
+    a = mx.random.normal((64, 1024), key=mx.random.key(1)).astype(mx.float16)
+    b = mx.random.normal((1024,), key=mx.random.key(2)).astype(mx.float16)
+
+    def chain(x, w):
+        y = mx.maximum(x * 2.0 + w, 0.0) * x
+        return (mx.minimum(y + w, 8.0) - 1.0) * 0.5
+
+    plain = chain(a, b)
+    compiled = mx.compile(chain)(a, b)
+    mx.eval(plain, compiled)
+    assert mx.array_equal(plain, compiled).item()
