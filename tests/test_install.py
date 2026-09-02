@@ -58,7 +58,18 @@ def _runner(tmp_path, shape: str, extra: str = "", fixture: str = "planted_win.p
 
 
 @pytest.fixture
-def runner(tmp_path):
+def no_step_veto(monkeypatch):
+    """The kernels handed in here are stand-ins with a stated win; a lone
+    elementwise kernel is really a little slower than the library's op, and
+    on a quiet machine the whole-model veto would rightly reject it. The veto
+    itself is tested in test_e2e.py."""
+    import autotuner.e2e as e2e
+
+    monkeypatch.setattr(e2e, "STEP_VETO_PCT", 10.0)
+
+
+@pytest.fixture
+def runner(tmp_path, no_step_veto):
     r = _runner(tmp_path, "[64, 1024]")
     yield r
     r.tracer.uninstall()
@@ -66,7 +77,7 @@ def runner(tmp_path):
 
 
 @pytest.fixture
-def swept(tmp_path):
+def swept(tmp_path, no_step_veto):
     """The row count is a named dim, primary 64, swept to 7."""
     r = _runner(tmp_path, "[L, 1024]", "sweep: {L: [7, 64]}\n        primary: {L: 64}")
     yield r

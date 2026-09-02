@@ -545,6 +545,9 @@ class JobRunner:
             scaffold, result = fixed
         run.scaffold = scaffold
         self._set_head(run, scaffold, result, "preserving")
+        self.log.append("scaffold_ok", fingerprint=region.fingerprint,
+                        kernel=scaffold.kernel_id, region_ms=result.region_ms,
+                        library_ms=result.library_ms)
         outcome = result.outcome
         if outcome == "tentative_ship":
             # the harness's own kernel beat the library on the region clock;
@@ -558,9 +561,6 @@ class JobRunner:
             run, "scafix" if repaired else "scaffold", "fix" if repaired else "scaffold",
             "the judge's one fix of the starting kernel" if repaired else "the harness's starting kernel",
             "preserving", scaffold, None, result, outcome=outcome)
-        self.log.append("scaffold_ok", fingerprint=region.fingerprint,
-                        kernel=scaffold.kernel_id, region_ms=result.region_ms,
-                        library_ms=result.library_ms)
         return run
 
     def _rename(self, spec: KernelSpec, region: Region, tag: str) -> KernelSpec:

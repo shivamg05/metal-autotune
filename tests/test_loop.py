@@ -109,8 +109,11 @@ def test_planted_win_job_ships(tmp_path):
         assert meta["head"] in meta["kernels"]
         assert "source" in meta["kernels"][meta["head"]]
         assert "queue" in meta and "verdicts" in meta and "families" in meta
-        assert meta["writing_for"]["id"]
         assert meta["launch_grammar"] and meta["menu"] and meta["laws"] and meta["legend"]
+    # writing_for names the front ready item; it is null on the call that hears
+    # the last verdict with nothing left queued, where the judge may only yield
+    assert [m["writing_for"]["id"] for m in next_payloads if m["writing_for"]] == ["h1"]
+    assert next_payloads[-1]["writing_for"] is None
 
     shipped = [r for r in report.regions if r.get("s")]
     assert shipped, f"nothing shipped; regions: {report.regions}"
