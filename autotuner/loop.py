@@ -81,7 +81,7 @@ class RegionRun:
 class JobRunner:
     def __init__(self, manifest_path: str | Path, work_dir: str | Path,
                  judge_factory, session: Session | None = None,
-                 clock_pairs: int = CLOCK_PAIRS, refuse_degraded: bool = True):
+                 clock_pairs: int = CLOCK_PAIRS):
         self.manifest = manifest_mod.load(manifest_path)
         self.work_dir = Path(work_dir)
         self.work_dir.mkdir(parents=True, exist_ok=True)
@@ -92,7 +92,6 @@ class JobRunner:
                 "pass a fresh --work-dir or move the old one aside")
         self.judge_factory = judge_factory
         self.clock_pairs = clock_pairs
-        self.refuse_degraded = refuse_degraded  # a machine that cannot measure stops the job
         self.baseline = self.manifest.baseline  # settled by _clock_steps once the traces are in
         self.session = session or Session(log_path=self.work_dir / "session.jsonl")
         self.log = RunLog(self.work_dir / "run.jsonl")
@@ -382,19 +381,22 @@ class JobRunner:
         return all(all(a in weight_like for a in n.in_arrays) for n in nodes if is_view(n))
 
     def measure_machine(self) -> None:
-        """The chip's own limits, and whether this machine can measure at
-        all: a busy GPU or a reading no healthy chip gives stops the job when
-        refuse_degraded is set, since every roofline and every absolute clock
-        would describe a sick machine."""
+        """The chip's own limits, and how the machine is doing: observed and
+        recorded, never enforced. Every verdict is a paired comparison taken
+        in one window, so another process on the GPU or a throttled chip
+        hides small wins and skews the absolute figures (the room line, the
+        peaks) without ever creating a false ship; the operator is told."""
         busy = gpu_utilization()
         self.report.session["gpu_utilization_at_start_pct"] = busy
         if busy is not None and busy > BUSY_GPU_PERCENT:
-            self._cannot_measure(f"the GPU is {busy:.0f}% busy before this job has issued any "
-                                 "work; another process is using it")
+            self._env_warning(f"the GPU is {busy:.0f}% busy before this job has issued any work; "
+                              "another process is using it, so small wins may go unnoticed and "
+                              "the room line will read high")
         self._record_peaks(measure_peaks(self.session), "job_start")
         reason = peaks_implausible(self.peaks)
         if reason:
-            self._cannot_measure(reason)
+            self._env_warning(f"{reason}; the chip is throttled or shared, so small wins may go "
+                              "unnoticed and the room line will read high")
         floor = aa_null(self.session, pairs=8)
         self.report.session["aa_floor_sigma_ms"] = floor.sigma_ms
         self.log.append("aa_floor", sigma_ms=floor.sigma_ms, median_delta_ms=floor.median_delta_ms,
@@ -409,13 +411,6 @@ class JobRunner:
         self.report.peaks = {"bandwidth_gbps": peaks.bandwidth_gbps,
                              "flops_gflops": peaks.flops_gflops, "launch_us": peaks.launch_us}
         self.log.append("peaks", when=when, **self.report.peaks)
-
-    def _cannot_measure(self, reason: str) -> None:
-        if self.refuse_degraded:
-            self.log.append("job_refused", reason=reason)
-            raise RuntimeError(f"this machine cannot measure right now: {reason}. Wait for it "
-                               "to go quiet and cool, then start a fresh run")
-        self._env_warning(reason)
 
     def _env_warning(self, detail: str) -> None:
         self.log.append("env_warning", detail=detail)

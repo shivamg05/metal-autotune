@@ -410,9 +410,12 @@ refactor branch unless marked.
    them.
 
 Left alone, on purpose: the 1.2x headroom gate at pricing, the 20x watchdog,
-the rule-based enumeration (it found the right cuts), and the busy-GPU refusal
-(the machine spent this evening with another process holding the GPU at 100%,
-which the gate correctly names).
+and the rule-based enumeration (it found the right cuts). Demoted: the
+busy-GPU and slow-chip refusals from the last audit are warnings now. This is
+a laptop, something else is always on the GPU, and since every verdict is
+paired in one window and the floor is a probe clocked beside the region,
+contention hides small wins and skews the absolute figures without ever
+shipping a false one.
 
 ## The real impact
 
@@ -451,6 +454,7 @@ a fair one.
 - [x] 4. The call site evaluates its launch once per signature (spike 13).
 - [x] 5. History, lessons, and closed regions in the briefing.
 - [x] 6. State calls: KV-cache scopes deliverable; fixture and real-model check.
+- [x] 6b. A busy or throttled machine is named in the log, not refused.
 - [ ] 7. The 4-bit Qwen3 job on a quiet GPU with the live judge.
 - [ ] 8. Starting kernels for attention, dequantize, and slice reads.
 - [ ] 9. Still open from the last audit: re-pricing after a close, the

@@ -311,6 +311,15 @@ mlhostd, mds_stores. A reboot does not fix this machine; the GPU-idle check does
 probe utilization before any job, and treat healthy peak probes as the gate.
 Check `ioreg -r -c IOAccelerator -d 4 | grep Utilization` reads ~0 at idle first.
 
+Addendum (2026-09-02): that gate is a warning now, not a refusal. This is a
+laptop, so something else is always on the GPU, and the "Device Utilization"
+counter reads 100% for a window that merely animates (measured that evening:
+100% busy with bandwidth at 94.6 GB/s and flops at peak). Every verdict is a
+paired comparison in one window and the region floor is now a probe clocked
+beside the region, so contention hides small wins and skews the absolute
+figures (peaks, the room line) but cannot ship a false win; the job records the
+reading and goes on.
+
 ## Scaffold coverage build (2026-08-31): quantized matmul, two ways
 
 - Naive lowering handles mx.quantized_matmul (affine, transpose=True, bits 4/8,

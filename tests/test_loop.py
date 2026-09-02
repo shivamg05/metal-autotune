@@ -98,7 +98,7 @@ def test_planted_win_job_ships(tmp_path):
         return j
 
     runner = JobRunner(manifest, tmp_path / "work", judge_factory=factory, clock_pairs=8,
-                       refuse_degraded=False, session=Session())
+                       session=Session())
     report = runner.run()
 
     # the judge edits a named parent, so every next call must carry the
@@ -170,7 +170,7 @@ def test_compiled_baseline_refuses_a_fusion_compile_already_does(tmp_path):
 
     manifest = write_manifest(tmp_path, "planted_win.py", (4096, 1024))
     runner = JobRunner(manifest, tmp_path / "work", judge_factory=winning_chain_judge,
-                       clock_pairs=8, refuse_degraded=False, session=Session(sleep=lambda s: None))
+                       clock_pairs=8, session=Session(sleep=lambda s: None))
     report = runner.run()
     assert report.baseline["choice"] == "compiled"
     clocks = report.baseline["clocks_ms"]["main"]
@@ -186,7 +186,7 @@ def test_compiled_baseline_refuses_a_fusion_compile_already_does(tmp_path):
 def test_vendor_parity_job_ships_nothing(tmp_path):
     manifest = write_manifest(tmp_path, "vendor_parity.py", (256, 512))
     runner = JobRunner(manifest, tmp_path / "work", judge_factory=yielding_judge, clock_pairs=8,
-                       refuse_degraded=False, session=Session(sleep=lambda s: None))
+                       session=Session(sleep=lambda s: None))
     report = runner.run()
     shipped = [r for r in report.regions if r.get("s")]
     assert not shipped
@@ -238,7 +238,7 @@ def test_judge_transport_error_costs_region_not_job(tmp_path, monkeypatch):
     manifest = write_manifest(tmp_path, "planted_win.py", (64, 1024))
     runner = JobRunner(manifest, tmp_path / "work",
                        judge_factory=lambda region: DeadTransport(),
-                       refuse_degraded=False, session=Session(sleep=lambda s: None))
+                       session=Session(sleep=lambda s: None))
     report = runner.run()  # must complete
     assert all("judge unavailable" in (r.get("close") or r.get("close_rule") or "")
                or not r.get("s") for r in report.regions)
@@ -297,7 +297,7 @@ def test_failed_first_item_lets_the_judge_insert_a_fix(tmp_path, monkeypatch):
 
     manifest = write_manifest(tmp_path, "planted_win.py", (64, 1024))
     runner = JobRunner(manifest, tmp_path / "work", judge_factory=factory, clock_pairs=4,
-                       refuse_degraded=False, session=Session(sleep=lambda s: None))
+                       session=Session(sleep=lambda s: None))
     report = runner.run()
     chain = next(r for r in report.regions if len(r["ops"]) == 8)
     rows = {h["id"]: h for h in report.hypotheses if h["region"] == chain["fingerprint"]}
@@ -317,25 +317,22 @@ def test_failed_first_item_lets_the_judge_insert_a_fix(tmp_path, monkeypatch):
     assert refused and "yield" in refused[0]["reason"]
 
 
-def test_job_refuses_a_machine_that_cannot_measure(tmp_path, monkeypatch):
-    """Every roofline and every absolute clock would describe a sick machine,
-    so a busy GPU or a reading no healthy chip gives stops the job with the
-    reason, before any region is priced."""
+def test_a_busy_or_throttled_machine_is_named_not_refused(tmp_path, monkeypatch):
+    """A laptop's GPU is shared with whatever else is open, and every verdict
+    is a paired comparison taken in one window, so the job goes on: the busy
+    reading and an implausible peak each become an env_warning the operator
+    can read, never a refusal."""
     import autotuner.loop as loop_mod
     from autotuner.measure.peaks import Peaks
 
     manifest = write_manifest(tmp_path, "planted_win.py", (64, 1024))
     monkeypatch.setattr(loop_mod, "gpu_utilization", lambda: 100.0)
-    runner = JobRunner(manifest, tmp_path / "work", judge_factory=yielding_judge,
-                       session=Session(sleep=lambda s: None))
-    with pytest.raises(RuntimeError, match="busy"):
-        runner.run()
-    assert "job_refused" in [r["kind"] for r in runner.log.rows()]
-
-    monkeypatch.setattr(loop_mod, "gpu_utilization", lambda: 0.0)
     monkeypatch.setattr(loop_mod, "measure_peaks",
                         lambda session: Peaks(bandwidth_gbps=9.4, flops_gflops={"float32": 180.0}))
-    runner = JobRunner(manifest, tmp_path / "work2", judge_factory=yielding_judge,
+    runner = JobRunner(manifest, tmp_path / "work", judge_factory=yielding_judge,
                        session=Session(sleep=lambda s: None))
-    with pytest.raises(RuntimeError, match="bandwidth"):
-        runner.run()
+    runner.measure_machine()
+    warnings = [r["detail"] for r in runner.log.rows() if r["kind"] == "env_warning"]
+    assert any("busy" in w for w in warnings) and any("bandwidth" in w for w in warnings), warnings
+    assert "job_refused" not in [r["kind"] for r in runner.log.rows()]
+    assert runner.report.session["gpu_utilization_at_start_pct"] == 100.0

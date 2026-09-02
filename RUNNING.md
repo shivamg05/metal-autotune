@@ -156,8 +156,7 @@ create false ones.
 | situation | what to do |
 |---|---|
 | the job refuses to start | read the message; it names the fix (bad manifest key, model file rule broken, used work dir) |
-| the job stops with `job_refused` before searching | the GPU is busy with another process or reading far below normal, usually heat; nothing can be measured honestly; wait for it to go quiet and cool, then start a fresh run |
-| the log shows `env_warning` | the machine's noise is lopsided, or the model's weights could not be shared between its copies; the run continues and its results stay valid, but small wins may go unnoticed |
+| the log shows `env_warning` | another process is using the GPU, the chip reads slow (usually heat), the machine's noise is lopsided, or the model's weights could not be shared between its copies; the run continues and its verdicts stay valid, because every comparison runs both sides in one window, but small wins may go unnoticed and the `room` line reads high |
 | a spot is skipped (`region_skip`, `scaffold_failed`) | normal; the log line names the reason; report it plainly and move on |
 | the AI's replies keep getting discarded (`babble`) | one or two is normal noise; every call failing means a real bug: capture the log and report to the maintainer |
 | the job crashes or hangs | a bug in the tool; capture `run.jsonl` and console output for the maintainer; do not edit the tool and rerun |
@@ -217,8 +216,7 @@ easy to take in.
 | `shipped` | "found a real speedup: outputs identical, measurably faster, now installed" |
 | `e2e_failed`, rolled back | "the speedup did not hold up in the whole model, so it was removed; the model is unchanged" |
 | `region_closed` | "finished with this spot", plus the reason in plain words |
-| `job_refused` | "the machine cannot measure honestly right now (busy or overheated), so the run stopped before starting; try again once it is idle and cool" |
-| `env_warning` | "the machine is noisier than usual, so a small speedup might go unnoticed; the results are still valid" |
+| `env_warning` | "the machine is busier or hotter than usual, so a small speedup might go unnoticed; the results are still valid" |
 
 A check-in while it runs is one or two sentences: which stage, what that
 means, roughly when something changes. The final report is three parts: what
