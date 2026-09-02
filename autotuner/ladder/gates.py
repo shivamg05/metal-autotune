@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 
-from autotuner.ladder.static_checks import Failure, RegionContract, check
+from autotuner.ladder.static_checks import RegionContract, check
 from autotuner.sandbox.protocol import EvalSetSpec, LadderSpec, run_job
 from autotuner_runtime.kernels import KernelSpec
 
@@ -79,22 +79,6 @@ def run_ladder(job: LadderJob) -> LadderResult:
     _validate(job)
 
     failures = check(job.kernel, job.contract)
-    # the kernel's IO arity must also match the region's boundary ids; a
-    # mismatch is a gate-1 failure (spec: outputs match the region's in
-    # count), not a crash, so a broken scaffold still gets its fix attempt
-    if len(job.input_ids) != len(job.kernel.input_names):
-        failures.append(Failure(
-            "input_ids_arity",
-            f"{len(job.input_ids)} region input ids for "
-            f"{len(job.kernel.input_names)} kernel inputs"))
-    extras = job.kernel.output_names[len(job.output_ids):]
-    if len(job.output_ids) > len(job.kernel.output_names) or not all(
-        e.startswith("tmp") and e[3:].isdigit() for e in extras
-    ):
-        failures.append(Failure(
-            "output_ids_arity",
-            f"{len(job.output_ids)} region output ids for kernel outputs "
-            f"{job.kernel.output_names}; extras must all be tmp<N>"))
     if failures:
         return LadderResult(
             "failed", "static",

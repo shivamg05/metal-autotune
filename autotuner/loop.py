@@ -21,7 +21,7 @@ from .bind.certify import certify_identity, find_scope_call, screen_scope
 from .bind.emit import EmittedWrapper, NotReplayable, Splice, emit_wrapper
 from .bind.swap import install as swap_install, uninstall as swap_uninstall
 from .bind.verify import verify_retrace
-from .e2e import _flatten as flatten_outputs, _flatten_params, run_e2e, share_weights
+from .e2e import _flatten_params, run_e2e, share_weights
 from .judge.prompts import render_region_state
 from .judge.queue import FamilyBook, Queue, QueueError
 from .judge.schema import JudgeBabble
@@ -44,6 +44,7 @@ from .report import Report
 from .scaffold import uncovered_op
 from .trace import Tracer
 from .trace.recorder import ArrayRef
+from .trace.walk import flatten_arrays
 from .trace.serialize import nodes_to_json
 from .trace.types import Trace
 from .workload import materialize, workload_seeds
@@ -313,13 +314,7 @@ class JobRunner:
 
     def _contract(self, region: Region) -> RegionContract:
         rep = region.members[0]
-        trace = self.traces[rep.workload]
-        specs = {}
-        for n in trace.nodes[rep.start_seq:rep.end_seq + 1]:
-            for aid, s in zip(n.in_arrays, n.in_specs):
-                specs.setdefault(aid, s)
-            for aid, s in zip(n.out_arrays, n.out_specs):
-                specs[aid] = s
+        specs = self.traces[rep.workload].span_specs(rep.start_seq, rep.end_seq)
         return RegionContract(
             input_names=tuple(f"in{i}" for i in range(len(rep.input_ids))),
             input_ranks=tuple(len(specs[a][0]) for a in rep.input_ids),
@@ -715,7 +710,7 @@ class JobRunner:
         for m in region.members:
             if m.workload in io_specs:
                 continue
-            specs = _spec_index(self.traces[m.workload], m)
+            specs = self.traces[m.workload].span_specs(m.start_seq, m.end_seq)
             io_specs[m.workload] = {
                 "inputs": [specs[a] for a in m.input_ids],
                 "outputs": [specs[a] for a in m.output_ids],
@@ -1038,24 +1033,13 @@ class JobRunner:
         if self.installed:
             first = self.manifest.workloads[0].name
             tensors = self.tensors[first]
-            check_apply(out, self.manifest.model_path, tensors, flatten_outputs(self.model(*tensors)))
+            check_apply(out, self.manifest.model_path, tensors, flatten_arrays(self.model(*tensors)))
             self.log.append("artifact_checked", artifact=str(out), workload=first)
         return out
 
 
 def _safe(path: str) -> str:
     return path.replace(".", "_") or "root"
-
-
-def _spec_index(trace: Trace, stretch: Stretch) -> dict[int, tuple]:
-    """array id -> (shape, dtype) for every array the stretch touches."""
-    specs: dict[int, tuple] = {}
-    for n in trace.nodes[stretch.start_seq:stretch.end_seq + 1]:
-        for aid, s in zip(n.in_arrays, n.in_specs):
-            specs.setdefault(aid, s)
-        for aid, s in zip(n.out_arrays, n.out_specs):
-            specs[aid] = s
-    return specs
 
 
 def _ops_view(trace: Trace, stretch: Stretch) -> list[dict]:

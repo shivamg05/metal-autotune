@@ -19,7 +19,7 @@ from typing import Mapping
 
 import mlx.core as mx
 
-from ..measure.clocks import compare
+from ..measure.clocks import CLOCK_TARGET_MS, compare, loop_iterations
 from ..measure.session import Session
 from ..trace import Tracer
 from ..trace.types import Trace
@@ -30,11 +30,6 @@ REGION_FLOOR_P = 0.02
 ROOFLINE_HAS_ROOM = 1.2
 CACHE_DEFEAT_BYTES = 128 * 1024 * 1024
 MAX_TIMING_SETS = 16
-CLOCK_TARGET_MS = 15.0
-CLOCK_SAMPLES = 5
-CLOCK_EST_ITERS = 10      # same amortizing estimate the ship clock uses
-CLOCK_MIN_ITERS = 20      # enough passes that one sample's sync cost is a rounding error
-CLOCK_MAX_ITERS = 2000
 PRICE_PAIRS = 8           # a share steers ranking and the floor; the ship clock decides wins
 
 
@@ -149,23 +144,7 @@ def _looped_replay(
     def one_pass(bindings):
         return list(replay(nodes, {**weight_bindings, **bindings}, out_ids).values())
 
-    def est_pass_ms() -> float:
-        return session.timed(
-            lambda: [one_pass(sets[i % len(sets)]) for i in range(CLOCK_EST_ITERS)]
-        ) / CLOCK_EST_ITERS * 1e3
-
-    # A single evaluated pass is dominated by fixed submit-and-sync latency, so
-    # sizing the loop from one picks a loop too short to amortize it back out.
-    # The ship clock estimates from this same warm loop; if the two disagree,
-    # every s_max built on this number is inflated by the gap.
-    est_pass_ms()  # thrown away: Metal compile and the post-idle clock ramp
-    t_est_ms = est_pass_ms()
-    # The floor matters more than the target: a loop holding few passes keeps
-    # one sample's fixed sync cost in the per-pass number, and how large that
-    # cost looks depends on the chip's speed, which is the one thing a share
-    # must not depend on.
-    iters = int(target_ms / max(t_est_ms, 1e-3))
-    iters = max(CLOCK_MIN_ITERS, min(iters, CLOCK_MAX_ITERS))
+    iters = loop_iterations(session.timed, lambda i: one_pass(sets[i % len(sets)]), target_ms)
 
     def loop_fn():
         outs = []
@@ -174,26 +153,6 @@ def _looped_replay(
         return outs
 
     return loop_fn, iters
-
-
-def region_clock(
-    session: Session,
-    trace: Trace,
-    stretch: Stretch,
-    input_sets: list[dict[int, mx.array]],
-    weight_bindings: dict[int, mx.array],
-    target_ms: float = CLOCK_TARGET_MS,
-) -> float:
-    """Median time of one pass over the stretch, from a looped replay."""
-    loop_fn, iters = _looped_replay(
-        session, trace, stretch, input_sets, weight_bindings, target_ms)
-    session.warm_until_stable(loop_fn)
-    samples = []
-    for _ in range(CLOCK_SAMPLES):
-        session.fresh_chunk((loop_fn,))
-        samples.append(session.timed(loop_fn))
-    session.settle()
-    return statistics.median(samples) / iters * 1e3
 
 
 def region_share(
@@ -276,10 +235,5 @@ def price_region(
 
 
 def _boundary_shapes(trace: Trace, stretch: Stretch) -> tuple:
-    specs = {}
-    for node in trace.nodes[stretch.start_seq:stretch.end_seq + 1]:
-        for aid, spec in zip(node.in_arrays, node.in_specs):
-            specs[aid] = spec
-        for aid, spec in zip(node.out_arrays, node.out_specs):
-            specs[aid] = spec
+    specs = trace.span_specs(stretch.start_seq, stretch.end_seq)
     return tuple(specs.get(a) for a in stretch.input_ids + stretch.output_ids)

@@ -65,7 +65,7 @@ def stretch_roofline(
     trace: Trace, stretch: Stretch, peaks: Peaks, t_orig_ms: float
 ) -> Roofline:
     nodes = trace.nodes[stretch.start_seq:stretch.end_seq + 1]
-    spec_of = _spec_index(trace)
+    spec_of = trace.span_specs(stretch.start_seq, stretch.end_seq)
 
     boundary_bytes = sum(_bytes_of(spec_of[aid]) for aid in stretch.input_ids)
     boundary_bytes += sum(_bytes_of(spec_of[aid]) for aid in stretch.output_ids)
@@ -90,16 +90,6 @@ def stretch_roofline(
         bound=bound,
         s_max=(t_orig_ms / t_roof) if t_roof > 0 else 1.0,
     )
-
-
-def _spec_index(trace: Trace) -> dict[int, tuple[tuple[int, ...], str]]:
-    specs: dict[int, tuple[tuple[int, ...], str]] = {}
-    for node in trace.nodes:
-        for aid, spec in zip(node.in_arrays, node.in_specs):
-            specs.setdefault(aid, spec)
-        for aid, spec in zip(node.out_arrays, node.out_specs):
-            specs.setdefault(aid, spec)
-    return specs
 
 
 def _dominant_dtype(nodes: Iterable[TraceNode]) -> str:

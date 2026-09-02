@@ -10,6 +10,7 @@ from pathlib import Path
 import mlx.core as mx
 import pytest
 
+from autotuner.measure.clocks import CLOCK_EST_ITERS
 from autotuner.measure.peaks import Peaks
 from autotuner.measure.session import Session, time_once
 from autotuner.regions import price as price_mod
@@ -17,9 +18,10 @@ from autotuner.regions.build import build_stretches, is_view
 from autotuner.regions.fingerprint import fingerprint, group_copies
 from autotuner.regions.price import (
     CaptureMismatch,
+    _looped_replay,
     capture_boundaries,
     price_region,
-    region_clock,
+    region_share,
 )
 from autotuner.regions.rank import apply_floor, covered_by, rank
 from autotuner.regions.roofline import node_flops, stretch_roofline
@@ -150,7 +152,7 @@ def test_node_flops_matmul_hand_check():
     assert node_flops(mm) == 2.0 * 4 * 32 * 32
 
 
-def test_capture_and_region_clock_price_stability():
+def test_capture_and_share_price_stability():
     """Priced shares are stable across two clockings within noise, and the
     boundary capture returns the library's own values. Gated: a machine
     crossing the thermal throttle mid-test cannot clock twice consistently."""
@@ -164,19 +166,17 @@ def test_capture_and_region_clock_price_stability():
     ids = set(chain.input_ids) | set(chain.output_ids)
     arrays = capture_boundaries(tr, model, [x], trace, ids)
     assert set(arrays) == ids
-    # reference values match a direct model run
-    h = mx.fast.rms_norm(x, mx.ones((32,)), eps=1e-5)
     session = Session()
-    weight_ids = [a for a in chain.input_ids if a in trace.weights]
-    weights = {a: arrays[a] for a in weight_ids}
+    weights = {a: arrays[a] for a in chain.input_ids if a in trace.weights}
     inputs = {a: arrays[a] for a in chain.input_ids if a not in trace.weights}
-    t1 = region_clock(session, trace, chain, [inputs], weights)
-    t2 = region_clock(session, trace, chain, [inputs], weights)
-    assert t1 > 0 and t2 > 0
-    assert abs(t1 - t2) / max(t1, t2) < 0.5  # same clock within generous noise
+    step = lambda: model(x)
+    p1 = region_share(session, trace, chain, [inputs], weights, step, pairs=8)
+    p2 = region_share(session, trace, chain, [inputs], weights, step, pairs=8)
+    assert p1.share > 0 and p2.share > 0
+    assert abs(p1.share - p2.share) / max(p1.share, p2.share) < 0.5  # same clock within generous noise
 
 
-def test_region_clock_sizes_its_loop_from_an_amortizing_estimate():
+def test_region_loop_is_sized_from_an_amortizing_estimate():
     """The loop length must come from a warm multi-pass estimate, never one
     pass. A single evaluated pass is dominated by fixed submit-and-sync
     latency, so sizing from it picks a loop far too short to amortize that
@@ -185,27 +185,21 @@ def test_region_clock_sizes_its_loop_from_an_amortizing_estimate():
     _, _, trace = traced("norm_three_proj", (8, 32))
     stretches = build_stretches(trace, "w")
     chain = next(s for s in stretches if (s.start_seq, s.end_seq) == (0, 3))
-    binds = {a: mx.zeros(trace.nodes[0].in_specs[0][0]) for a in ()}
     inputs, weights = _bindings_for(trace, chain)
 
     class CountingSession(Session):
         """Counts replays and reports a fixed per-call time, so the iteration
-        count region_clock derives is deterministic."""
+        count derived is deterministic."""
 
         def __init__(self):
             super().__init__(sleep=lambda _s: None)
             self.passes = 0
-            self.warmed_at: int | None = None
 
         def timed(self, fn):
             before = _replays["n"]
             fn()
             self.passes += _replays["n"] - before
             return 1e-3  # 1 ms per timed call, whatever it contained
-
-        def warm_until_stable(self, fn, **kw):
-            self.warmed_at = self.passes
-            return super().warm_until_stable(fn, **kw)
 
     _replays = {"n": 0}
     real_replay = price_mod.replay
@@ -217,16 +211,15 @@ def test_region_clock_sizes_its_loop_from_an_amortizing_estimate():
     price_mod.replay = counting_replay
     try:
         session = CountingSession()
-        region_clock(session, trace, chain, [inputs], weights)
+        _looped_replay(session, trace, chain, [inputs], weights, 20.0)
     finally:
         price_mod.replay = real_replay
 
-    # the estimate is two CLOCK_EST_ITERS loops (one thrown away), so the
-    # sampled loop must not start until 2 * CLOCK_EST_ITERS replays have run
-    assert session.warmed_at == 2 * price_mod.CLOCK_EST_ITERS
+    # two estimate loops (one thrown away), nothing sampled before that
+    assert session.passes == 2 * CLOCK_EST_ITERS
 
 
-def test_region_clock_agrees_with_a_long_amortizing_loop():
+def test_region_loop_agrees_with_a_long_amortizing_loop():
     """The region clock and a plain long loop over the same replay must agree.
     They are the two halves of the same comparison: pricing sets s_max and the
     ranking, the ship clock decides wins, and a gap between them inflates every
@@ -242,7 +235,15 @@ def test_region_clock_agrees_with_a_long_amortizing_loop():
     span = next(s for s in stretches if s.start_seq == s.end_seq)
     inputs, weights = _bindings_for(trace, span)
 
-    priced_ms = region_clock(Session(), trace, span, [inputs], weights)
+    session = Session()
+    loop_fn, iters = _looped_replay(session, trace, span, [inputs], weights, 20.0)
+    session.warm_until_stable(loop_fn)
+    samples = []
+    for _ in range(5):
+        session.fresh_chunk((loop_fn,))
+        samples.append(session.timed(loop_fn))
+    session.settle()
+    priced_ms = sorted(samples)[2] / iters * 1e3
 
     nodes = trace.nodes[span.start_seq:span.end_seq + 1]
     out_ids = list(span.output_ids) or [nodes[-1].out_arrays[0]]

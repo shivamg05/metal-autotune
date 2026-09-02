@@ -22,6 +22,7 @@ from autotuner_runtime.kernels import imported
 from .optable import MUTATING_METHODS, resolve
 from .recorder import OPAQUE_OP, ArrayRef, compiled_path
 from .types import TraceNode
+from .walk import flatten_arrays
 
 
 def _materialize(obj: object, arrays: Sequence[mx.array]) -> object:
@@ -43,20 +44,8 @@ def _materialize(obj: object, arrays: Sequence[mx.array]) -> object:
 
 
 def _collect_outputs(node: TraceNode, args: tuple, result: object) -> list[mx.array]:
-    outs: list[mx.array] = []
-    if node.op.removeprefix("array.") in MUTATING_METHODS:
-        outs.append(args[0])
-    def walk(obj: object) -> None:
-        if isinstance(obj, mx.array):
-            outs.append(obj)
-        elif isinstance(obj, (list, tuple)):
-            for v in obj:
-                walk(v)
-        elif isinstance(obj, dict):
-            for v in obj.values():
-                walk(v)
-    walk(result)
-    return outs
+    mutated = [args[0]] if node.op.removeprefix("array.") in MUTATING_METHODS else []
+    return mutated + flatten_arrays(result)
 
 
 def replay(

@@ -78,3 +78,37 @@ def require_quiet_load(threshold: float = 3.0):
     load = os.getloadavg()[0]
     if load > threshold:
         _cannot_measure(f"the machine is too loaded to measure (load average {load:.1f})")
+
+
+def arrays_by_path(root_obj) -> dict[str, mx.array]:
+    """path -> array for every array reachable from a model: the inverse of
+    the snapshot walk, so a test can bind a trace's weights for replay."""
+    from autotuner.trace.walk import snapshot_arrays
+
+    by_id = snapshot_arrays(root_obj)
+    out: dict[str, mx.array] = {}
+    seen: set[int] = set()
+
+    def visit(obj):
+        if id(obj) in seen or getattr(obj, "_trace_internal", False):
+            return
+        seen.add(id(obj))
+        if isinstance(obj, mx.array):
+            if id(obj) in by_id:
+                out.setdefault(by_id[id(obj)], obj)
+            return
+        if isinstance(obj, dict):
+            for v in obj.values():
+                visit(v)
+        elif isinstance(obj, (list, tuple, set)):
+            for v in obj:
+                visit(v)
+        elif callable(obj):
+            for cell in getattr(obj, "__closure__", None) or ():
+                visit(cell.cell_contents)
+        if hasattr(obj, "__dict__"):
+            for v in vars(obj).values():
+                visit(v)
+
+    visit(root_obj)
+    return out

@@ -1,10 +1,11 @@
-"""Snapshot walk: every mx.array reachable from a model object, with its path.
+"""Walks over arrays: every mx.array reachable from a model object with its
+path, and every array in a nested output tree.
 
-Used twice per pass (plan 5.1): before arming, the reachable arrays are the
-model's weights; after the pass, any recorded production found reachable is
-python_retained (the positive retention check). Handles nn.Module dict storage,
-plain attributes, nested containers, and, for plain-function models, closure
-cells and module globals.
+The snapshot walk runs twice per recorded pass: before arming, the reachable
+arrays are the model's weights; after the pass, any recorded production found
+reachable is python_retained. It handles nn.Module dict storage, plain
+attributes, nested containers, and, for plain-function models, closure cells
+and module globals.
 """
 
 from __future__ import annotations
@@ -58,42 +59,19 @@ def snapshot_arrays(root: object) -> dict[int, str]:
     return found
 
 
-def arrays_by_path(root: object) -> dict[str, "mx.array"]:
-    """path -> array, the inverse view of snapshot_arrays for weight binding."""
-    ids_to_paths = snapshot_arrays(root)
-    out: dict[str, mx.array] = {}
-    _collect(root, ids_to_paths, out)
-    return out
+def flatten_arrays(tree: object) -> list[mx.array]:
+    """Every array in a nested tree of lists, tuples, and dicts, in order."""
+    out: list[mx.array] = []
 
-
-def _collect(root: object, ids_to_paths: dict[int, str], out: dict) -> None:
-    seen: set[int] = set()
-
-    def visit(obj: object) -> None:
-        if id(obj) in seen or getattr(obj, "_trace_internal", False):
-            return
-        seen.add(id(obj))
+    def walk(obj: object) -> None:
         if isinstance(obj, mx.array):
-            path = ids_to_paths.get(id(obj))
-            if path is not None:
-                out.setdefault(path, obj)
-            return
-        if isinstance(obj, dict):
-            for v in obj.values():
-                visit(v)
-        elif isinstance(obj, (list, tuple, set)):
+            out.append(obj)
+        elif isinstance(obj, (list, tuple)):
             for v in obj:
-                visit(v)
-        elif callable(obj):
-            closure = getattr(obj, "__closure__", None)
-            if closure:
-                for cell in closure:
-                    visit(cell.cell_contents)
-            for v in getattr(obj, "__globals__", {}).values():
-                if isinstance(v, (mx.array, list, tuple, dict)) and not isinstance(v, type):
-                    visit(v)
-        if hasattr(obj, "__dict__"):
-            for v in vars(obj).values():
-                visit(v)
+                walk(v)
+        elif isinstance(obj, dict):
+            for v in obj.values():
+                walk(v)
 
-    visit(root)
+    walk(tree)
+    return out

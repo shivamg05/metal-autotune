@@ -31,11 +31,11 @@ class BoundaryStore:
     def load(self, fingerprint: str, workload: str, set_idx: int, kind: str) -> dict[int, mx.array]:
         return load_set(self._path(fingerprint, workload, set_idx, kind))
 
-    def set_count(self, fingerprint: str, workload: str, kind: str = "inputs") -> int:
+    def set_count(self, fingerprint: str, workload: str) -> int:
         d = self.root / fingerprint / workload
         if not d.exists():
             return 0
-        return len(list(d.glob(f"set*.{kind}.safetensors")))
+        return len(list(d.glob("set*.inputs.safetensors")))
 
 
 def load_set(path: str | Path) -> dict[int, mx.array]:

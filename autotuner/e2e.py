@@ -20,6 +20,7 @@ import mlx.core as mx
 
 from .measure.clocks import PairedComparison, compare
 from .measure.session import Session
+from .trace.walk import flatten_arrays
 
 FLOOR_MULTIPLE = 4.0
 EPS_MULTIPLE = 32.0
@@ -50,19 +51,7 @@ class E2EResult:
 
 
 def _flatten(tree: object) -> list[mx.array]:
-    out: list[mx.array] = []
-
-    def walk(obj: object) -> None:
-        if isinstance(obj, mx.array):
-            out.append(obj)
-        elif isinstance(obj, (list, tuple)):
-            for v in obj:
-                walk(v)
-        elif isinstance(obj, dict):
-            for v in obj.values():
-                walk(v)
-
-    walk(tree)
+    out = flatten_arrays(tree)
     mx.eval(out)
     return out
 

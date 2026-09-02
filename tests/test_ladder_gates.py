@@ -62,16 +62,6 @@ def _full_span(trace):
     return span
 
 
-def _specs_by_id(trace, span):
-    specs = {}
-    for node in trace.nodes[span.start_seq:span.end_seq + 1]:
-        for aid, spec in zip(node.in_arrays, node.in_specs):
-            specs[aid] = spec
-        for aid, spec in zip(node.out_arrays, node.out_specs):
-            specs[aid] = spec
-    return specs
-
-
 def _t_library_ms(nodes, binds, out_ids):
     def one():
         res = replay(nodes, binds, out_ids)
@@ -96,7 +86,7 @@ def build_ctx(tr, store, fp, model, inputs_per_set, input_names, output_names):
             fp, "w", j, "outputs", {a: arrays[a] for a in span.output_ids})))
     nodes = trace.nodes[span.start_seq:span.end_seq + 1]
     binds0 = load_set(in_paths[0])
-    specs = _specs_by_id(trace, span)
+    specs = trace.span_specs(span.start_seq, span.end_seq)
     contract = dict(
         input_names=tuple(input_names),
         input_ranks=tuple(len(specs[a][0]) for a in span.input_ids),

@@ -17,7 +17,7 @@ import mlx.core as mx
 
 from .freeze import freeze
 from .types import ScopeCall, Trace, TraceNode
-from .walk import snapshot_arrays
+from .walk import flatten_arrays, snapshot_arrays
 
 OPAQUE_OP = "compiled_fn"       # a compiled call the harness cannot name
 COMPILED_PREFIX = "compiled:"   # a compiled call named by its import path
@@ -48,17 +48,6 @@ def dtype_name(dtype: mx.Dtype) -> str:
 
 def _spec(arr: mx.array) -> tuple[tuple[int, ...], str]:
     return (tuple(arr.shape), dtype_name(arr.dtype))
-
-
-def _walk_arrays(obj: Any, out: list[mx.array]) -> None:
-    if isinstance(obj, mx.array):
-        out.append(obj)
-    elif isinstance(obj, (list, tuple)):
-        for v in obj:
-            _walk_arrays(v, out)
-    elif isinstance(obj, dict):
-        for v in obj.values():
-            _walk_arrays(v, out)
 
 
 class Recorder:
@@ -182,9 +171,7 @@ class Recorder:
             out_template=out_t[0], out_ids=tuple(out_ids),
         ))
         self._addr_stack.pop()
-        arrays: list[mx.array] = []
-        _walk_arrays(outs, arrays)
-        self.step_outputs = [self._register(a) for a in arrays]
+        self.step_outputs = [self._register(a) for a in flatten_arrays(outs)]
         return outs
 
     def disarm(self) -> None:
@@ -278,10 +265,7 @@ class Recorder:
     ) -> None:
         if not self.recording:
             return
-        out_objs: list[mx.array] = []
-        if mutates_first:
-            out_objs.append(args[0])
-        _walk_arrays(result, out_objs)
+        out_objs = ([args[0]] if mutates_first else []) + flatten_arrays(result)
         if not out_objs:
             return
 

@@ -87,7 +87,7 @@ def test_module_addresses_distinguish_layers():
 def test_named_compiled_function_records_as_one_call_by_import_path():
     """A compiled section records as one call, never as the ops inside it,
     and one the tracer can name by import path replays through that path."""
-    from autotuner.trace.walk import arrays_by_path
+    from tests.conftest import arrays_by_path
 
     model = load_fixture("compiled_submodule")
     x = mx.random.normal((4, 8), key=mx.random.key(0))
@@ -170,7 +170,7 @@ def test_norm_three_projections_share_input():
 
 
 def test_replay_reproduces_library_outputs_bitwise():
-    from autotuner.trace.walk import arrays_by_path
+    from tests.conftest import arrays_by_path
 
     model = load_fixture("norm_three_proj")
     x = mx.random.normal((4, 32), key=mx.random.key(7))

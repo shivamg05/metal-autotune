@@ -29,7 +29,7 @@ from autotuner.ladder.numeric import (
 from autotuner.ladder.static_checks import RegionContract, check
 from autotuner.trace import Tracer
 from tests.conftest import current_tracer, tracer_for_module
-from autotuner.trace.walk import arrays_by_path
+from tests.conftest import arrays_by_path
 from autotuner_runtime.kernels import KernelSpec
 
 _module_tracer = tracer_for_module()

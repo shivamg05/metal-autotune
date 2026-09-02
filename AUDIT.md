@@ -307,7 +307,7 @@ names, in this order.
 - [x] 9. Tests: one real job, rollback paths tested directly, skip reasons
       and durations printed, the second sandbox path retired, one shared
       tracer fixture.
-- [ ] 10. Leanness: dead code out, duplicate helpers folded, gate bodies in
+- [x] 10. Leanness: dead code out, duplicate helpers folded, gate bodies in
       the ladder package, the loop split by stage.
 - [ ] 11. Writing: comments and docstrings without citations; the operator
       guide, the agent guide, the ledgers, and the plan brought back in line.

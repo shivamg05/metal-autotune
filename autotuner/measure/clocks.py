@@ -20,6 +20,15 @@ from .session import Session
 # win, so sigma_ms below is that standard error, not the raw per-sample spread.
 _MEDIAN_SE_FACTOR = 1.2533
 
+# One timed sample of a looped region holds this much work, so the fixed
+# submit-and-sync cost of an evaluation is a rounding error in the per-pass
+# figure. The pricing clock and the ship clock size their loops with the
+# same rule, or every headroom figure would carry the gap between them.
+CLOCK_TARGET_MS = 20.0
+CLOCK_EST_ITERS = 10   # passes in the estimate that sizes the loop
+CLOCK_MIN_ITERS = 20   # never fewer passes per sample, however slow the pass
+CLOCK_MAX_ITERS = 2000
+
 
 @dataclass(frozen=True)
 class StepClock:
@@ -65,6 +74,21 @@ def _ratio_stats(base: list[float], cand: list[float]) -> tuple[tuple[float, ...
     # spread equals the value, never saturating, so a hopeless measurement and
     # a merely noisy one stay distinguishable.
     return ratios, median, median / (median + (q3 - q1))
+
+
+def loop_iterations(timer: Callable[[Callable[[], object]], float],
+                    pass_fn: Callable[[int], object],
+                    target_ms: float = CLOCK_TARGET_MS) -> int:
+    """How many passes one timed sample should hold. The estimate is a warm
+    multi-pass loop: a single evaluated pass is mostly submit-and-sync
+    latency, and a loop sized from it reads every region slow. The first
+    estimate is thrown away (Metal compile, post-idle clock ramp)."""
+    def estimate() -> float:
+        return timer(lambda: [pass_fn(i) for i in range(CLOCK_EST_ITERS)]) / CLOCK_EST_ITERS * 1e3
+
+    estimate()
+    t_est_ms = estimate()
+    return max(CLOCK_MIN_ITERS, min(int(target_ms / max(t_est_ms, 1e-3)), CLOCK_MAX_ITERS))
 
 
 def step_clock(session: Session, fn: Callable[[], object], reps: int = 9) -> StepClock:

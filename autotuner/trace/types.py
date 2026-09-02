@@ -56,6 +56,16 @@ class Trace:
     eval_sites: tuple[tuple[str, ...], ...] = ()  # addr stacks where the model evaluated
     scope_calls: tuple["ScopeCall", ...] = ()   # per module call: entry/exit record
 
+    def span_specs(self, start: int, end: int) -> dict[int, Spec]:
+        """array id -> (shape, dtype) for every array the span's calls touch."""
+        specs: dict[int, Spec] = {}
+        for node in self.nodes[start:end + 1]:
+            for aid, spec in zip(node.in_arrays, node.in_specs):
+                specs.setdefault(aid, spec)
+            for aid, spec in zip(node.out_arrays, node.out_specs):
+                specs[aid] = spec
+        return specs
+
 
 @dataclass(frozen=True)
 class ScopeCall:

@@ -20,6 +20,7 @@ import mlx.core as mx
 
 from ..trace.recorder import OPAQUE_OP
 from ..trace.types import Retention, ScopeCall, Trace
+from ..trace.walk import flatten_arrays
 from .emit import NotReplayable, emit_wrapper, scope_nodes
 
 
@@ -108,18 +109,6 @@ def certify_identity(
 
 
 def _flatten(tree: object) -> list[mx.array]:
-    out: list[mx.array] = []
-
-    def walk(obj: object) -> None:
-        if isinstance(obj, mx.array):
-            out.append(obj)
-        elif isinstance(obj, (list, tuple)):
-            for v in obj:
-                walk(v)
-        elif isinstance(obj, dict):
-            for v in obj.values():
-                walk(v)
-
-    walk(tree)
+    out = flatten_arrays(tree)
     mx.eval(out)
     return out
