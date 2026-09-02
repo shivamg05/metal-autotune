@@ -70,7 +70,12 @@ def load_spec(metal_path: str | Path) -> KernelSpec:
 
 
 class LoadedKernel:
-    """A compiled-on-first-use kernel plus its parsed launch expressions."""
+    """A compiled-on-first-use kernel plus its parsed launch expressions.
+
+    The launch (output shapes, grid, threadgroup, template, fallback) is a
+    function of the inputs' shapes and dtypes, so it is evaluated once per
+    distinct call signature and reused: evaluating the grammar on every call
+    cost a small kernel more than its GPU time (spike 13)."""
 
     def __init__(self, spec: KernelSpec):
         self.spec = spec
@@ -87,30 +92,44 @@ class LoadedKernel:
         self._grid = tuple(Expr(e) for e in spec.grid)
         self._tg = tuple(Expr(e) for e in spec.threadgroup)
         self._out_shapes = tuple(tuple(Expr(e) for e in s) for s in spec.output_shapes)
+        self._out_dtypes = [_DTYPES[d] for d in spec.output_dtypes]
         self._fallback = Expr(spec.fallback_predicate) if spec.fallback_predicate else None
+        self._launches: dict[tuple, tuple] = {}
+
+    def _launch(self, inputs: list[mx.array]) -> tuple:
+        key = tuple((tuple(a.shape), a.dtype) for a in inputs)
+        launch = self._launches.get(key)
+        if launch is None:
+            shapes = [shape for shape, _ in key]
+            template = []
+            for name, dt in self.spec.template:
+                # "inN" borrows input N's dtype; anything else is a dtype name
+                # (the exact-match test matters: "int32" is a dtype, not input t32)
+                if dt.startswith("in") and dt[2:].isdigit():
+                    template.append((name, inputs[int(dt[2:])].dtype))
+                else:
+                    template.append((name, _DTYPES[dt]))
+            launch = (
+                [tuple(e.evaluate(shapes) for e in s) for s in self._out_shapes],
+                tuple(e.evaluate(shapes) for e in self._grid),
+                tuple(e.evaluate(shapes) for e in self._tg),
+                template,
+                bool(self._fallback.evaluate(shapes)) if self._fallback is not None else False,
+            )
+            self._launches[key] = launch
+        return launch
 
     def fallback_fires(self, inputs: list[mx.array]) -> bool:
-        if self._fallback is None:
-            return False
-        shapes = [tuple(a.shape) for a in inputs]
-        return bool(self._fallback.evaluate(shapes))
+        return self._launch(inputs)[4]
 
     def __call__(self, inputs: list[mx.array], init_value: float | None = None) -> list[mx.array]:
-        shapes = [tuple(a.shape) for a in inputs]
-        template = []
-        for name, dt in self.spec.template:
-            # "inN" borrows input N's dtype; anything else is a dtype name
-            # (the exact-match test matters: "int32" is a dtype, not input t32)
-            if dt.startswith("in") and dt[2:].isdigit():
-                template.append((name, inputs[int(dt[2:])].dtype))
-            else:
-                template.append((name, _DTYPES[dt]))
+        out_shapes, grid, threadgroup, template, _ = self._launch(inputs)
         return self._kernel(
             inputs=inputs,
-            output_shapes=[tuple(e.evaluate(shapes) for e in s) for s in self._out_shapes],
-            output_dtypes=[_DTYPES[d] for d in self.spec.output_dtypes],
-            grid=tuple(e.evaluate(shapes) for e in self._grid),
-            threadgroup=tuple(e.evaluate(shapes) for e in self._tg),
+            output_shapes=out_shapes,
+            output_dtypes=self._out_dtypes,
+            grid=grid,
+            threadgroup=threadgroup,
             template=template,
             init_value=init_value,
         )

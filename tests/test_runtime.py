@@ -77,3 +77,34 @@ def test_fallback_predicate_and_poison():
     mx.eval(y)
     assert mx.isnan(y[16:]).all().item()
     assert mx.array_equal(y[:16], mx.ones((16,))).item()
+
+
+def test_launch_is_evaluated_once_per_call_signature(monkeypatch):
+    """Spike 13: evaluating the launch grammar on every call cost a small
+    kernel more than its GPU time. The launch is a function of the inputs'
+    shapes and dtypes, so a repeat call must not touch the evaluator."""
+    from autotuner_runtime import grammar
+
+    calls = []
+    real = grammar.Expr.evaluate
+
+    def counting(self, shapes):
+        calls.append(self.text)
+        return real(self, shapes)
+
+    monkeypatch.setattr(grammar.Expr, "evaluate", counting)
+    spec = KernelSpec(kernel_id="once", name="once_copy", input_names=("in0",), output_names=("out0",),
+                      source="uint i = thread_position_in_grid.x; out0[i] = in0[i];",
+                      grid=("in0.shape[0]", "1", "1"), threadgroup=("min(in0.shape[0], 256)", "1", "1"),
+                      output_shapes=(("in0.shape[0]",),), output_dtypes=("float32",),
+                      fallback_predicate="in0.shape[0] > 64")
+    lk = LoadedKernel(spec)
+    x = mx.arange(8, dtype=mx.float32)
+    assert lk([x])[0].tolist() == x.tolist()
+    first = len(calls)
+    assert first > 0
+    lk([x + 1])
+    assert not lk.fallback_fires([x])
+    assert len(calls) == first                       # same signature: nothing re-evaluated
+    assert lk.fallback_fires([mx.zeros((128,))])     # a new shape is evaluated afresh
+    assert len(calls) > first

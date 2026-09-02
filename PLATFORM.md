@@ -406,3 +406,28 @@ of work-2026-09-02-1054-est.
   computed roofline put its library under its own limit and reported 1.3 to 1.6x
   headroom on two such regions in the 1054 run.
 
+
+## spike_13_call_overhead: what a custom kernel pays at the call site (2026-09-02)
+
+`spikes/spike_13_call_overhead.py`, rms_norm over 1024 bf16 values, one copy per
+call, the harness's own chained, cache-cold, paired clock.
+
+- **FACT call-site-overhead.** The same hand-written kernel read 3.71 us per pass
+  called straight through `mx.fast.metal_kernel` with literal launch arguments and
+  7.80 us through `autotuner_runtime.kernels.call`, which re-evaluated its launch
+  grammar in Python on every call (CPU per call: library op 0.3 us, bare
+  metal_kernel 1.2 us, harness 4.9 us). The chained loop builds every pass's graph
+  inside the timed span, so for a region whose GPU time is a few microseconds the
+  clock read Python dispatch, and every small custom kernel lost the race on it.
+  The library's rms_norm read 1.46 us per pass. The call site now evaluates the
+  launch once per call signature (input shapes and dtypes) and reuses it: 1.8 us
+  of CPU per call. Pinned by `tests/test_runtime.py::test_launch_is_evaluated_once_per_call_signature`.
+- **FACT dependent-tiny-launch.** Chained and paired against the chain alone, one
+  dependent launch of a 2 KB kernel costs about 1.5 us of GPU time on this M4; the
+  5 to 8 us `launch_us` the peaks probe reports for a chain of 256 dependent scalar
+  adds includes command-buffer submission, so it overstates the cost a fused
+  kernel saves per launch it removes.
+- **FACT decode-step-cpu.** Building the Qwen3 0.6B 4-bit decode step's graph
+  (538 ops) costs 0.77 ms of CPU against a 5.4 to 6 ms evaluated step, so the step
+  is GPU-bound and the call site's CPU cost is hidden in a model; it decided small
+  regions only inside the clock.
