@@ -18,7 +18,8 @@ from typing import Mapping
 
 import mlx.core as mx
 
-from ..measure.clocks import CLOCK_TARGET_MS, compare, loop_iterations
+from ..measure.clocks import (CLOCK_TARGET_MS, chained_loop, compare, link_input, link_loop,
+                              loop_iterations, timing_sets)
 from ..measure.session import Session
 from ..trace import Tracer
 from ..trace.types import Trace
@@ -27,8 +28,6 @@ from .types import Region, Stretch
 
 REGION_FLOOR_P = 0.02
 ROOFLINE_HAS_ROOM = 1.2
-CACHE_DEFEAT_BYTES = 128 * 1024 * 1024
-MAX_TIMING_SETS = 16
 PRICE_PAIRS = 8           # a share steers ranking and the floor; the ship clock decides wins
 
 
@@ -96,20 +95,6 @@ def capture_boundaries(
         rec.freeze_pass()
 
 
-def _synthesize_like(arrays: Mapping[int, mx.array], seed: int) -> dict[int, mx.array]:
-    """Timing-only input sets: matching shapes and dtypes, random values. Never
-    used for correctness comparisons."""
-    keys = mx.random.split(mx.random.key(seed), max(len(arrays), 1))
-    out = {}
-    for i, (aid, arr) in enumerate(sorted(arrays.items())):
-        if arr.dtype in (mx.float16, mx.bfloat16, mx.float32):
-            out[aid] = mx.random.normal(arr.shape, dtype=arr.dtype, key=keys[i])
-        else:
-            out[aid] = arr  # integer inputs (indices) keep real values
-    mx.eval(list(out.values()))
-    return out
-
-
 @dataclass(frozen=True)
 class RegionPrice:
     """One region copy's cost, measured against the step in one window."""
@@ -128,20 +113,15 @@ def _looped_replay(
     target_ms: float,
     baseline: str = "plain",
 ):
-    """The replay loop and how many passes one sample holds. Input sets rotate;
-    synthesized sets are added if the rotated working set is too small to defeat
-    the cache (capped, recorded by the caller). Under a compiled baseline the
-    replay runs as one compiled graph, which is what the model itself would do
-    with these ops."""
+    """The replay loop, how many passes one sample holds, the input the
+    chain link rides on, and the sets the loop rotates: a cache-defeating
+    working set, the passes chained so they cannot overlap. Under a compiled
+    baseline the replay runs as one compiled graph, which is what the model
+    itself would do with these ops."""
     nodes = trace.nodes[stretch.start_seq:stretch.end_seq + 1]
     out_ids = list(stretch.output_ids) or [nodes[-1].out_arrays[0]]
-
-    set_bytes = sum(a.nbytes for a in input_sets[0].values())
-    sets = list(input_sets)
-    seed = 0
-    while set_bytes * len(sets) < CACHE_DEFEAT_BYTES and len(sets) < MAX_TIMING_SETS:
-        sets.append({**sets[0], **_synthesize_like(sets[0], 7000 + seed)})
-        seed += 1
+    sets = timing_sets(input_sets)
+    link_id = link_input(sets[0], set(weight_bindings) | set(trace.weights))
 
     if baseline == "compiled":
         ids = sorted(sets[0])
@@ -155,15 +135,8 @@ def _looped_replay(
         def one_pass(bindings):
             return list(replay(nodes, {**weight_bindings, **bindings}, out_ids).values())
 
-    iters = loop_iterations(session.timed, lambda i: one_pass(sets[i % len(sets)]), target_ms)
-
-    def loop_fn():
-        outs = []
-        for i in range(iters):
-            outs.append(one_pass(sets[i % len(sets)]))
-        return outs
-
-    return loop_fn, iters
+    iters = loop_iterations(session.timed, lambda n: chained_loop(one_pass, sets, n, link_id), target_ms)
+    return chained_loop(one_pass, sets, iters, link_id), iters, link_id, sets
 
 
 def region_share(
@@ -186,12 +159,18 @@ def region_share(
     the 8B decode run that produced shares summing to 586 ms against a 52 ms
     step, and the same region priced 44.9 ms in one run and 91.5 ms in the next.
     """
-    loop_fn, iters = _looped_replay(
+    loop_fn, iters, link_id, sets = _looped_replay(
         session, trace, stretch, input_sets, weight_bindings, target_ms, baseline)
     comp = compare(session, step_fn, loop_fn, pairs=pairs, warm_baseline=warm_step)
+    region_ms = statistics.median(comp.candidate_ms) / iters
+    if link_id is not None:
+        # the chain link's own cost comes out through a paired comparison
+        # against the same loop around a pass that only hands its input back
+        net = compare(session, link_loop(sets, iters, link_id), loop_fn, pairs=pairs)
+        region_ms = max(-net.median_delta_ms / iters, 0.0)
     return RegionPrice(
-        share=comp.median_ratio / iters,
-        ms=statistics.median(comp.candidate_ms) / iters,
+        share=region_ms / comp.median_baseline_ms,
+        ms=region_ms,
         stability=comp.stability,
     )
 

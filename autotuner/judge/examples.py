@@ -22,6 +22,9 @@ MOVES = (
     "threadgroup memory; this reorders the arithmetic, so tag it changing",
     "fewer launches matter only when bound is launch; when bound is memory, bytes "
     "moved is the whole story and the roofline says how far there is to go",
+    "fill the chip: launch at least as many threadgroups as chip.gpu_cores, and several "
+    "per core so one group's memory latency hides behind another's work; a single "
+    "threadgroup is one core's worth of bandwidth however many threads it holds",
 )
 
 FUSED_CHAIN_SOURCE = """\

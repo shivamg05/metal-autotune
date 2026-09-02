@@ -10,8 +10,10 @@ positive delta means the candidate is faster.
 from __future__ import annotations
 
 import statistics
+
+import mlx.core as mx
 from dataclasses import dataclass
-from typing import Callable
+from typing import Callable, Iterable, Mapping, Sequence
 
 from .session import Session
 
@@ -76,18 +78,93 @@ def _ratio_stats(base: list[float], cand: list[float]) -> tuple[tuple[float, ...
     return ratios, median, median / (median + (q3 - q1))
 
 
-def loop_iterations(timer: Callable[[Callable[[], object]], float],
-                    pass_fn: Callable[[int], object],
-                    target_ms: float = CLOCK_TARGET_MS) -> int:
-    """How many passes one timed sample should hold. The estimate is a warm
-    multi-pass loop: a single evaluated pass is mostly submit-and-sync
-    latency, and a loop sized from it reads every region slow. The first
-    estimate is thrown away (Metal compile, post-idle clock ramp)."""
-    def estimate() -> float:
-        return timer(lambda: [pass_fn(i) for i in range(CLOCK_EST_ITERS)]) / CLOCK_EST_ITERS * 1e3
+# A timed loop must read its bytes from memory and run its passes one after
+# another, the way a model step does. Rotating a working set this large keeps
+# the data out of the GPU's cache; chaining the passes keeps Metal from running
+# independent launches side by side, which makes a one-threadgroup kernel look
+# many times faster than it is in a model, where each layer waits for the last.
+CACHE_DEFEAT_BYTES = 128 * 1024 * 1024
+MAX_TIMING_SETS = 16
 
-    estimate()
-    t_est_ms = estimate()
+
+def synthesize_like(arrays: Mapping[int, mx.array], seed: int) -> dict[int, mx.array]:
+    """Timing-only inputs: the same shapes and dtypes, random values. Never
+    used for a correctness comparison."""
+    keys = mx.random.split(mx.random.key(seed), max(len(arrays), 1))
+    out = {}
+    for i, (aid, arr) in enumerate(sorted(arrays.items())):
+        if arr.dtype in (mx.float16, mx.bfloat16, mx.float32):
+            out[aid] = mx.random.normal(arr.shape, dtype=arr.dtype, key=keys[i])
+        else:
+            out[aid] = arr  # integer inputs (indices) keep real values
+    mx.eval(list(out.values()))
+    return out
+
+
+def timing_sets(sets: Sequence[Mapping[int, mx.array]]) -> list[dict[int, mx.array]]:
+    """The sets a timed loop rotates over: the given ones plus synthesized
+    look-alikes until the working set is too big for the cache."""
+    out = [dict(s) for s in sets]
+    set_bytes = sum(a.nbytes for a in out[0].values())
+    seed = 0
+    while set_bytes * len(out) < CACHE_DEFEAT_BYTES and len(out) < MAX_TIMING_SETS:
+        out.append({**out[0], **synthesize_like(out[0], 7000 + seed)})
+        seed += 1
+    return out
+
+
+def link_input(binds: Mapping[int, mx.array], weight_ids: Iterable[int] = ()) -> int | None:
+    """The input the chain link rides on: the smallest float input that is not
+    a weight (a weight would cost a copy per pass), else the smallest float
+    input; None when nothing float enters, which leaves the loop unchained."""
+    floats = {a: arr for a, arr in binds.items() if arr.dtype in (mx.float16, mx.bfloat16, mx.float32)}
+    pool = {a: arr for a, arr in floats.items() if a not in set(weight_ids)} or floats
+    return min(pool, key=lambda a: pool[a].nbytes) if pool else None
+
+
+def chained_loop(pass_fn: Callable[[Mapping[int, mx.array]], object],
+                 sets: Sequence[Mapping[int, mx.array]], iters: int,
+                 link_id: int | None) -> Callable[[], list]:
+    """iters passes over the rotating sets, each pass's linked input carrying
+    a zero taken from the previous pass's first output, so no pass can start
+    before the last one ends. The link costs the same on every arm; paired
+    against link_loop, it drops out of a per-pass figure."""
+    def loop() -> list:
+        outs, link = [], None
+        for i in range(iters):
+            binds = sets[i % len(sets)]
+            if link is not None:
+                binds = {**binds, link_id: binds[link_id] + link}
+            out = pass_fn(binds)
+            outs.append(out)
+            if link_id is not None:
+                first = out[0] if isinstance(out, (list, tuple)) else out
+                link = (first.reshape(-1)[0] * 0).astype(binds[link_id].dtype)
+        return outs
+    return loop
+
+
+def link_loop(sets: Sequence[Mapping[int, mx.array]], iters: int, link_id: int) -> Callable[[], list]:
+    """The chain alone: the same loop around a pass that only hands its
+    linked input back. Paired against a real loop, it takes the link's cost
+    and a sample's fixed submit-and-sync cost out of the per-pass figure."""
+    return chained_loop(lambda b: [b[link_id]], sets, iters, link_id)
+
+
+def loop_iterations(timer: Callable[[Callable[[], object]], float],
+                    loop_for: Callable[[int], Callable[[], object]],
+                    target_ms: float = CLOCK_TARGET_MS) -> int:
+    """How many passes one timed sample should hold. loop_for(n) is the loop
+    of n passes as it will be timed. The per-pass estimate is the difference
+    between a longer and a shorter warm loop, so a sample's fixed
+    submit-and-sync cost, which a busy GPU can push to several milliseconds,
+    is not mistaken for pass time. The first loop is thrown away (Metal
+    compile, post-idle clock ramp)."""
+    short, long = CLOCK_EST_ITERS, 4 * CLOCK_EST_ITERS
+    timer(loop_for(short))
+    t_short = timer(loop_for(short))
+    t_long = timer(loop_for(long))
+    t_est_ms = (t_long - t_short) / (long - short) * 1e3
     return max(CLOCK_MIN_ITERS, min(int(target_ms / max(t_est_ms, 1e-3)), CLOCK_MAX_ITERS))
 
 

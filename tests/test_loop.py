@@ -232,6 +232,9 @@ def test_judge_transport_error_costs_region_not_job(tmp_path, monkeypatch):
             raise RuntimeError("unreachable")
 
     only_the_chain(monkeypatch)
+    # the region must reach the judge: on a model this small the roofline
+    # rule can close it first, since its threshold is 1% of the whole step
+    monkeypatch.setattr(JobRunner, "_roofline_rule", lambda self, run: None)
     manifest = write_manifest(tmp_path, "planted_win.py", (64, 1024))
     runner = JobRunner(manifest, tmp_path / "work",
                        judge_factory=lambda region: DeadTransport(),
@@ -249,6 +252,7 @@ def test_failed_first_item_lets_the_judge_insert_a_fix(tmp_path, monkeypatch):
     writes it in the same reply. The old cycle popped first and closed the
     region with the plan untouched."""
     only_the_chain(monkeypatch)
+    monkeypatch.setattr(JobRunner, "_roofline_rule", lambda self, run: None)  # as above
     broken = FUSED_CHAIN_SOURCE.replace("out0[i] =", "out0[i] = this_is_not_metal +")
     calls = []
 

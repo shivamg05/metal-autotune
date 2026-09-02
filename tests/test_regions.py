@@ -10,7 +10,7 @@ from pathlib import Path
 import mlx.core as mx
 import pytest
 
-from autotuner.measure.clocks import CLOCK_EST_ITERS
+from autotuner.measure.clocks import CLOCK_EST_ITERS, chained_loop
 from autotuner.measure.peaks import Peaks
 from autotuner.measure.session import Session, time_once
 from autotuner.regions import price as price_mod
@@ -177,11 +177,11 @@ def test_capture_and_share_price_stability():
 
 
 def test_region_loop_is_sized_from_an_amortizing_estimate():
-    """The loop length must come from a warm multi-pass estimate, never one
-    pass. A single evaluated pass is dominated by fixed submit-and-sync
-    latency, so sizing from it picks a loop far too short to amortize that
-    back out, and the region clock reads slow. No GPU timing: the fake session
-    scripts the clock and the assertion is on how the estimate was taken."""
+    """The loop length must come from the difference between a long and a
+    short warm loop, never one pass. A sample's fixed submit-and-sync cost,
+    several milliseconds on a busy GPU, would otherwise be read as pass time
+    and size the loop far too short. No GPU timing: the fake session scripts
+    the clock and the assertion is on how the estimate was taken."""
     _, _, trace = traced("norm_three_proj", (8, 32))
     stretches = build_stretches(trace, "w")
     chain = next(s for s in stretches if (s.start_seq, s.end_seq) == (0, 3))
@@ -215,8 +215,8 @@ def test_region_loop_is_sized_from_an_amortizing_estimate():
     finally:
         price_mod.replay = real_replay
 
-    # two estimate loops (one thrown away), nothing sampled before that
-    assert session.passes == 2 * CLOCK_EST_ITERS
+    # a short loop thrown away, then a short and a long one, nothing else
+    assert session.passes == (1 + 1 + 4) * CLOCK_EST_ITERS
 
 
 def test_compiled_replay_arm_matches_the_plain_arm():
@@ -227,8 +227,8 @@ def test_compiled_replay_arm_matches_the_plain_arm():
     chain = next(s for s in stretches if (s.start_seq, s.end_seq) == (0, 3))
     inputs, weights = _bindings_for(trace, chain)
     session = Session(sleep=lambda _s: None)
-    plain_loop, n1 = _looped_replay(session, trace, chain, [inputs], weights, 20.0, "plain")
-    compiled_loop, n2 = _looped_replay(session, trace, chain, [inputs], weights, 20.0, "compiled")
+    plain_loop, n1, *_ = _looped_replay(session, trace, chain, [inputs], weights, 20.0, "plain")
+    compiled_loop, n2, *_ = _looped_replay(session, trace, chain, [inputs], weights, 20.0, "compiled")
     plain, compiled = plain_loop(), compiled_loop()
     mx.eval(plain, compiled)
     assert len(plain) == n1 and len(compiled) == n2
@@ -253,7 +253,7 @@ def test_region_loop_agrees_with_a_long_amortizing_loop():
     inputs, weights = _bindings_for(trace, span)
 
     session = Session()
-    loop_fn, iters = _looped_replay(session, trace, span, [inputs], weights, 20.0)
+    loop_fn, iters, link_id, sets = _looped_replay(session, trace, span, [inputs], weights, 20.0)
     session.warm_until_stable(loop_fn)
     samples = []
     for _ in range(5):
@@ -264,13 +264,11 @@ def test_region_loop_agrees_with_a_long_amortizing_loop():
 
     nodes = trace.nodes[span.start_seq:span.end_seq + 1]
     out_ids = list(span.output_ids) or [nodes[-1].out_arrays[0]]
-    binds = {**weights, **inputs}
-    one = lambda: list(price_mod.replay(nodes, binds, out_ids).values())
+    one_pass = lambda b: list(price_mod.replay(nodes, {**weights, **b}, out_ids).values())
     n = 400
-    time_once(lambda: [one() for _ in range(n)])  # warm
-    reference_ms = min(
-        time_once(lambda: [one() for _ in range(n)]) / n * 1e3 for _ in range(3)
-    )
+    long_loop = chained_loop(one_pass, sets, n, link_id)  # the same chained discipline, ten times longer
+    time_once(long_loop)  # warm
+    reference_ms = min(time_once(long_loop) / n * 1e3 for _ in range(3))
     # measured on the reference machine: 0.81-0.90x amortizing, 1.55-2.37x when
     # the loop is sized from one cold pass. 1.3 sits in the gap.
     assert priced_ms < 1.3 * reference_ms, (

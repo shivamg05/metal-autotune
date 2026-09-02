@@ -361,3 +361,14 @@ Check `ioreg -r -c IOAccelerator -d 4 | grep Utilization` reads ~0 at idle first
   later call. Seen live on the 2026-09-01 23:48 Qwen decode run; pinned in
   tests/test_platform_env_and_compile.py. The harness therefore never
   compiles a step whose trace shows Python-retained arrays.
+
+## Independent launches overlap (2026-09-02, work-2026-09-02-0028-est)
+
+Metal runs independent kernels in one command buffer side by side. Forty
+unchained launches of a one-threadgroup matvec read 0.031 ms per call hot and
+0.083 cold; the same launches chained so each waits for the last read 0.329
+and 0.375, and 0.36 is what the kernel cost per copy inside the model. MLX's
+own matmul fills the GPU alone and barely moves (0.053 to 0.063 hot, 0.073 to
+0.081 cold). Pinned in tests/test_measure.py (test_chained_launches_do_not_overlap).
+Every timed loop in the harness now chains its passes and rotates a
+cache-defeating working set (measure/clocks.py).

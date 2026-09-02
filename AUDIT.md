@@ -280,6 +280,13 @@ Made in this refactor, each open to veto:
   limit, and nothing in the harness ever keyed on the kind. Every call now
   carries worked examples (autotuner/judge/examples.py) whose replies pass
   the validator in a test, plus a short list of where wins come from.
+- Every timed loop chains its passes and rotates a cache-defeating working
+  set (the first Qwen run that reached the judge showed the region clock
+  reading a one-threadgroup kernel ten times faster than it ran in the model,
+  because Metal overlaps independent launches and three saved sets stay in
+  cache). The chain link's cost is measured and subtracted. The roofline
+  close rule is checked before the seed call, so a region already at the
+  limit costs no plan.
 - The baseline is the compiled model by default (you asked for this on
   2026-09-01, after mlx-metal-kernels found compile faster), with
   `baseline: plain` in the manifest as the alternative. It applies everywhere

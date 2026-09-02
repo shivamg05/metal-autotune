@@ -27,7 +27,8 @@ from autotuner.ladder.golden import golden_outputs
 from autotuner.ladder.golden import passes as golden_passes
 from autotuner.ladder.numeric import REGIMES, max_abs_diff, value_regimes
 from autotuner.ladder.numeric import compare as numeric_compare
-from autotuner.measure.clocks import CLOCK_TARGET_MS, compare as paired_compare, loop_iterations
+from autotuner.measure.clocks import (CLOCK_TARGET_MS, chained_loop, compare as paired_compare,
+                                      link_input, link_loop, loop_iterations, timing_sets)
 from autotuner.measure.session import Session, time_once
 from autotuner.regions.store import load_set
 from autotuner.sandbox.poison import saturate_pool
@@ -191,7 +192,12 @@ def evaluate_ladder(spec: LadderSpec) -> Verdict:
     lib_b = library(primary_nodes, prim_binds[0], out_ids)
     prim_wobble = [max_abs_diff(a, b) for a, b in zip(lib_a, lib_b)]
 
-    kins = [[b[i] for i in in_ids] for b in prim_binds]
+    # Every timed loop rotates a cache-defeating working set and chains its
+    # passes, so the clock sees what a model step sees: bytes from memory,
+    # one pass after another.
+    timing_binds = timing_sets(prim_binds)
+    weight_ids = {i for i, w in zip(in_ids, spec.weight_inputs) if w}
+    link_id = link_input(prim_binds[0], weight_ids)
 
     if spec.baseline == "compiled":
         # the library arm as the baseline runs it: one compiled graph over the
@@ -201,21 +207,20 @@ def evaluate_ladder(spec: LadderSpec) -> Verdict:
             replay(primary_nodes, dict(zip(lib_ids, arrays)), out_ids)[o] for o in out_ids])
         mx.eval(compiled_lib(*[prim_binds[0][a] for a in lib_ids]))
 
-        def lib_pass(i: int) -> list[mx.array]:
-            binds = prim_binds[i % len(prim_binds)]
+        def lib_pass(binds: dict) -> list[mx.array]:
             return compiled_lib(*[binds[a] for a in lib_ids])
     else:
-        def lib_pass(i: int) -> list[mx.array]:
-            res = replay(primary_nodes, prim_binds[i % len(prim_binds)], out_ids)
+        def lib_pass(binds: dict) -> list[mx.array]:
+            res = replay(primary_nodes, binds, out_ids)
             return [res[o] for o in out_ids]
 
-    def cand_pass(i: int) -> list[mx.array]:
-        return call(kspec, kins[i % len(kins)])
+    def cand_pass(binds: dict) -> list[mx.array]:
+        return call(kspec, [binds[i] for i in in_ids])
 
     # A single evaluated pass is mostly submit-and-sync latency, so every
     # per-pass time here comes from a small loop, both arms alike.
     def per_pass_ms(fn_pass, n: int) -> float:
-        return time_once(lambda: [fn_pass(i) for i in range(n)]) / n * 1e3
+        return time_once(chained_loop(fn_pass, timing_binds, n, link_id)) / n * 1e3
 
     # gate 4, watchdog (slow half): timed launches against the library region
     # time re-measured in this process, never the parent's number.
@@ -400,26 +405,30 @@ def evaluate_ladder(spec: LadderSpec) -> Verdict:
     # live in the final eval, the library re-measured now and never reused.
     if spec.phase == "score":
         session = Session()
-        iters = loop_iterations(time_once, lib_pass, CLOCK_TARGET_MS)
-
-        def lib_loop() -> list:
-            return [lib_pass(i) for i in range(iters)]
-
-        def cand_loop() -> list:
-            return [cand_pass(i) for i in range(iters)]
-
+        iters = loop_iterations(time_once, lambda n: chained_loop(lib_pass, timing_binds, n, link_id),
+                                CLOCK_TARGET_MS)
+        lib_loop = chained_loop(lib_pass, timing_binds, iters, link_id)
+        cand_loop = chained_loop(cand_pass, timing_binds, iters, link_id)
         comp = paired_compare(session, lib_loop, cand_loop, pairs=spec.clock_pairs)
-        library_ms = comp.median_baseline_ms / iters
-        win_ms = comp.median_delta_ms / iters
+        win_ms = comp.median_delta_ms / iters  # both arms pay the link; the win is exact
         sigma_ms = comp.sigma_ms / iters
+        library_ms = comp.median_baseline_ms / iters
+        if link_id is not None:
+            # the library's own per-pass time, with the chain link and the
+            # sample's fixed submit-and-sync cost taken out by pairing
+            net = paired_compare(session, link_loop(timing_binds, iters, link_id), lib_loop,
+                                 pairs=max(spec.clock_pairs // 2, 4))
+            library_ms = max(-net.median_delta_ms / iters, 1e-6)
+        region_ms = max(library_ms - win_ms, 1e-6)
         margin_ms = max(0.01 * library_ms, 3.0 * sigma_ms)
         ship = bool(win_ms > margin_ms and win_ms >= spec.min_win_ms)
         timing.update({
-            "region_ms": statistics.median(comp.candidate_ms) / iters,
+            "region_ms": region_ms,
             "library_ms": library_ms,
             "win_ms": win_ms,
             "sigma_ms": sigma_ms,
             "clock_iters": iters,
+            "clock_sets": len(timing_binds),
             "clock_deltas": comp.n,
         })
         info.update({"ship": ship, "margin_ms": margin_ms, "min_win_ms": spec.min_win_ms})

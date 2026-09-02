@@ -68,6 +68,10 @@ LEGEND = {
     "win_ms": "library_ms minus the kernel's time; a ship needs a win past the margin",
     "sigma_ms": "uncertainty of win_ms",
     "writing_for": "the queue item your kernel is for; after your mutations it must be the front ready item",
+    "chip": "this machine: gpu_cores, bandwidth_gbps (bytes the whole chip moves per second), "
+            "launch_us (one kernel launch), flops_gflops per dtype. A threadgroup runs on one core "
+            "and gets one core's share of the bandwidth, so a launch needs threadgroups across every "
+            "core, several per core, to move bytes at bandwidth_gbps",
 }
 
 _TOLERANCE_KEYS = frozenset({"rtol", "atol", "tolerance", "tolerances"})
@@ -88,6 +92,7 @@ def render_region_state(
     queue: Queue,
     last_verdict: Mapping | None,
     writing_for: Mapping | None,
+    chip: Mapping | None = None,
 ) -> dict:
     """The one prompt contract, rendered per call. io_specs maps workload ->
     {"inputs": [(shape, dtype)], "outputs": [...]}; ops lists the recorded
@@ -131,6 +136,7 @@ def render_region_state(
         "queue": list(queue.snapshot()),
         "verdicts": queue.verdicts,
         "writing_for": dict(writing_for) if writing_for is not None else None,
+        "chip": dict(chip or {}),
         "menu": dict(MENU),
         "moves": list(MOVES),
         "laws": list(LAWS),

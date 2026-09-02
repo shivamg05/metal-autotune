@@ -408,7 +408,7 @@ def test_prompt_is_structurally_sealed():
     params = inspect.signature(prompts.render_region_state).parameters
     assert set(params) == {"region", "io_specs", "ops", "kernels", "head", "shipped",
                            "head_ms", "shipped_ms", "assoc_tag", "families", "queue",
-                           "last_verdict", "writing_for"}
+                           "last_verdict", "writing_for", "chip"}
     assert all(p.kind is inspect.Parameter.KEYWORD_ONLY for p in params.values())
 
 
@@ -710,3 +710,17 @@ def test_worked_examples_are_valid_replies_and_reach_the_prompt():
     j.next({"region": {}}, {"outcome": "failed"})
     assert "Example 1 (seed" in seen[0] and "Example 1 (next" not in seen[0]
     assert "Example 1 (next" in seen[1] and "insert" in seen[1]
+
+
+def test_chip_facts_reach_the_judge():
+    """The briefing carries the machine: cores, bandwidth, launch cost, and a
+    legend line saying what one threadgroup gets of them."""
+    from autotuner.judge.prompts import LEGEND, render_region_state
+
+    state = fixed_state()
+    assert isinstance(state, dict)
+    rendered = render_region_state(**state, chip={"gpu_cores": 10, "bandwidth_gbps": 94.0,
+                                                  "launch_us": 8.0, "flops_gflops": {"bfloat16": 2588.0}})
+    assert rendered["chip"]["gpu_cores"] == 10 and rendered["chip"]["bandwidth_gbps"] == 94.0
+    assert "one core" in LEGEND["chip"] and "chip" in rendered["legend"]
+    assert any("chip.gpu_cores" in m for m in rendered["moves"])

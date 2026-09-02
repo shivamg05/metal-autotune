@@ -48,6 +48,7 @@ def best_of(a: Peaks, b: Peaks) -> Peaks:
 
 
 _UTILIZATION = re.compile(r'"Device Utilization %"=(\d+)')
+_CORES = re.compile(r'"gpu-core-count" = (\d+)')
 BUSY_GPU_PERCENT = 50.0
 
 
@@ -64,6 +65,20 @@ def gpu_utilization(text: str | None = None) -> float | None:
             return None
     m = _UTILIZATION.search(text)
     return float(m.group(1)) if m else None
+
+
+def gpu_core_count(text: str | None = None) -> int | None:
+    """How many GPU cores macOS reports for this chip; None when it cannot be
+    read. A threadgroup runs on one core, so this is the least a launch needs
+    to fill the chip."""
+    if text is None:
+        try:
+            text = subprocess.run(["ioreg", "-r", "-c", "IOAccelerator", "-d", "1"],
+                                  capture_output=True, text=True, timeout=10).stdout
+        except (OSError, subprocess.SubprocessError):
+            return None
+    m = _CORES.search(text)
+    return int(m.group(1)) if m else None
 
 
 def implausible(peaks: Peaks) -> str | None:

@@ -747,6 +747,18 @@ relies on have M0 spikes.
 
 ---
 
+13. **Every timed loop reads from memory and runs one pass at a time.** Metal runs
+    independent launches side by side, so a loop of unchained passes measures throughput
+    on a full GPU, not the latency a model step pays, where each layer waits for the
+    last; a one-threadgroup kernel read ten times faster than it ran in place. And a
+    few saved input sets sit in the cache, which a step's weight stream never does.
+    So the pricing clock and the ship clock rotate a working set past the cache-defeat
+    threshold and chain their passes: each pass's smallest non-weight float input
+    carries a zero from the previous pass's first output. A per-pass figure comes from
+    pairing the loop against the chain alone, which takes out the link's cost and the
+    sample's fixed submit-and-sync cost alike; a win is the paired difference between
+    the two arms, which pay the link equally.
+
 ## 7. The ladder, bind, and e2e
 
 The spec fixes the gates and their order. Implementation notes per gate, then the two

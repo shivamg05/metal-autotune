@@ -195,3 +195,75 @@ def test_gpu_utilization_parses_what_macos_reports():
     text = '"PerformanceStatistics" = {"Tiler Utilization %"=98,"Device Utilization %"=37,"x"=1}'
     assert gpu_utilization(text) == 37.0
     assert gpu_utilization("nothing about the GPU here") is None
+
+
+def test_gpu_core_count_parses_what_macos_reports():
+    from autotuner.measure.peaks import gpu_core_count
+
+    text = 'some other line\n      "gpu-core-count" = 10\n      "IOClass" = "AGXAcceleratorG16X"\n'
+    assert gpu_core_count(text) == 10
+    assert gpu_core_count("nothing here") is None
+
+
+def test_chained_loop_computes_the_same_values_and_prices_its_link():
+    """The chain adds a zero from the last pass to the next pass's linked
+    input, so every pass computes exactly what the unchained loop computes,
+    the link rides on the smallest non-weight float input, and the link
+    loop alone hands every input back unchanged."""
+    from autotuner.measure.clocks import chained_loop, link_input, link_loop, timing_sets
+    from autotuner.measure.session import time_once
+
+    w = mx.random.normal((256, 64), key=mx.random.key(1))
+    x = mx.random.normal((4, 64), key=mx.random.key(2))
+    mx.eval(w, x)
+    sets = timing_sets([{7: w, 3: x}])
+    assert len(sets) > 1 and all(set(s) == {3, 7} for s in sets)
+    assert link_input(sets[0], weight_ids={7}) == 3
+    assert link_input({7: w, 3: x}) == 3  # the smallest float input even with no weight ids
+    assert link_input({1: mx.zeros((4,), dtype=mx.int32)}) is None
+
+    passes = lambda b: [b[3] @ b[7].T]
+    chained = chained_loop(passes, sets, 12, 3)()
+    plain = [passes(sets[i % len(sets)]) for i in range(12)]
+    mx.eval(chained, plain)
+    assert all(mx.array_equal(c[0], p[0]).item() for c, p in zip(chained, plain))
+    linked = link_loop(sets, 12, 3)()
+    mx.eval(linked)
+    assert all(mx.array_equal(l[0], sets[i % len(sets)][3]).item() for i, l in enumerate(linked))
+
+
+def test_chained_launches_do_not_overlap():
+    """Protects: the region clock's chain law. Metal runs independent launches
+    side by side, so a one-threadgroup kernel timed in an unchained loop reads
+    several times faster than it runs in a model, where each layer waits for
+    the last (seen live on the 2026-09-02 Qwen run: 0.03 ms unchained, 0.33
+    chained, 0.36 in the model)."""
+    from tests.conftest import require_healthy_gpu, require_quiet_load
+    from autotuner.measure.clocks import chained_loop
+    from autotuner.measure.session import time_once
+
+    require_healthy_gpu()
+    require_quiet_load()
+    kernel = mx.fast.metal_kernel(
+        name="pin_one_threadgroup_matvec", input_names=["w", "x"], output_names=["out"],
+        source="""
+            uint r = thread_position_in_grid.x;
+            float acc = 0.0f;
+            for (uint c = 0; c < 2048u; ++c) { acc += (float)w[r * 2048u + c] * (float)x[c]; }
+            out[r] = acc;
+        """)
+    ws = [mx.random.normal((128, 2048), key=mx.random.key(i)).astype(mx.float16) for i in range(8)]
+    x = mx.random.normal((2048,), key=mx.random.key(99)).astype(mx.float16)
+    mx.eval(ws, x)
+    sets = [{0: w, 1: x} for w in ws]
+    one = lambda b: kernel(inputs=[b[0], b[1]], grid=(128, 1, 1), threadgroup=(128, 1, 1),
+                           output_shapes=[(128,)], output_dtypes=[mx.float32])
+    n = 40
+    unchained = lambda: [one(sets[i % len(sets)]) for i in range(n)]
+    chained = chained_loop(one, sets, n, 1)
+    for _ in range(3):
+        time_once(unchained)
+        time_once(chained)
+    t_un = min(time_once(unchained) for _ in range(5))
+    t_ch = min(time_once(chained) for _ in range(5))
+    assert t_ch > 2.0 * t_un, (t_un, t_ch)

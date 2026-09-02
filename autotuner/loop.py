@@ -31,7 +31,8 @@ from .artifact.emit import check_apply, emit_artifact, write_kernel
 from .log import RunLog, TextLog, wall_now
 from .measure.clocks import compare, step_clock
 from .measure.controls import aa_null
-from .measure.peaks import BUSY_GPU_PERCENT, best_of, gpu_utilization, implausible as peaks_implausible, measure_peaks
+from .measure.peaks import (BUSY_GPU_PERCENT, best_of, gpu_core_count, gpu_utilization,
+                            implausible as peaks_implausible, measure_peaks)
 from .measure.session import Session
 from .regions.build import build_stretches
 from .regions.fingerprint import group_copies
@@ -608,6 +609,10 @@ class JobRunner:
         region = run.region
         queue, families = Queue(), FamilyBook()
         families.register_scaffold(run.scaffold.kernel_id)
+        rule = self._roofline_rule(run)
+        if rule:
+            run.close_rule = rule  # nothing left to gain; no plan is asked for
+            return
         seed, failure = self._ask_judge(run, "seed",
                                         lambda: judge.seed(self._meta(run, queue, families, None)))
         if seed is None:
@@ -851,8 +856,12 @@ class JobRunner:
             spec = run.kernels.get(kid)
             if spec is not None:
                 kernels[kid] = {**_kernel_view(spec), **run.attempts.get(kid, {})}
+        chip = {"gpu_cores": gpu_core_count()}
+        if self.peaks is not None:
+            chip.update(bandwidth_gbps=self.peaks.bandwidth_gbps, launch_us=self.peaks.launch_us,
+                        flops_gflops=self.peaks.flops_gflops)
         return render_region_state(
-            region=region, io_specs=io_specs,
+            region=region, io_specs=io_specs, chip=chip,
             ops=_ops_view(self.traces[rep.workload], rep),
             kernels=kernels,
             head=run.head.kernel_id if run.head else None,
@@ -882,6 +891,12 @@ class JobRunner:
             return "6 hypotheses in a row without a meaningful win"
         if run.shipped is None and families.all_abandoned():
             return "nothing shipped and every family is abandoned"
+        return self._roofline_rule(run)
+
+    def _roofline_rule(self, run: RegionRun) -> str | None:
+        """The two close rules that need no queue: shipped or head so near
+        the physical limit that nothing worth the budget is left."""
+        region = run.region
         roof = region.roofline.t_roofline_ms if region.roofline else None
         w = region.members[0].workload
         step = self.step_ms[w]
@@ -1003,9 +1018,14 @@ class JobRunner:
                 veto_pairs=8,
             )
             if not e2e.passed:
+                veto = e2e.veto
                 self.log.append("e2e_failed", fingerprint=region.fingerprint,
                                 checks=[c.__dict__ for c in e2e.checks],
-                                veto_passed=e2e.veto_passed)
+                                veto_passed=e2e.veto_passed,
+                                veto={"baseline_ms": veto.median_baseline_ms,
+                                      "delta_ms": veto.median_delta_ms, "sigma_ms": veto.sigma_ms,
+                                      "ratio": veto.median_ratio, "stability": veto.stability}
+                                if veto else None)
                 unwind()
                 return False
             self.installed.update(pending_installed)
