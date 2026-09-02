@@ -23,7 +23,7 @@ from autotuner.regions.price import (
     price_region,
     region_share,
 )
-from autotuner.regions.rank import apply_floor, covered_by, rank
+from autotuner.regions.rank import apply_floor, covered_by, free_members, rank
 from autotuner.regions.roofline import node_flops, stretch_roofline
 from autotuner.regions.sweep import SweepDivergence, locate_span
 from autotuner.regions.types import Region, Roofline, Stretch
@@ -350,12 +350,20 @@ def test_rank_and_floor_and_overlap():
     ranked = rank(kept)
     assert [r.fingerprint for r in ranked] == ["b", "a"]  # memory beats compute on ties
 
+    # a shipped cut owns every candidate copy that touches it: one inside it,
+    # one reaching past it, one straddling its edge; only a disjoint copy is free
     big = Region(fingerprint="big", ops=("x", "y"))
     big.members.append(Stretch("w", 0, 3, (), (), ("@0",)))
     small = Region(fingerprint="small", ops=("x",))
     small.members.append(Stretch("w", 1, 1, (), (), ("@0",)))
-    assert covered_by(small, big)
-    assert not covered_by(big, small)
+    edge = Region(fingerprint="edge", ops=("y", "z"))
+    edge.members.append(Stretch("w", 3, 5, (), (), ("@0",)))
+    apart = Region(fingerprint="apart", ops=("z",))
+    apart.members.append(Stretch("w", 4, 5, (), (), ("@0",)))
+    apart.members.append(Stretch("w", 2, 2, (), (), ("@0",)))
+    assert covered_by(small, big) and covered_by(big, small) and covered_by(edge, big)
+    assert not covered_by(apart, big)
+    assert [m.start_seq for m in free_members(apart, [big])] == [4]
 
 
 

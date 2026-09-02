@@ -36,18 +36,20 @@ def rank(regions: list[Region]) -> list[Region]:
 
 
 def free_members(candidate: Region, shipped: list[Region]) -> list:
-    """The candidate's copies that no shipped cut already owns: a copy
-    inside a shipped span belongs to the bigger kernel now."""
+    """The candidate's copies that touch no shipped cut. A copy inside a
+    shipped span belongs to that kernel now, and a copy reaching past one
+    cannot be judged either: its library clock was taken before the ship,
+    so nothing says whether it beats the kernel already installed there."""
     return [
         mc for mc in candidate.members
         if not any(
             ms.workload == mc.workload
-            and ms.start_seq <= mc.start_seq and mc.end_seq <= ms.end_seq
+            and ms.start_seq <= mc.end_seq and mc.start_seq <= ms.end_seq
             for s in shipped for ms in s.members
         )
     ]
 
 
 def covered_by(candidate: Region, shipped: Region) -> bool:
-    """Every member of candidate lies inside some member span of shipped."""
+    """Every member of candidate touches some member span of shipped."""
     return not free_members(candidate, [shipped])

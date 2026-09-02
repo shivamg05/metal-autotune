@@ -26,9 +26,10 @@ Every code path not yet executed on real hardware, and why. Delete entries as th
   quantized decode job needs it.
 - Retrace-after-close share updates: the loop drops covered regions but does not
   re-price survivors on the patched model.
-- The shape sweep inside a job (gate 7 at swept sizes): locate_span, the store,
-  and the child's correctness_only path are tested standalone; the loop does
-  not build sweep eval sets, so no job has run gate 7 at a second size.
+- The shape sweep at model scale: a job now traces and captures every named
+  dim at its sweep sizes, gate 7 checks each kernel there, and the final check
+  runs the patched model at each size. Tested on the planted-win fixture only;
+  no 8B job has run with a named dim since.
 - The agent mailbox judge (--judge agent) is tested against a thread standing in
   for the agent; no human-or-agent-operated run yet.
 - `autotuner/manifest.py` check_build timeout path: never hit.

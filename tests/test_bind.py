@@ -197,6 +197,38 @@ def test_fallback_path_replays_original_ops():
         uninstall(model, "layers.1", occupant)
 
 
+def test_wrapper_hands_unrecorded_shapes_to_the_original_module():
+    """A replay is exact only at the recorded shapes, so a wrapper called
+    at any other shape must run the wrapped module itself: same outputs, no
+    custom dispatch, and the original ops back in the record."""
+    model = load_fixture("repeated_layers")
+    x4 = mx.random.normal((4, 16), key=mx.random.key(4))
+    x7 = mx.random.normal((7, 16), key=mx.random.key(5))
+    trace, _ = tracer().trace(model, [x4])
+    base7 = flat(model(x7))
+    add_node = next(
+        n for n in trace.nodes
+        if n.op == "array.__add__" and n.module_address == "layers.1@0"
+    )
+    splice = Splice(
+        kernel=ADD_KERNEL, start_seq=add_node.seq, end_seq=add_node.seq,
+        input_ids=tuple(add_node.in_arrays), output_ids=tuple(add_node.out_arrays),
+    )
+    emitted = emit_wrapper(trace, scope_call_at(trace, "layers.1@0"), [splice], "GuardedLayer1")
+    assert "if a0.shape != (4, 16):" in emitted.source
+    cls = build_wrapper_class(emitted)
+    occupant = install(model, "layers.1", cls(model.layers[1], {ADD_KERNEL.kernel_id: ADD_KERNEL}))
+    try:
+        retrace4, _ = tracer().trace(model, [x4])
+        assert any(n.op == "custom_kernel" for n in retrace4.nodes)
+        assert all(mx.array_equal(g, b).item() for g, b in zip(flat(model(x7)), base7))
+        retrace7, _ = tracer().trace(model, [x7])
+        assert not any(n.op == "custom_kernel" for n in retrace7.nodes)
+        assert [n.op for n in retrace7.nodes] == [n.op for n in trace.nodes]
+    finally:
+        uninstall(model, "layers.1", occupant)
+
+
 def test_screen_rejects_unreplayable_scopes():
     cases = {
         "cache_retention": ((4, 16), "python-retained"),

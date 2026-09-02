@@ -73,10 +73,12 @@ budget: {per_region: 8, total: 40}
 That is a complete manifest. Optional settings:
 
 - Write a letter instead of a number (`shape: [1, L]`) for a size that varies
-  in real use, and `primary: {L: 512}` picks the size that is traced and
-  timed (default: the largest entry of `sweep`, which is 4096 unless you set
-  it). Checking installed code at the other `sweep` sizes is not wired into a
-  job yet, so a result is proven at the primary size only.
+  in real use. `primary: {L: 512}` picks the size that is traced and timed
+  (default: the largest entry of `sweep`). Every kernel is also checked for
+  correct outputs at the other sizes in `sweep` (default `[1, 13, 50, 4096]`),
+  and at any size other than the primary the installed code hands the work
+  back to the model's original code, so the result is correct at every size
+  and faster at the primary one.
 - `budget` caps improvement attempts per spot and for the whole job (defaults
   25 and 250). Each attempt costs minutes, so this is the run-length dial.
 - `tolerances: {rtol: ..., atol: ...}` changes how exactly outputs must

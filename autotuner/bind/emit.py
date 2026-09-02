@@ -6,6 +6,11 @@ record-mode retraces see every replayed op; kernels go through
 autotuner_runtime.kernels.call, which record mode also patches. Both dispatch
 paths live in the generated code: the fallback path IS the original op
 sequence, so shapes no kernel covers need no library magic.
+
+A replay is exact only for the shapes it was recorded at: reshape targets,
+slice bounds, and split sizes are literals from the trace. So every wrapper
+first compares the entering arrays' shapes with the recorded ones and hands
+any other call to the wrapped module unchanged.
 """
 
 from __future__ import annotations
@@ -266,6 +271,25 @@ class _Emitter:
         self.span_map.append(("custom_kernel", splice.fingerprint, kid))
 
 
+def _shape_guard(trace: Trace, scope: ScopeCall, nodes: list[TraceNode]) -> list[str]:
+    """Lines that return the wrapped module's own result whenever an
+    entering array's shape differs from the recorded one."""
+    specs = trace.span_specs(nodes[0].seq, nodes[-1].seq)
+    checks = []
+    for i, entry in enumerate(scope.args_template):
+        if isinstance(entry, ArrayRef) and scope.arg_ids[entry.index] in specs:
+            checks.append(f"a{i}.shape != {_literal(tuple(specs[scope.arg_ids[entry.index]][0]))}")
+    for k, v in scope.kwargs_template.items():
+        if isinstance(v, ArrayRef) and scope.arg_ids[v.index] in specs:
+            checks.append(f"{k}.shape != {_literal(tuple(specs[scope.arg_ids[v.index]][0]))}")
+    if not checks:
+        return []
+    positional = [f"a{i}" for i in range(len(scope.args_template))]
+    keywords = [f"{k}={k}" for k in scope.kwargs_template]
+    return [f"if {' or '.join(checks)}:",
+            f"    return self.wrapped({', '.join(positional + keywords)})"]
+
+
 def emit_wrapper(
     trace: Trace,
     scope: ScopeCall,
@@ -294,6 +318,10 @@ def emit_wrapper(
             em.bound.add(scope.arg_ids[v.index])
         else:
             sig_parts.append(f"{k}={_literal(v)}")
+
+    guard = _shape_guard(trace, scope, nodes)
+    if guard:
+        em.lines = guard + em.lines
 
     by_start = {s.start_seq: s for s in splices}
     i = 0

@@ -267,6 +267,14 @@ Made in this refactor, each open to veto:
 - Copies of a region with different weight shapes are different regions.
 - The starting kernel is timed once, so the judge knows where it starts.
 - Whole-job tests shrink to one real job; rollback paths are tested directly.
+- A generated wrapper hands any call whose entering shapes differ from the
+  recorded ones to the original module. Its replay bakes reshape targets and
+  slice bounds as literals, so it is exact only at the recorded shapes; this
+  makes an artifact correct at every size and faster at the primary one.
+- A candidate copy that touches a shipped cut is covered, whether it lies
+  inside the cut, contains it, or straddles its edge. Until the loop re-prices
+  survivors on the patched model, a cut reaching past a shipped kernel has no
+  honest library clock to be judged against.
 
 Left for you:
 
@@ -312,5 +320,6 @@ names, in this order.
 - [x] 11. Writing: comments and docstrings without citations; the operator
       guide, the agent guide, the ledgers, and the plan brought back in line.
 - [ ] 12. Remaining spec gaps, in this order as time allows: the shape sweep
-      inside a job, the plain-versus-compiled baseline, the reordered-math
-      whole-model check, re-pricing after a close.
+      inside a job (done: traced, captured, checked by gate 7, and the wrapper
+      hands unrecorded shapes to the original module), the plain-versus-compiled
+      baseline, the reordered-math whole-model check, re-pricing after a close.

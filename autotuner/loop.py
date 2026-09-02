@@ -45,6 +45,7 @@ from .scaffold import uncovered_op
 from .trace import Tracer
 from .trace.recorder import ArrayRef
 from .trace.walk import flatten_arrays
+from .regions.sweep import SweepDivergence, locate_span
 from .trace.serialize import nodes_to_json
 from .trace.types import Trace
 from .workload import materialize, workload_seeds
@@ -106,6 +107,11 @@ class JobRunner:
         self.tracer = Tracer()
         self.traces: dict[str, Trace] = {}
         self.tensors: dict[str, list[mx.array]] = {}
+        # the sweep: one trace and one input set per named dim size, keyed
+        # "workload@dim=size", and each region's span located in that trace
+        self.sweep_traces: dict[str, Trace] = {}
+        self.sweep_tensors: dict[str, list[mx.array]] = {}
+        self.sweep_spans: dict[tuple[str, str], Stretch] = {}
         self.step_ms: dict[str, float] = {}
         self.total_hypotheses = 0
         self.installed: dict[str, tuple] = {}  # scope -> (original module, splices, kernels)
@@ -144,6 +150,20 @@ class JobRunner:
                 self.log.append("memory_warning", workload=w.name,
                                 detail="model evaluated mid-record; intermediates stayed resident")
             self.log.append("trace", workload=w.name, nodes=len(trace.nodes))
+            for label, dims in self._sweep_points(w):
+                self.sweep_tensors[label] = materialize(w, dims, seeds[0])
+                self.sweep_traces[label], _ = self.tracer.trace(self.model, self.sweep_tensors[label])
+                self.log.append("trace", workload=label, nodes=len(self.sweep_traces[label].nodes))
+
+    def _sweep_points(self, w) -> list[tuple[str, dict[str, int]]]:
+        """Each named dim of the workload at each sweep size but the primary,
+        the other dims held at their primary sizes."""
+        points = []
+        for dim in sorted(w.named_dims()):
+            for size in self.manifest.sweep[dim]:
+                if size != self.manifest.primary[dim]:
+                    points.append((f"{w.name}@{dim}={size}", {**self.manifest.primary, dim: size}))
+        return points
 
     # -- stage 2: regions -----------------------------------------------------
 
@@ -208,6 +228,43 @@ class JobRunner:
                         self.store.save(r.fingerprint, w.name, si, "inputs", ins)
                         self.store.save(r.fingerprint, w.name, si, "outputs", outs)
                         break  # sets are per representative member; copies share the clock
+            self._capture_sweep(w, [r for r in regions if not r.rejected])
+
+    def _capture_sweep(self, w, regions: list[Region]) -> None:
+        """One correctness set per sweep size for every region the workload
+        fires in: the region's span located in the trace at that size, its
+        boundary arrays saved from one recorded pass. A region whose ops the
+        model no longer runs in one run at some size strands here."""
+        for label, _dims in self._sweep_points(w):
+            retrace = self.sweep_traces[label]
+            wanted: set[int] = set()
+            for r in regions:
+                rep = next((m for m in r.members if m.workload == w.name), None)
+                if rep is None:
+                    continue
+                try:
+                    span = locate_span(self.traces[w.name], rep, retrace, w.name)
+                except SweepDivergence as e:
+                    r.rejected = f"the op stream diverges at {label}: {e}"
+                    continue
+                self.sweep_spans[(r.fingerprint, label)] = span
+                wanted |= set(span.input_ids) | set(span.output_ids)
+            if not wanted:
+                continue
+            arrays = capture_boundaries(self.tracer, self.model, self.sweep_tensors[label],
+                                        retrace, wanted)
+            for r in regions:
+                span = self.sweep_spans.get((r.fingerprint, label))
+                if span is None:
+                    continue
+                try:
+                    ins = {a: arrays[a] for a in span.input_ids}
+                    outs = {a: arrays[a] for a in span.output_ids}
+                except KeyError as e:
+                    r.rejected = f"capture missed boundary array {e} at {label}"
+                    continue
+                self.store.save(r.fingerprint, label, 0, "inputs", ins)
+                self.store.save(r.fingerprint, label, 0, "outputs", outs)
 
     def _clock_steps(self) -> None:
         for w in self.manifest.workloads:
@@ -349,7 +406,26 @@ class JobRunner:
                 correctness_only=False,
                 nodes_json=None,
             ))
+        for label, span, _specs in self._sweep_instances(region):
+            nodes = self.sweep_traces[label].nodes[span.start_seq:span.end_seq + 1]
+            sets.append(EvalSet(
+                label=label,
+                inputs_paths=[str(self.store._path(region.fingerprint, label, 0, "inputs"))],
+                reference_paths=[str(self.store._path(region.fingerprint, label, 0, "outputs"))],
+                correctness_only=True,
+                nodes_json=nodes_to_json(nodes),
+            ))
         return sets
+
+    def _sweep_instances(self, region: Region) -> list[tuple[str, Stretch, dict]]:
+        """(label, span, array specs) for each sweep size the region was
+        located and captured at."""
+        out = []
+        for (fingerprint, label), span in sorted(self.sweep_spans.items()):
+            if fingerprint == region.fingerprint:
+                specs = self.sweep_traces[label].span_specs(span.start_seq, span.end_seq)
+                out.append((label, span, specs))
+        return out
 
     def _ladder_job(self, region: Region, kernel: KernelSpec, assoc_tag: str,
                     run_clock: bool) -> LadderJob:
@@ -398,7 +474,11 @@ class JobRunner:
         rep = region.members[0]
         trace = self.traces[rep.workload]
         try:
-            scaffold = build_scaffold(trace, rep)
+            # the sweep sizes are extra instances, so a dim that moves across
+            # them stays symbolic instead of baking in as the primary's literal
+            scaffold = build_scaffold(trace, rep, [
+                [specs[a][0] for a in span.input_ids]
+                for _label, span, specs in self._sweep_instances(region)])
         except NoScaffold as e:
             run.close_rule = f"no scaffold: {e}"
             self.log.append("region_skip", fingerprint=region.fingerprint, reason=run.close_rule)
@@ -715,6 +795,11 @@ class JobRunner:
                 "inputs": [specs[a] for a in m.input_ids],
                 "outputs": [specs[a] for a in m.output_ids],
             }
+        for label, span, specs in self._sweep_instances(region):
+            io_specs[label] = {
+                "inputs": [specs[a] for a in span.input_ids],
+                "outputs": [specs[a] for a in span.output_ids],
+            }
         rep = region.members[0]
         wanted = {k.kernel_id for k in (run.scaffold, run.head, run.shipped) if k}
         wanted.add(run.last_kernel)
@@ -919,7 +1004,8 @@ class JobRunner:
         for region in ranked:
             free = free_members(region, shipped_regions)
             if not free:
-                self.log.append("region_covered", fingerprint=region.fingerprint)
+                self.log.append("region_covered", fingerprint=region.fingerprint,
+                                reason="every copy touches a cut already shipped")
                 continue
             if len(free) < region.copies:
                 # a shipped bigger cut owns the other copies; this region goes
@@ -1002,14 +1088,16 @@ class JobRunner:
         return self.report
 
     def _final_check(self) -> None:
-        """The spec's last end-to-end check over every workload once the
-        regions are done: the patched model as a whole, not one ship at a
-        time, against the untouched model."""
+        """The last end-to-end check once the regions are done: the patched
+        model as a whole against the untouched model, on every workload and
+        then at every sweep size, where the wrappers must hand the unrecorded
+        shapes back to the original modules."""
         if not self.installed:
             return
         final = run_e2e(
             self.session, self.baseline_model, self.model,
-            workloads=[(w.name, self.tensors[w.name]) for w in self.manifest.workloads],
+            workloads=[(w.name, self.tensors[w.name]) for w in self.manifest.workloads]
+            + sorted(self.sweep_tensors.items()),
             veto_pairs=8,
         )
         self.final_ok = final.passed

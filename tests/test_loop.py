@@ -35,7 +35,7 @@ out0[i] = (y - 1.0f) * 0.5f;
 """
 
 
-def write_manifest(tmp_path, fixture, shape):
+def write_manifest(tmp_path, fixture, shape, extra=""):
     p = tmp_path / "manifest.yaml"
     p.write_text(textwrap.dedent(f"""
         model: {FIXTURES / fixture}
@@ -43,6 +43,7 @@ def write_manifest(tmp_path, fixture, shape):
           - inputs: [{{shape: {list(shape)}, dtype: float32}}]
             name: main
         budget: {{per_region: 4, total: 8}}
+        {extra}
     """))
     return p
 
@@ -76,7 +77,10 @@ def test_planted_win_job_ships(tmp_path):
     from tests.conftest import require_healthy_gpu
 
     require_healthy_gpu()  # ships a real measured win; a mid-test throttle crossing can hide it
-    manifest = write_manifest(tmp_path, "planted_win.py", (4096, 1024))
+    # the row count is a named dim: the job traces and captures it at 7 rows
+    # too, gate 7 checks every kernel there, and the final check runs there
+    manifest = write_manifest(tmp_path, "planted_win.py", ("L", 1024),
+                              "sweep: {L: [7, 4096]}\n        primary: {L: 4096}")
     next_payloads = []
 
     def factory(region):
@@ -130,6 +134,22 @@ def test_planted_win_job_ships(tmp_path):
     assert {r["phase"] for r in judge_rows} == {"seed", "next"}
     assert all("latency_s" in r for r in judge_rows)
     assert (tmp_path / "work" / "report.json").exists()
+
+    # the sweep: traced and captured at L=7, checked by gate 7 on every
+    # attempt, and at that size the installed wrapper runs the original module
+    assert "main@L=7" in [row["workload"] for row in runner.log.rows() if row["kind"] == "trace"]
+    assert any(key[1] == "main@L=7" for key in runner.sweep_spans)
+    assert [c["name"] for c in report.final["checks"]] == ["main", "main@L=7"]
+    assert all(c["passed"] for c in report.final["checks"])
+    x7 = runner.sweep_tensors["main@L=7"]
+    got, want = runner.model(*x7), runner.baseline_model(*x7)
+    assert mx.array_equal(got, want).item()
+    runner.tracer.install()
+    try:
+        retrace7, _ = runner.tracer.trace(runner.model, x7)
+    finally:
+        runner.tracer.uninstall()
+    assert not any(n.op == "custom_kernel" for n in retrace7.nodes)
 
 
 def test_vendor_parity_job_ships_nothing(tmp_path):

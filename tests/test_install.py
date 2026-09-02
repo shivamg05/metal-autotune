@@ -28,14 +28,14 @@ def elementwise(kernel_id: str, body: str, inputs=("in0",)) -> KernelSpec:
     )
 
 
-@pytest.fixture
-def runner(tmp_path):
+def _runner(tmp_path, shape: str, extra: str = ""):
     manifest = tmp_path / "manifest.yaml"
     manifest.write_text(textwrap.dedent(f"""
         model: {FIXTURES / "planted_win.py"}
         workloads:
-          - inputs: [{{shape: [64, 1024], dtype: float32}}]
+          - inputs: [{{shape: {shape}, dtype: float32}}]
             name: main
+        {extra}
     """))
     r = JobRunner(manifest, tmp_path / "work", judge_factory=lambda region: None,
                   clock_pairs=4, refuse_degraded=False, session=Session(sleep=lambda s: None))
@@ -48,6 +48,22 @@ def runner(tmp_path):
                     and (start is None or reg.members[0].start_seq == start))
 
     r.region = region
+    r.regions = regions
+    return r
+
+
+@pytest.fixture
+def runner(tmp_path):
+    r = _runner(tmp_path, "[64, 1024]")
+    yield r
+    r.tracer.uninstall()
+    assert r.tracer.verify_restored() == []
+
+
+@pytest.fixture
+def swept(tmp_path):
+    """The row count is a named dim, primary 64, swept to 7."""
+    r = _runner(tmp_path, "[L, 1024]", "sweep: {L: [7, 64]}\n        primary: {L: 64}")
     yield r
     r.tracer.uninstall()
     assert r.tracer.verify_restored() == []
@@ -127,6 +143,48 @@ def _chain(runner):
     return RegionRun(region=runner.region("array.__mul__", "array.__add__", "mx.maximum",
                                           "array.__mul__", "array.__add__", "mx.minimum",
                                           "array.__sub__", "array.__mul__"))
+
+
+def test_the_sweep_checks_every_kernel_at_the_other_sizes(swept, tmp_path):
+    """A named dim is traced and captured at each sweep size, gate 7 checks
+    every kernel there, and an installed wrapper hands the unrecorded size back
+    to the original module, which the final whole-model check confirms."""
+    from autotuner.ladder.gates import run_ladder
+
+    assert list(swept.sweep_traces) == ["main@L=7"]
+    assert swept.sweep_tensors["main@L=7"][0].shape == (7, 1024)
+    chain = _chain(swept).region
+    swept._capture([chain])
+    span = swept.sweep_spans[(chain.fingerprint, "main@L=7")]
+    assert span.end_seq - span.start_seq == 7  # the same eight ops, located at 7 rows
+    assert swept.store.set_count(chain.fingerprint, "main@L=7") == 1
+
+    chain.t_orig_ms["main"] = chain.t_rep_ms["main"] = 1.0  # pricing is not under test
+    sets = swept._eval_sets(chain)
+    assert [(e.label, e.correctness_only, e.nodes_json is not None) for e in sets] == [
+        ("main", False, False), ("main@L=7", True, True)]
+
+    passed = run_ladder(swept._ladder_job(chain, FUSED, "preserving", run_clock=False))
+    assert "sweep" in passed.gates_passed, passed
+    assert passed.detail["fallback_engaged"] == {"main@L=7": False}
+    only_at_64 = elementwise("rchain_h2", FUSED.source.split("\n", 1)[1].replace(
+        "float x = in0[i];", "float x = (in0_shape[0] == 64) ? in0[i] : 0.0f;"),
+        ("in0", "in1", "in2"))
+    caught = run_ladder(swept._ladder_job(chain, only_at_64, "preserving", run_clock=False))
+    assert (caught.outcome, caught.failed_gate) == ("failed", "sweep")
+    assert caught.detail["eval_set"] == "main@L=7"
+
+    assert swept._bind_and_promote(RegionRun(region=chain), FUSED, WIN)
+    x7 = swept.sweep_tensors["main@L=7"]
+    assert mx.array_equal(swept.model(*x7), swept.baseline_model(*x7)).item()
+    swept.tracer.install()  # the install left the patch surface down
+    retrace7, _ = swept.tracer.trace(swept.model, x7)
+    assert not any(n.op == "custom_kernel" for n in retrace7.nodes)
+    retrace64, _ = swept.tracer.trace(swept.model, swept.tensors["main"])
+    assert sum(n.op == "custom_kernel" for n in retrace64.nodes) == 1
+    swept._final_check()
+    assert [(c["name"], c["passed"]) for c in swept.report.final["checks"]] == [
+        ("main", True), ("main@L=7", True)]
 
 
 def test_a_crash_mid_install_rolls_the_model_back(runner, tmp_path, monkeypatch):
