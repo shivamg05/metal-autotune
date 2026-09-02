@@ -59,6 +59,42 @@ def snapshot_arrays(root: object) -> dict[int, str]:
     return found
 
 
+def state_holders(root: object) -> list[tuple[str, object]]:
+    """(dot path, object) for every plain Python object reachable from root
+    that holds an array: a KV cache, a namespace of buffers. Modules,
+    containers, and arrays are not holders. The model reaches such state
+    only through the object's own methods, which is what makes those calls
+    recordable and replayable as one unit."""
+    found: list[tuple[str, object]] = []
+    seen: set[int] = set()
+
+    def visit(obj: object, path: str) -> bool:
+        oid = id(obj)
+        if oid in seen or getattr(obj, "_trace_internal", False):
+            return False
+        seen.add(oid)
+        if isinstance(obj, mx.array):
+            return True
+        hit = False
+        if isinstance(obj, dict):
+            for k, v in list(obj.items()):
+                hit |= visit(v, f"{path}.{k}" if path else str(k))
+        elif isinstance(obj, (list, tuple)):
+            for i, v in enumerate(obj):
+                hit |= visit(v, f"{path}.{i}")
+        elif isinstance(obj, set) or callable(obj) or not hasattr(obj, "__dict__"):
+            return False
+        if hasattr(obj, "__dict__"):
+            for k, v in list(vars(obj).items()):
+                hit |= visit(v, f"{path}.{k}" if path else str(k))
+        if hit and not isinstance(obj, (dict, list, tuple)):
+            found.append((path, obj))
+        return hit
+
+    visit(root, "")
+    return found
+
+
 def flatten_arrays(tree: object) -> list[mx.array]:
     """Every array in a nested tree of lists, tuples, and dicts, in order."""
     out: list[mx.array] = []

@@ -19,7 +19,7 @@ Read the spec end to end before working on the loop, the ladder, regions, bind, 
 
 - **manifest**: the job contract. Model path defining `build()`, workloads, sweep policy, tolerances, budget. Dtypes and quantization are not in it because they are not knobs.
 - **workload**: the real input shapes to optimize for. A dim named in a shape (an "L") is sweepable; integer dims are model constants and never move.
-- **trace**: the recorded op-call stream, per workload. Pass 1 records lazily with the patch surface installed; pass 2 is the step clock with the recorder fully removed.
+- **trace**: the recorded op-call stream, per workload. Pass 1 records lazily with the patch surface installed; pass 2 is the step clock with the recorder fully removed. A compiled section and a call on an object holding model state (a KV cache's update) each record as one opaque call.
 - **region**: a run of consecutive recorded calls one kernel could replace, plus its boundary inputs/outputs and live values. All copies of the same op sequence across the model are one region.
 - **roofline**: a region's physical speed limit from boundary bytes (never intermediates), flops, and launch count. The bytes-and-launch part is measured by a probe (one launch streaming the boundary) clocked beside the region in the same window; the flops part is arithmetic. Whichever term binds is recorded as `bound`: memory, compute, or launch.
 - **scaffold**: the correct starting kernel the harness builds (stitched from MLX's shipped MSL where possible, naive lowering otherwise). Must pass the ladder before the judge may edit it; slow is normal.

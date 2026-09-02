@@ -81,11 +81,12 @@ class ScopeCall:
 
     address: str                        # e.g. "layers.3@0"; "" plus index for the root
     stack: tuple[str, ...]
-    args_template: tuple                # ArrayRefs index into arg_ids
+    args_template: tuple                # ArrayRefs index into arg_ids, ObjectRefs into obj_ids
     kwargs_template: Mapping[str, object]
     arg_ids: tuple[int, ...]
     out_template: object                # ArrayRefs index into out_ids
     out_ids: tuple[int, ...]
+    obj_ids: tuple[int, ...] = ()       # id() of each non-array argument object (a cache)
 
 
 class TraceIncomplete(RuntimeError):

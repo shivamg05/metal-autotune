@@ -20,7 +20,7 @@ import mlx.core as mx
 from autotuner_runtime.kernels import imported
 
 from .optable import MUTATING_METHODS, resolve
-from .recorder import OPAQUE_OP, ArrayRef, compiled_path
+from .recorder import OPAQUE_OP, ArrayRef, compiled_path, state_method
 from .types import TraceNode
 from .walk import flatten_arrays
 
@@ -65,6 +65,9 @@ def replay(
             fn = imported(compiled_path(node.op))
         elif node.op == OPAQUE_OP:
             raise RuntimeError(f"seq {node.seq}: a compiled call with no import path cannot be replayed")
+        elif state_method(node.op):
+            raise RuntimeError(f"seq {node.seq}: {node.op} acts on the model's own state; only a "
+                               f"generated wrapper replays it, on the live object")
         else:
             fn = resolve(node.op)
         bound: list[mx.array] = []

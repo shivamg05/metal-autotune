@@ -14,6 +14,8 @@ which are patched functions.
 
 from __future__ import annotations
 
+import functools
+import inspect
 import sys
 from typing import Callable
 
@@ -31,6 +33,7 @@ from .optable import (
     resolve,
 )
 from .recorder import Recorder, compiled_op
+from .walk import state_holders
 
 
 def walk_module_paths(model: object) -> dict[int, str]:
@@ -101,6 +104,7 @@ class Patcher:
         self._special_originals: dict[str, Callable] = {}
         self._precompiled_originals: list[tuple[object, str, object]] = []
         self._class_originals: list[tuple[type, bool, Callable]] = []
+        self._holder_originals: list[tuple[type, str, Callable]] = []
         self.installed = False
 
     # -- global surface, before model import ---------------------------------
@@ -240,6 +244,7 @@ class Patcher:
         tree, dispatching on self identity. Returns the instance path map for
         Recorder.arm. The root instance is transparent: step() addresses it."""
         paths = walk_module_paths(model)
+        self._patch_state_holders(model)
         recorder = self.recorder
         patched: set[type] = {cls for cls, _, _ in self._class_originals}
         for m in _all_modules(model):
@@ -271,6 +276,28 @@ class Patcher:
             patched.add(cls)
         return paths
 
+    def _patch_state_holders(self, model: object) -> None:
+        """Every plain object holding model state (a KV cache) gets its
+        methods wrapped, once per class: a call on it while recording runs
+        with recording suppressed and records one state node, which a
+        generated wrapper replays by calling the same method on the same
+        object, so the cache write and whatever else the method does to its
+        state happen for real."""
+        holders = state_holders(model)
+        recorder = self.recorder
+        recorder.state_holders = {id(obj): path for path, obj in holders}
+        wrapped = {(klass, name) for klass, name, _ in self._holder_originals}
+        for _path, obj in holders:
+            for klass in type(obj).__mro__:
+                if klass is object:
+                    continue
+                for name, fn in list(vars(klass).items()):
+                    if not inspect.isfunction(fn) or name.startswith("_") or (klass, name) in wrapped:
+                        continue
+                    setattr(klass, name, _state_call(fn, name, recorder))
+                    self._holder_originals.append((klass, name, fn))
+                    wrapped.add((klass, name))
+
     def unwrap_model(self) -> None:
         for cls, had_own, orig in reversed(self._class_originals):
             if had_own:
@@ -278,6 +305,9 @@ class Patcher:
             else:
                 del cls.__call__
         self._class_originals.clear()
+        for klass, name, fn in reversed(self._holder_originals):
+            setattr(klass, name, fn)
+        self._holder_originals.clear()
 
     # -- teardown -------------------------------------------------------------
 
@@ -321,6 +351,18 @@ class Patcher:
             if getattr(resolve(name), "__module__", "") == __name__:
                 bad.append(name)
         return bad
+
+
+def _state_call(orig: Callable, name: str, recorder: Recorder) -> Callable:
+    @functools.wraps(orig)
+    def wrapper(self_obj, *args, **kwargs):
+        if not recorder.recording or id(self_obj) not in recorder.state_holders:
+            return orig(self_obj, *args, **kwargs)
+        with recorder.suppressed():
+            result = orig(self_obj, *args, **kwargs)
+        recorder.record_state_call(self_obj, name, args, kwargs, result)
+        return result
+    return wrapper
 
 
 def _all_modules(model: object):

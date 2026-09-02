@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 
 import mlx.core as mx
 
-from ..trace.recorder import ArrayRef, OPAQUE_OP, compiled_path, dtype_name
+from ..trace.recorder import ArrayRef, OPAQUE_OP, ObjectRef, compiled_path, dtype_name, state_method
 from ..trace.types import ScopeCall, Trace, TraceNode
 from autotuner_runtime.kernels import KernelSpec
 
@@ -97,6 +97,8 @@ def scope_nodes(trace: Trace, scope: ScopeCall) -> list[TraceNode]:
 def _literal(value: object) -> str:
     if isinstance(value, ArrayRef):
         raise NotReplayable("array reference where a literal was expected")
+    if isinstance(value, ObjectRef):
+        raise NotReplayable("an object argument where a literal was expected")
     if isinstance(value, mx.Dtype):
         return f"mx.{dtype_name(value)}"
     if isinstance(value, slice):
@@ -159,14 +161,20 @@ class _Emitter:
 
     def _bind_weight(self, aid: int) -> None:
         path = self.trace.weight_paths.get(aid)
-        prefix = scope_tree_path(self.scope.address)
         if path is None:
             raise NotReplayable(f"weight {aid} has no recorded model path")
+        self.lines.append(f"{self.name(aid)} = {self._through_wrapped(path, f'weight at {path!r}')}")
+        self.bound.add(aid)
+
+    def _through_wrapped(self, path: str, what: str) -> str:
+        """The accessor for a model path, reached through the wrapped module;
+        the path must lie under the scope."""
+        prefix = scope_tree_path(self.scope.address)
         if prefix:
             if not (path == prefix or path.startswith(prefix + ".")):
                 raise NotReplayable(
-                    f"weight at {path!r} lives outside the scope {prefix!r}; "
-                    f"the wrapper can only reach weights through its wrapped module"
+                    f"{what} lives outside the scope {prefix!r}; "
+                    f"the wrapper can only reach it through its wrapped module"
                 )
             rel = path[len(prefix):].lstrip(".")
         else:
@@ -179,8 +187,24 @@ class _Emitter:
                 accessor += f"[{part}]"
             else:
                 accessor += f"[{part!r}]"
-        self.lines.append(f"{self.name(aid)} = {accessor}")
-        self.bound.add(aid)
+        return accessor
+
+    def _receiver(self, node: TraceNode) -> str:
+        """The expression that reaches a state call's object at call time: a
+        scope argument, found by identity, else its path through the
+        wrapped module."""
+        ref = node.scalar_args.get("receiver") or {}
+        for i, entry in enumerate(self.scope.args_template):
+            found = _object_access(entry, self.scope.obj_ids, ref.get("id"), f"a{i}")
+            if found:
+                return found
+        for k, v in self.scope.kwargs_template.items():
+            found = _object_access(v, self.scope.obj_ids, ref.get("id"), k)
+            if found:
+                return found
+        if ref.get("path") is None:
+            raise NotReplayable(f"{node.op} (seq {node.seq}) acts on an object the wrapper cannot reach")
+        return self._through_wrapped(ref["path"], f"the object {node.op} acts on")
 
     def emit_node(self, node: TraceNode) -> None:
         if node.op == OPAQUE_OP:
@@ -194,7 +218,17 @@ class _Emitter:
         kwargs_t = node.scalar_args["kwargs"]
         short = node.op.removeprefix("array.")
 
-        if compiled_path(node.op):
+        if state_method(node.op):
+            # the model's own state object, called as the model calls it
+            pieces = [self.value_expr(a) for a in args_t]
+            pieces += [f"{k}={self.value_expr(v)}" for k, v in kwargs_t.items()]
+            expr = f"{self._receiver(node)}.{state_method(node.op)}({', '.join(pieces)})"
+            if node.out_arrays:
+                self._assign(node, expr)
+            else:
+                self.lines.append(expr)
+                self.span_map.append((node.op, node.module_address, node.position_in_module))
+        elif compiled_path(node.op):
             # the model's own compiled section, called as the model calls it
             pieces = [self.value_expr(a) for a in args_t]
             pieces += [f"{k}={self.value_expr(v)}" for k, v in kwargs_t.items()]
@@ -271,6 +305,34 @@ class _Emitter:
         self.span_map.append(("custom_kernel", splice.fingerprint, kid))
 
 
+def _object_access(template: object, obj_ids: tuple, oid: int | None, base: str) -> str | None:
+    """The access expression for the object with id oid inside a call
+    argument template (a bare object, or one inside a list or dict)."""
+    if isinstance(template, ObjectRef):
+        return base if obj_ids[template.index] == oid else None
+    if isinstance(template, (list, tuple)):
+        for i, v in enumerate(template):
+            found = _object_access(v, obj_ids, oid, f"{base}[{i}]")
+            if found:
+                return found
+    elif isinstance(template, dict):
+        for k, v in template.items():
+            found = _object_access(v, obj_ids, oid, f"{base}[{k!r}]")
+            if found:
+                return found
+    return None
+
+
+def _holds_object(template: object) -> bool:
+    if isinstance(template, ObjectRef):
+        return True
+    if isinstance(template, (list, tuple)):
+        return any(_holds_object(v) for v in template)
+    if isinstance(template, dict):
+        return any(_holds_object(v) for v in template.values())
+    return False
+
+
 def _shape_guard(trace: Trace, scope: ScopeCall, nodes: list[TraceNode]) -> list[str]:
     """Lines that return the wrapped module's own result whenever an
     entering array's shape differs from the recorded one."""
@@ -302,13 +364,16 @@ def emit_wrapper(
         raise NotReplayable(f"scope {scope.address!r} recorded no ops")
     em = _Emitter(trace, scope)
 
-    # bind entering arrays from the call arguments
+    # bind entering arrays from the call arguments; objects (a cache) pass
+    # through under their own names, for the state calls that act on them
     sig_parts = []
     for i, entry in enumerate(scope.args_template):
         if isinstance(entry, ArrayRef):
             sig_parts.append(f"a{i}")
             em.lines.append(f"{em.name(scope.arg_ids[entry.index])} = a{i}")
             em.bound.add(scope.arg_ids[entry.index])
+        elif _holds_object(entry):
+            sig_parts.append(f"a{i}")
         else:
             sig_parts.append(f"a{i}={_literal(entry)}")
     for k, v in scope.kwargs_template.items():
@@ -316,6 +381,8 @@ def emit_wrapper(
             sig_parts.append(f"{k}=None")
             em.lines.append(f"{em.name(scope.arg_ids[v.index])} = {k}")
             em.bound.add(scope.arg_ids[v.index])
+        elif _holds_object(v):
+            sig_parts.append(f"{k}=None")
         else:
             sig_parts.append(f"{k}={_literal(v)}")
 

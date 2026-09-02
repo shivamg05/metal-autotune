@@ -21,6 +21,7 @@ from .walk import flatten_arrays, snapshot_arrays
 
 OPAQUE_OP = "compiled_fn"       # a compiled call the harness cannot name
 COMPILED_PREFIX = "compiled:"   # a compiled call named by its import path
+STATE_PREFIX = "state:"         # a method call on an object that holds model state
 
 
 def compiled_op(path: str | None) -> str:
@@ -28,18 +29,36 @@ def compiled_op(path: str | None) -> str:
 
 
 def is_opaque(op: str) -> bool:
-    """A compiled section: never inside a region, always a chain barrier."""
-    return op == OPAQUE_OP or op.startswith(COMPILED_PREFIX)
+    """A compiled section or a state call: never inside a region, always a
+    chain barrier."""
+    return op == OPAQUE_OP or op.startswith(COMPILED_PREFIX) or op.startswith(STATE_PREFIX)
 
 
 def compiled_path(op: str) -> str | None:
     return op[len(COMPILED_PREFIX):] if op.startswith(COMPILED_PREFIX) else None
 
 
+def state_method(op: str) -> str | None:
+    """The method name of a state call, e.g. "update_and_fetch" for
+    "state:KVCache.update_and_fetch"; None for any other op."""
+    return op.rsplit(".", 1)[1] if op.startswith(STATE_PREFIX) else None
+
+
 @dataclass(frozen=True)
 class ArrayRef:
     """Placeholder for an array argument inside a node's args template."""
     index: int
+
+
+@dataclass(frozen=True)
+class ObjectRef:
+    """Placeholder for a non-array, non-literal argument of a module call
+    (a cache object handed down the tree); index into the scope's obj_ids."""
+    index: int
+
+
+def _is_literal(obj: object) -> bool:
+    return obj is None or obj is Ellipsis or isinstance(obj, (bool, int, float, str, mx.Dtype))
 
 
 def dtype_name(dtype: mx.Dtype) -> str:
@@ -60,6 +79,9 @@ class Recorder:
         self.armed = False
         self._suppress = 0
         self._model_for_walk: object | None = None
+        # id(object) -> path for the objects holding model state; the patcher
+        # sets it when it wraps the model, before any pass
+        self.state_holders: dict[int, str] = {}
         self._reset_pass()
 
     def _reset_pass(self) -> None:
@@ -158,17 +180,17 @@ class Recorder:
         k = self._call_counts.get(id(model), 0)
         self._call_counts[id(model)] = k + 1
         self._addr_stack.append(f"@{k}")
-        args_t, kwargs_t, arg_ids, _ = self._templatize(args, {})
+        args_t, kwargs_t, arg_ids, _, obj_ids = self._templatize(args, {}, objects=True)
         try:
             outs = model(*args)
         except BaseException:
             self._addr_stack.pop()
             raise
-        out_t, _, out_ids, _ = self._templatize((outs,), {})
+        out_t, _, out_ids, _, _ = self._templatize((outs,), {})
         self.scope_calls.append(ScopeCall(
             address=self._addr_stack[-1], stack=tuple(self._addr_stack),
             args_template=args_t, kwargs_template=kwargs_t, arg_ids=tuple(arg_ids),
-            out_template=out_t[0], out_ids=tuple(out_ids),
+            out_template=out_t[0], out_ids=tuple(out_ids), obj_ids=tuple(obj_ids),
         ))
         self._addr_stack.pop()
         self.step_outputs = [self._register(a) for a in flatten_arrays(outs)]
@@ -210,16 +232,17 @@ class Recorder:
         k = self._call_counts.get(id(instance), 0)
         self._call_counts[id(instance)] = k + 1
         self._addr_stack.append(f"{path}@{k}")
-        args_t, kwargs_t, ids, _ = self._templatize(args, kwargs or {})
-        self._pending_scopes.append((self._addr_stack[-1], tuple(self._addr_stack), args_t, kwargs_t, tuple(ids)))
+        args_t, kwargs_t, ids, _, obj_ids = self._templatize(args, kwargs or {}, objects=True)
+        self._pending_scopes.append((self._addr_stack[-1], tuple(self._addr_stack), args_t, kwargs_t,
+                                     tuple(ids), tuple(obj_ids)))
 
     def module_exit(self, result: object = None) -> None:
-        address, stack, args_t, kwargs_t, arg_ids = self._pending_scopes.pop()
-        out_t, _, out_ids, _ = self._templatize((result,), {})
+        address, stack, args_t, kwargs_t, arg_ids, obj_ids = self._pending_scopes.pop()
+        out_t, _, out_ids, _, _ = self._templatize((result,), {})
         self.scope_calls.append(ScopeCall(
             address=address, stack=stack, args_template=args_t,
             kwargs_template=kwargs_t, arg_ids=arg_ids,
-            out_template=out_t[0], out_ids=tuple(out_ids),
+            out_template=out_t[0], out_ids=tuple(out_ids), obj_ids=obj_ids,
         ))
         self._addr_stack.pop()
 
@@ -230,9 +253,13 @@ class Recorder:
     def is_root(self, instance: object) -> bool:
         return id(instance) == self._root_id
 
-    def _templatize(self, args: tuple, kwargs: dict):
+    def _templatize(self, args: tuple, kwargs: dict, objects: bool = False):
+        """Arrays become ArrayRefs. With objects=True (module calls), any
+        other non-literal value becomes an ObjectRef, so a wrapper can pass
+        a cache object through and call its methods where the record did."""
         in_ids: list[int] = []
         in_specs: list = []
+        obj_ids: list[int] = []
 
         def template(obj: Any) -> Any:
             if isinstance(obj, mx.array):
@@ -249,11 +276,14 @@ class Recorder:
                 if any(isinstance(v, mx.array) for v in (obj.start, obj.stop, obj.step)):
                     return slice(template(obj.start), template(obj.stop), template(obj.step))
                 return obj
+            if objects and not _is_literal(obj):
+                obj_ids.append(id(obj))
+                return ObjectRef(len(obj_ids) - 1)
             return obj
 
         args_t = tuple(template(a) for a in args)
         kwargs_t = {k: template(v) for k, v in kwargs.items()}
-        return args_t, kwargs_t, in_ids, in_specs
+        return args_t, kwargs_t, in_ids, in_specs, obj_ids
 
     def maybe_record(
         self,
@@ -268,9 +298,26 @@ class Recorder:
         out_objs = ([args[0]] if mutates_first else []) + flatten_arrays(result)
         if not out_objs:
             return
+        self._append_node(op_name, args, kwargs, out_objs)
 
-        args_t, kwargs_t, in_ids, in_specs = self._templatize(args, kwargs)
+    def record_state_call(self, obj: object, method: str, args: tuple, kwargs: dict, result: Any) -> None:
+        """One node for a call on a state holder, outputs or not: the wrapper
+        replays it by calling the same method on the same object, so what
+        the method does to its state (a cache write, an offset bump) happens
+        for real, where the recorder cannot see it."""
+        if not self.recording:
+            return
+        op = f"{STATE_PREFIX}{type(obj).__name__}.{method}"
+        receiver = {"id": id(obj), "path": self.state_holders.get(id(obj))}
+        self._append_node(op, args, kwargs, flatten_arrays(result), receiver=receiver)
+
+    def _append_node(self, op_name: str, args: tuple, kwargs: dict, out_objs: list,
+                     receiver: dict | None = None) -> None:
+        args_t, kwargs_t, in_ids, in_specs, _ = self._templatize(args, kwargs)
         out_ids = [self._register_output(a) for a in out_objs]
+        scalar_args: dict = {"args": args_t, "kwargs": kwargs_t}
+        if receiver is not None:
+            scalar_args["receiver"] = receiver
 
         stack = tuple(self._addr_stack)
         address = stack[-1] if stack else ""
@@ -285,7 +332,7 @@ class Recorder:
             out_arrays=tuple(out_ids),
             in_specs=tuple(in_specs),
             out_specs=tuple(_spec(a) for a in out_objs),
-            scalar_args={"args": args_t, "kwargs": kwargs_t},
+            scalar_args=scalar_args,
             module_address=address,
             position_in_module=position,
             module_stack=stack,
