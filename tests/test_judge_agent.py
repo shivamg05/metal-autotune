@@ -205,7 +205,7 @@ class TestAgentFileJudge:
 
 
 def test_next_prompt_carries_the_item_schema():
-    """The 2026-08-31 decode run burned its whole budget on this: 'item: as
+    """A live decode run burned its whole budget on this: 'item: as
     in the seed schema' referenced a schema the next prompt never included,
     so every live judge invented item keys and babbled."""
     from autotuner.judge.client import _NEXT_SCHEMA, _SEED_SCHEMA, _SYSTEM

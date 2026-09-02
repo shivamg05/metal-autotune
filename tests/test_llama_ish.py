@@ -1,4 +1,4 @@
-"""M12 groundwork: the tracer and region machinery against a LLaMA-shaped
+"""The tracer and region machinery against a LLaMA-shaped
 stack. Completeness, per-layer copy grouping, scope screening, and scaffolds
 for the norm-projection region all must hold on real decoder ops."""
 

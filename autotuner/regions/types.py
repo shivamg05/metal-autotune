@@ -1,4 +1,4 @@
-"""Region data model (plan section 4)."""
+"""Region data model."""
 
 from __future__ import annotations
 

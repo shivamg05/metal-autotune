@@ -1,9 +1,9 @@
-"""The patch surface (plan 5.1): mx module functions, array dunders and
+"""The patch surface: mx module functions, array dunders and
 methods, mx.compile, mx.eval, and per-subclass Module.__call__.
 
 Install BEFORE the model file is imported; a model that imported an op earlier
 would keep the unwrapped original. Uninstall restores every attribute to the
-identical original object (spike_01 pins that this works).
+identical original object.
 
 One known hole, by construction: mx.array is a nanobind type, and replacing
 the name would break isinstance checks everywhere, so a model that constructs
@@ -350,7 +350,7 @@ def _all_modules(model: object):
 
 def _mro_call_owner(cls: type) -> type | None:
     """The class in the MRO that actually defines __call__ (never nn.Module,
-    which has none; spike_02)."""
+    which has none)."""
     for klass in cls.__mro__:
         if "__call__" in klass.__dict__:
             return klass

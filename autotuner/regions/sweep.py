@@ -1,4 +1,4 @@
-"""Sweep instances (plan 5.6): find a region's node span in a retrace at
+"""Sweep instances: find a region's node span in a retrace at
 another size. The bridge from named dims to concrete shapes is retracing, not
 symbolic shapes: addresses are stable across sizes for the same model, so
 (op, module_address, position_in_module) locates every member, and the matched

@@ -1,8 +1,7 @@
 """Manifest: the job contract. Parse, validate, default; frozen once loaded.
 
-The spec ("Job in: the manifest") fixes the vocabulary; plan 5.12 fixes the
-defaults. Every defaulted field is listed in Manifest.defaulted so the report
-can record what was actually used.
+Every defaulted field is listed in Manifest.defaulted so the report can
+record what was actually used.
 """
 
 from __future__ import annotations

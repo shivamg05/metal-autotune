@@ -34,9 +34,12 @@ Protocol, per request:
 
 1. A file `NNNN.request.json` appears. It is self-contained:
    `{"seq": N, "respond_in": "NNNN.response.json", "system": ..., "messages": [...]}`.
-   `system` holds your role and the exact response schema for this call;
-   `messages` holds the region state, and on a re-ask also your rejected reply
-   plus the rejection reason. Answer the last user message.
+   `system` holds your role, the rules, and the exact response schema for this
+   call. `messages` holds one user message whose content is a JSON object with
+   `region_state` (the whole briefing: the region, its kernels, the queue, the
+   verdicts so far) and, after the first call, `verdict` (what happened to the
+   last kernel). On a re-ask the list also holds your rejected reply and the
+   rejection reason. Answer the last user message.
 2. Write `NNNN.response.json` into the same directory. Its entire content must
    be one JSON object matching the schema in `system`. No prose, no code fences.
    The harness accepts the file the moment it parses as JSON, so chunked writes
@@ -44,8 +47,8 @@ Protocol, per request:
    changing without ever parsing is taken as-is after that grace window and
    rejected through the normal path.
 3. A response outside the schema gets exactly one re-ask (the next request
-   file), then that call counts as a failed hypothesis. The files stay behind
-   as the audit trail.
+   file), then that call counts as a failed hypothesis. The files stay behind,
+   and `<work-dir>/judge.jsonl` keeps every exchange in order.
 
 Be honest about what this mode guarantees. The harness still sends metadata
 only, but unlike the other transports nothing can stop an agent that lives in
@@ -56,7 +59,8 @@ the request files alone, never from the repo or work dir; the harness decides
 correctness and speed, never you. You plan a hypothesis queue in English and
 write Metal only for the front ready item, one small edit of a named parent at
 a time. Return `"kernel": null` to yield when out of ideas. `DESIGN_SPEC.html`
-section on the judge and `autotuner/judge/schema.py` define every field. The
+describes the judge's job; `autotuner/judge/schema.py` defines every reply
+field and `autotuner/judge/prompts.py` every briefing field. The
 request files remain afterward, so a reviewer can audit what the judge was
 told and what it answered.
 

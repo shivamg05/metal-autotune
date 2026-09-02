@@ -1,4 +1,4 @@
-"""The fp32 golden evaluator for assoc-changing compares (plan gate 8).
+"""The fp32 golden evaluator for assoc-changing compares (gate 8).
 
 The golden is the region's own recorded ops replayed with float bindings
 promoted to fp32 and quantized ops routed through a substitution table

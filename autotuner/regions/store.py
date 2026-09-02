@@ -1,4 +1,4 @@
-"""Boundary store (plan 5.7): saved region-edge tensors on disk, keyed by
+"""Boundary store: saved region-edge tensors on disk, keyed by
 region fingerprint, workload, and input-set index. Safetensors keys are
 "a<array_id>" against the priced trace's ids; workers stream sets from disk so
 nothing large stays resident between evaluations.

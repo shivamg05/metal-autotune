@@ -1,4 +1,4 @@
-"""M6 numeric core: gate 1 static checks, the gate 5/8 comparison rules and
+"""Gate 1 static checks, the gate 5/8 comparison rules and
 value regimes, and the fp32 golden evaluator for assoc-changing compares.
 
 The golden tests trace tiny inline models with the repo Tracer; the patch

@@ -1,7 +1,7 @@
 """Pinned platform facts from spike_04 (delivery) and spike_05 (module swap).
 
 Bind installs a generated wrapper on the live model by parent setattr and rolls
-back the same way (plan 5.2, 5.3). These tests pin the mlx swap semantics that
+back the same way. These tests pin the mlx swap semantics that
 mechanism relies on, so an mlx upgrade fails here instead of silently breaking
 bind. Behavior only, no timing.
 """

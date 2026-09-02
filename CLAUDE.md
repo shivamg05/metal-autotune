@@ -46,7 +46,7 @@ Three components, kept strictly apart:
 - `autotuner_runtime/`: a separate package that imports nothing from `autotuner`. It holds `apply()`, kernel loading, and the module-swap installer; the wrappers themselves are generated per job, and the harness installs the same generated code it measured, so the thing measured is the thing shipped. It is vendored into every artifact.
 - The judge is stateless per call behind a strict JSON boundary; the queue and verdict log are its only memory. `judge/scripted.py` is a deterministic fake, and all loop/ladder tests run against it. No live-LLM tests.
 
-Dependency direction: `judge/` may import `regions/` types; nothing imports `judge/` except `loop.py`. `sandbox/worker.py` imports only what one evaluation needs.
+Dependency direction: `judge/` may import `regions/` types; nothing imports `judge/` except `loop.py`. `sandbox/worker.py` is the child's entry point; `ladder/child.py` holds the gate bodies and imports only what one evaluation needs.
 
 ## Stack and commands
 

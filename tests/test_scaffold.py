@@ -1,4 +1,4 @@
-"""M7: naive lowering. Fixture regions are lowered to one Metal kernel each,
+"""Naive lowering. Fixture regions are lowered to one Metal kernel each,
 run through autotuner_runtime.kernels.call, and compared against the library
 replay at several traced sizes, including one the lowering never saw.
 
@@ -7,7 +7,7 @@ order bit for bit (elementwise chains via metal::precise::, comparisons, max
 reductions) must match bitwise. Regions containing matmul, rms_norm, or
 sum/mean reductions reassociate the accumulation (serial k loop, threadgroup
 tree), so those compare at fp32 rtol 1e-5 atol 1e-6, the legal internal
-precision bound of plan section 7."""
+precision bound."""
 
 import importlib.util
 from pathlib import Path

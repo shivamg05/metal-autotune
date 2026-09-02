@@ -440,8 +440,9 @@ instance. That implements both halves of the spec's identity rule: 32 copies of 
 per-layer stretch are one region, AND the same sequence firing in two workloads at two
 shapes (the same norm in midbatch and decode) is still one region, priced by its
 combined cost, with one hypothesis history and one wrapper, whose first attempt must
-be one kernel correct everywhere and faster everywhere. Weights count by dtype and
-role, not by value. The fingerprint is a hash of the canonical form. Cross-sweep-size
+be one kernel correct everywhere and faster everywhere. Weights count by role, dtype,
+and shape, never by value: a projection against a different weight shape is a
+different kernel to write, price, and check. The fingerprint is a hash of the canonical form. Cross-sweep-size
 matching (Section 5.6) keys on module addresses instead, because copies at different
 addresses are exactly what the fingerprint must unify.
 
@@ -772,7 +773,8 @@ promotion checks.
 4. **Watchdog** on the first workload. Two mechanisms, not one: the parent enforces a
    generous absolute wall timeout on the whole subprocess (kill-and-relaunch; process
    death is how a wedged GPU recovers on this platform, treat it as routine). Inside
-   the child, the 10x rule compares the kernel's first timed run against a library
+   the child, the watchdog factor (Section 5.12) compares the kernel's first timed run
+   against a library
    region time re-measured in the same process and mode, so validated compares against
    validated.
 5. **Smoke numerics** on the first workload: every output compared under the gate-8
@@ -1014,7 +1016,9 @@ exactly (identity checks on every patched attribute).
 
 ### M4: Regions (`regions/`)
 
-Builder (singletons, chain growth, view absorption, slice-write termination, the four
+Builder (singletons, chain growth, which stops before a matmul-like op that reads
+a matmul's output because a dependent matmul is a second kernel rather than a fused
+one, view absorption, slice-write termination, the four
 rejection rules, per-stretch liveness derivation), fingerprint grouping, the static
 replayability screen assigning each candidate its delivery scope (the "no certified
 delivery scope" rejection lands here; dynamic certification waits for M8), batched

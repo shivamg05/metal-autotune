@@ -2,9 +2,9 @@
 
 Law 4: never subtract two separately timed quantities. Every A/B number here
 comes from one session, alternating ABBA so thermal drift is common-mode.
-Pacing idles land only at block boundaries, followed by ramp-warm samples
-(spike_10), so no timed sample ever starts on ramped-down clocks.
-Sign convention (plan 5.13): positive delta means the candidate is faster.
+Pacing idles land only at block boundaries, followed by ramp-warm samples,
+so no timed sample ever starts on ramped-down clocks. Sign convention:
+positive delta means the candidate is faster.
 """
 
 from __future__ import annotations

@@ -1,4 +1,4 @@
-"""Scaffolds (plan 5.9): the correct starting kernels the harness builds.
+"""Scaffolds: the correct starting kernels the harness builds.
 
 build_scaffold is the one entry point: stitched from the wheel's own Metal
 source when the region is a single library op we can wrap verbatim (library

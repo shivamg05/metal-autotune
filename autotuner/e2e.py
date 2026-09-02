@@ -1,14 +1,14 @@
-"""E2e promotion checks (plan 7.11): the orig-vs-orig floor, patched vs
+"""E2e promotion checks: the orig-vs-orig floor, patched vs
 original on that floor, and the step-time veto.
 
-Both arms live in one process with weights shared by array identity (law 9).
+Both arms live in one process with weights shared by array identity, so memory does not double.
 The baseline arm is a fresh untouched build(); the patched arm is a fresh
 build() with the generated wrappers swapped in. No hooks exist in either arm.
 
 The floor detail the spec leaves loose: a deterministic library gives an
 exactly-zero orig-vs-orig difference, so the allowance is floored by a small
-multiple of the output dtype's epsilon at the observed value scale (the same
-move plan 5.12 makes for the assoc-changing floor). Both knobs are recorded.
+multiple of the output dtype's epsilon at the observed value scale, as the
+assoc-changing floor is. Both knobs are recorded.
 """
 
 from __future__ import annotations
@@ -145,8 +145,8 @@ def run_e2e(
 
 
 def share_weights(donor, receiver) -> int:
-    """Point receiver's parameters at donor's arrays (law 9) and return how
-    many were shared; the caller verifies the count is every parameter."""
+    """Point receiver's parameters at donor's arrays and return how many
+    were shared; the caller verifies the count is every parameter."""
     import mlx.nn as nn
 
     if not isinstance(receiver, nn.Module) or not isinstance(donor, nn.Module):

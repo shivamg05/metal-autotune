@@ -1,4 +1,4 @@
-"""Pool saturation (plan 5.10): the MLX allocator recycles buffers without
+"""Pool saturation: the MLX allocator recycles buffers without
 zeroing, so a computation that reads recycled memory can see stale, plausible
 values. Saturating the pool with NaN-filled buffers of the sizes about to be
 allocated makes that read NaN instead. init_value closes the output-buffer

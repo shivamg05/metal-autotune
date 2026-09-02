@@ -1,5 +1,5 @@
-"""M3: the tracer against the fixture zoo. Each fixture exists to exercise one
-mechanism; the done-when list from the plan's M3 section is the test list.
+"""The tracer against the fixture zoo. Each fixture exists to exercise one
+mechanism.
 
 The patch surface is process-global state, so one module-scoped Tracer serves
 all tests here, and the final test uninstalls and checks exact restoration.

@@ -1,4 +1,4 @@
-"""Trace data model (plan section 4). The recorder fills these; freeze checks them.
+"""Trace data model. The recorder fills these; freeze checks them.
 
 array_id is a stable identity the recorder assigns while it holds every array
 alive for the pass. (module_address, position_in_module) is the install address

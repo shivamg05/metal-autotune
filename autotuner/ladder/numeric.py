@@ -1,4 +1,4 @@
-"""The comparison rules for gates 5 and 8 (plan section 7): assoc-preserving
+"""The comparison rules for gates 5 and 8: assoc-preserving
 tolerance compare floored by the library's own run-to-run wobble, the
 non-finite pattern rule, worst-offender reporting, and the adversarial
 value-regime generators. Tolerance values live with the caller; this module
@@ -15,7 +15,7 @@ import mlx.core as mx
 
 FLOAT_DTYPES = (mx.float16, mx.bfloat16, mx.float32)
 
-# Regime constants (plan gate 5). Non-float inputs pass through unchanged in
+# Regime constants for gate 5. Non-float inputs pass through unchanged in
 # every regime: their values are semantics (indices, masks), not magnitudes.
 SCALE_UP = 1e3
 SCALE_DOWN = 1e-4

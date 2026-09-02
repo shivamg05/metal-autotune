@@ -73,9 +73,10 @@ budget: {per_region: 8, total: 40}
 That is a complete manifest. Optional settings:
 
 - Write a letter instead of a number (`shape: [1, L]`) for a size that varies
-  in real use. Installed code is then tested at several sizes of `L`
-  (`sweep: {L: [1, 13, 50, 4096]}` is the default list), and `primary:
-  {L: 512}` picks the size that gets timed.
+  in real use, and `primary: {L: 512}` picks the size that is traced and
+  timed (default: the largest entry of `sweep`, which is 4096 unless you set
+  it). Checking installed code at the other `sweep` sizes is not wired into a
+  job yet, so a result is proven at the primary size only.
 - `budget` caps improvement attempts per spot and for the whole job (defaults
   25 and 250). Each attempt costs minutes, so this is the run-length dial.
 - `tolerances: {rtol: ..., atol: ...}` changes how exactly outputs must
@@ -109,13 +110,16 @@ Three rules before you press enter:
 
 ## 4. Watch it
 
-The job writes one JSON line per event to `<work-dir>/run.jsonl`. The stages
-arrive in this order:
+The job writes one JSON line per event to `<work-dir>/run.jsonl`, one plain
+line per attempt to `<work-dir>/candidates.log` (time, spot, the idea tried,
+its verdict), every question to the AI and its answer to
+`<work-dir>/judge.jsonl`, and every kernel it checked to `<work-dir>/kernels/`.
+The stages arrive in this order:
 
 | stage | log lines you see | typical time | what is happening |
 |---|---|---|---|
-| load and map | `job`, `model`, `trace`, `regions` | 1-2 min | loads the model twice (weights shared, memory does not double) and finds the spots worth trying |
-| measure | `step_clock`, `peaks`, then quiet until `ranked` | 5-10 min | records reference data, times the untouched model, measures the machine's limits, prices every spot |
+| load and map | `model`, `trace`, `regions` | 1-2 min | loads the model twice (weights shared, memory does not double) and finds the spots worth trying |
+| measure | quiet, then `peaks`, `aa_floor`, `step_clock`, quiet again until `ranked` | 5-10 min | records reference data, measures the machine's limits and its noise, times the untouched model, prices every spot |
 | search | `region_open` ... `region_closed`, one block per spot | minutes per attempt | builds starting code, asks the AI for improvements, verifies each one |
 | finish | `step_clock`, then the summary on stdout | 1-2 min | re-times the model and writes the artifact |
 
@@ -130,7 +134,8 @@ create false ones.
 | situation | what to do |
 |---|---|
 | the job refuses to start | read the message; it names the fix (bad manifest key, model file rule broken, used work dir) |
-| the log shows `env_warning` | the GPU is running far below normal, usually heat; results stay valid but everything is slow; consider stopping, cooling, restarting fresh |
+| the job stops with `job_refused` before searching | the GPU is busy with another process or reading far below normal, usually heat; nothing can be measured honestly; wait for it to go quiet and cool, then start a fresh run |
+| the log shows `env_warning` | the machine's noise is lopsided, or the model's weights could not be shared between its copies; the run continues and its results stay valid, but small wins may go unnoticed |
 | a spot is skipped (`region_skip`, `scaffold_failed`) | normal; the log line names the reason; report it plainly and move on |
 | the AI's replies keep getting discarded (`babble`) | one or two is normal noise; every call failing means a real bug: capture the log and report to the maintainer |
 | the job crashes or hangs | a bug in the tool; capture `run.jsonl` and console output for the maintainer; do not edit the tool and rerun |
@@ -187,7 +192,8 @@ easy to take in.
 | `shipped` | "found a real speedup: outputs identical, measurably faster, now installed" |
 | `e2e_failed`, rolled back | "the speedup did not hold up in the whole model, so it was removed; the model is unchanged" |
 | `region_closed` | "finished with this spot", plus the reason in plain words |
-| `env_warning` | "the machine's GPU is running far below normal, likely heat; results stay valid but everything will be slow" |
+| `job_refused` | "the machine cannot measure honestly right now (busy or overheated), so the run stopped before starting; try again once it is idle and cool" |
+| `env_warning` | "the machine is noisier than usual, so a small speedup might go unnoticed; the results are still valid" |
 
 A check-in while it runs is one or two sentences: which stage, what that
 means, roughly when something changes. The final report is three parts: what

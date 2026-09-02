@@ -58,7 +58,7 @@ _BITS = {"float16": mx.uint16, "bfloat16": mx.uint16, "float32": mx.uint32}
 
 def _probe_offset(kspec: KernelSpec, inputs: list[mx.array]) -> int | None:
     """The compile-error line offset is per kernel: it counts utils.h plus the
-    generated signature, which grows with the IO list (PLATFORM.md spike_06).
+    generated signature, which grows with the IO list.
     Measure it by compiling this kernel's body behind a deliberate #error on
     body line 1; the reported line minus one is the offset. Prepending a line
     changes nothing the signature generator scans for."""
@@ -153,7 +153,7 @@ def evaluate_ladder(spec: LadderSpec) -> Verdict:
     saturate_pool(a.nbytes for refs in prim_refs for a in refs)
 
     # gate 2, compile: the poisoned probe eval builds the pipeline; a broken
-    # build surfaces only here (plan 5.10). Its outputs feed gate 3.
+    # build surfaces only here. Its outputs feed gate 3.
     outs0: list[mx.array] = []
 
     def probe() -> list[mx.array]:
@@ -351,7 +351,7 @@ def evaluate_ladder(spec: LadderSpec) -> Verdict:
             if a.ndim >= 2:
                 # logically identical, non-contiguous: the raw buffer holds the
                 # transposed layout, so flat indexing under
-                # ensure_row_contiguous=False reads the wrong order (spike_06)
+                # ensure_row_contiguous=False reads the wrong order
                 variant[i] = mx.transpose(mx.contiguous(mx.transpose(a)))
                 has_matrix = True
             else:

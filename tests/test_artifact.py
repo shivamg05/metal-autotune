@@ -1,4 +1,4 @@
-"""M11 core: the artifact loads in a fresh process with no harness import and
+"""The artifact loads in a fresh process with no harness import and
 reproduces the patched model's outputs."""
 
 import importlib.util

@@ -1,4 +1,4 @@
-"""The strict JSON boundary between harness and judge (plan 5.11, section 10).
+"""The strict JSON boundary between harness and judge.
 
 Everything the judge sends crosses validate_response, which rejects anything
 malformed with a reason. The schema is also enforcement by omission: kernel
@@ -18,7 +18,7 @@ from autotuner_runtime.kernels import _DTYPES
 KINDS = ("on-chip", "specialize", "retile", "re-layout", "algorithm", "launch", "fix")
 ASSOC_TAGS = ("preserving", "changing")
 CONDITIONS = ("correct", "shipped", "failed")
-# verdict outcomes the queue's conditions read (plan section 4)
+# verdict outcomes the queue's conditions read
 OUTCOMES = ("failed", "correct_slower", "tentative_ship", "shipped", "rolled_back")
 
 _DTYPE_NAMES = frozenset(_DTYPES)  # one source of truth with the kernel call site

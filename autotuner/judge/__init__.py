@@ -1,4 +1,4 @@
-"""The judge: an LLM behind a strict JSON boundary (plan 5.11, section 10).
+"""The judge: an LLM behind a strict JSON boundary.
 
 Metadata in, hypotheses and one kernel edit out. The queue and verdict log
 are its only memory. The real client lives in judge.client; loop and ladder

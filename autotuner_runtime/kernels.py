@@ -1,4 +1,4 @@
-"""Kernel loading and the one call site (plan 5.10).
+"""Kernel loading and the one call site.
 
 A KernelSpec is everything needed to rebuild and launch an mx.fast.metal_kernel
 from serialized form: source body, header, IO names, launch expressions in the

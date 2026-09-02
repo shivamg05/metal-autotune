@@ -1,4 +1,4 @@
-"""The Anthropic API client behind the judge interface (plan 5.11).
+"""The Anthropic API client behind the judge interface.
 
 Strict JSON in and out: every response goes through schema.validate_response;
 a malformed one gets exactly one re-ask carrying the rejection reason, and a

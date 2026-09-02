@@ -1,4 +1,4 @@
-"""M10: the whole job end to end with the scripted judge.
+"""The whole job end to end with the scripted judge.
 
 The planted-win run must find the unfused chain, ship the scripted fused
 kernel through bind and e2e, close by rule, and leave a working artifact. The
@@ -95,7 +95,7 @@ def test_planted_win_job_ships(tmp_path):
     report = runner.run()
 
     # the judge edits a named parent, so every next call must carry the
-    # lineage sources and the head id (the 2026-08-31 run starved this),
+    # lineage sources and the head id (a live run starved this),
     # plus its only memory: the queue, the verdicts, and the executing item
     assert next_payloads
     for meta in next_payloads:

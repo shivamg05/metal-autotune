@@ -1,5 +1,4 @@
-"""Pricing (spec "Pricing and ranking", plan 5.7): boundary capture, the
-region clock, shares, the floor.
+"""Pricing: boundary capture, the region clock, shares, the floor.
 
 Capture is a recorded pass with retention: re-run the model on the workload
 tensors, align the new pass node-for-node with the priced trace (fixed inputs
@@ -169,8 +168,8 @@ def region_share(
     """The region's cost as a fraction of one step, from a paired interleaved
     comparison against the step itself.
 
-    A share is a ratio, so law 4 governs it: dividing a region clock by a step
-    clock taken minutes earlier reports whatever the machine did in between. On
+    A share is a ratio, and dividing a region clock by a step clock taken
+    minutes earlier reports whatever the machine did in between. On
     the 8B decode run that produced shares summing to 586 ms against a 52 ms
     step, and the same region priced 44.9 ms in one run and 91.5 ms in the next.
     """

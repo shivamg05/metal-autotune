@@ -1,4 +1,4 @@
-"""M2: manifest parsing, validation, defaults, and the build() probe."""
+"""Manifest parsing, validation, defaults, and the build() probe."""
 
 import textwrap
 

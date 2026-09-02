@@ -1,4 +1,4 @@
-"""M9: the judge. Schema boundary, queue mechanics, family bookkeeping,
+"""The judge. Schema boundary, queue mechanics, family bookkeeping,
 prompt rendering, the scripted judge, and the real client's re-ask path
 (mocked transport; the live test runs only under ANTHROPIC_LIVE_TEST=1)."""
 
@@ -580,7 +580,7 @@ def _plain_item(i, depends_on=None, condition=None):
 
 
 def test_in_flight_id_stays_taken():
-    """The 2026-08-31 crash: an item was popped for execution, the judge
+    """A crash seen live: an item was popped for execution, the judge
     re-proposed its id, the duplicate was accepted, and the verdict raised.
     A popped id must stay taken until its verdict lands."""
     from autotuner.judge.schema import InsertItem
@@ -610,7 +610,7 @@ def test_new_item_may_depend_on_the_in_flight_item():
 
 def test_parser_exhaustion_is_rejected_not_fatal():
     """Schema-valid content that exhausts a parser's stack must become a
-    normal rejection, never an uncaught RecursionError (audit finding F2)."""
+    normal rejection, never an uncaught RecursionError."""
     from autotuner.judge.client import JsonJudge
     from autotuner.judge.schema import JudgeBabble
     from autotuner_runtime.grammar import Expr, GrammarError
@@ -628,7 +628,7 @@ def test_parser_exhaustion_is_rejected_not_fatal():
 
 def test_delete_that_strands_dependents_is_rejected():
     """Deleting an item that queued items depend on would leave them
-    unsatisfiable forever with a false close reason (audit finding F4)."""
+    unsatisfiable forever with a false close reason."""
     from autotuner.judge.schema import DeleteItem
 
     q = Queue()

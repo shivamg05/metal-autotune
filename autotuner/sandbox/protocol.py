@@ -1,9 +1,9 @@
-"""Sandbox protocol (plan section 8): the JSON job spec and verdict, plus the
+"""Sandbox protocol: the JSON job spec and verdict, plus the
 parent side that spawns one worker per evaluation.
 
 Metal reads MTL_SHADER_VALIDATION and MTL_CAPTURE_ENABLED at process launch,
-so a mode is an environment set at spawn, never toggled in-process
-(PLATFORM.md spike_07). Validation alone reports only to os_log, so validate
+so a mode is an environment set at spawn, never toggled in-process.
+Validation alone reports only to os_log, so validate
 mode also sets MTL_SHADER_VALIDATION_REPORT_TO_STDERR=1 and the parent scans
 child stderr for "Invalid device load"/"Invalid device store" lines.
 
@@ -22,11 +22,10 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 
-# Spec-fixed (plan 5.12), never configurable: a timed run past this multiple
-# of the library region time fails the child-side watchdog. Raised from 10x
-# by maintainer decision 2026-08-31: correct starting kernels for fused-op
-# chains legitimately sit near 10x, and this gate exists to catch wedged
-# kernels, not honest slowness (the ship margin still owns speed).
+# Never configurable: a timed run past this multiple of the library region
+# time fails the child-side watchdog. The gate exists to catch wedged kernels,
+# not honest slowness (the ship margin owns speed), and correct starting
+# kernels for fused-op chains sit near 10x, so the factor is 20.
 WATCHDOG_FACTOR = 20.0
 
 _METAL_ENV = (
@@ -210,7 +209,7 @@ def _parse_verdict(stdout: str) -> Verdict | None:
 
 def _merge_validation(verdict: Verdict, stderr: str) -> None:
     """Validation reporting is asynchronous, so the check runs after the child
-    exits: scan its stderr for the shader-validation lines (spike_07) and put
+    exits: scan its stderr for the shader-validation lines and put
     the evidence in the verdict detail for the ladder to act on."""
     matched = [l for l in stderr.splitlines() if any(s in l for s in _VALIDATION_SIGNALS)]
     if not matched:

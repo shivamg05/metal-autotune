@@ -32,7 +32,7 @@ class Peaks:
 
 # floors no Apple-Silicon GPU plausibly sits under (same bounds as the pinned
 # physics test); readings below them mean a degraded machine, not a slow chip
-# (seen live: work-2026-08-31-halted, a 10x-degraded GPU within one boot)
+# (seen live: a GPU reading 10x below its own healthy figure within one boot)
 PLAUSIBLE_MIN_GBPS = 30.0
 PLAUSIBLE_MIN_FP32_GFLOPS = 500.0
 

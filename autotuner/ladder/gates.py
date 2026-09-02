@@ -1,4 +1,4 @@
-"""The ladder, orchestrated (spec "The ladder, in order", plan section 7).
+"""The ladder, orchestrated.
 
 Gate 1 (static checks) runs in-parent with no subprocess. Gates 2-8 run in ONE
 validate-mode child (shader validation on, stderr parsed for invalid access
@@ -42,7 +42,7 @@ class LadderJob:
     only the harness-to-harness sandbox boundary. The wobble floor for the
     preserving compare is computed in-child (two library replays of the span,
     max_abs_diff); changing_floor None means the child computes the k-set
-    spread floor (plan 5.12). min_win_ms is the absolute term of the ship
+    spread floor. min_win_ms is the absolute term of the ship
     margin with the region's copies already folded in by the caller."""
 
     kernel: KernelSpec

@@ -1,4 +1,4 @@
-"""Executable controls (law 12): the A/A null and the bit-identical slowdown.
+"""Executable controls: the A/A null and the bit-identical slowdown.
 
 The A/A null must not ship; the planted slowdown must be detected. Both run
 against the same public clocks the real harness uses, and the A/A null runs at

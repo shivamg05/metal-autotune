@@ -1,4 +1,4 @@
-"""M6: the complete ladder. Every cheat in the zoo climbs the full ladder and
+"""The complete ladder. Every cheat in the zoo climbs the full ladder and
 must die at its intended gate; the positive controls prove correct kernels get
 honest verdicts (correct_slower with numbers, tentative_ship for a planted
 win). Eval sets are built with the repo's real Tracer, capture_boundaries,

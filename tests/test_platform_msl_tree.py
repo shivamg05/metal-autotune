@@ -1,7 +1,7 @@
 """Pinned platform facts from spike_08 (shipped MSL and the include flattener).
 
 Behavior pins only, no timing. Each test names the design argument it protects,
-so an mlx upgrade that breaks the scaffold stitcher (plan 5.9/5.10) fails loudly.
+so an mlx upgrade that breaks the scaffold stitcher fails loudly.
 """
 
 import pathlib
@@ -49,8 +49,8 @@ def flatten(rel, seen):
 
 
 def test_wheel_ships_msl_kernel_tree():
-    """Design argument: scaffolds stitch from MLX's shipped MSL sources (plan
-    5.9). If the wheel stops shipping the kernel tree, stitching loses its
+    """Design argument: scaffolds stitch from MLX's shipped MSL sources. If
+    the wheel stops shipping the kernel tree, stitching loses its
     source and every scaffold silently degrades to naive lowering."""
     assert KERNELS.is_dir(), f"{KERNELS} missing from the installed wheel"
     for rel in ["steel/gemm/gemm.h", "sdpa_vector.h", "quantized.h", "utils.h"]:
@@ -58,8 +58,8 @@ def test_wheel_ships_msl_kernel_tree():
 
 
 def test_utils_prelude_auto_prepended():
-    """Design argument: metal_kernel prepends utils.h to every kernel (plan
-    5.10), so stitched source may use its symbols bare and the flattener must
+    """Design argument: metal_kernel prepends utils.h to every kernel, so
+    stitched source may use its symbols bare and the flattener must
     treat utils.h as already present."""
     out = run_kernel(
         "pin08_prelude",

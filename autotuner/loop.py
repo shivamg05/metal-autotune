@@ -50,7 +50,7 @@ from .trace.types import Trace
 from .workload import materialize, workload_seeds
 from autotuner_runtime.kernels import KernelSpec
 
-MIN_WIN_MS = 0.030  # plan 5.12: a few tens of microseconds per step across copies
+MIN_WIN_MS = 0.030  # a win must save a few tens of microseconds per step across copies
 CLOCK_PAIRS = 32    # ABBA pairs behind the ship clock and the headline
 STALE_LIMIT = 6
 FAIL_STREAK_LIMIT = 5
@@ -337,7 +337,7 @@ class JobRunner:
             k = self.store.set_count(region.fingerprint, m.workload)
             if region.t_orig_ms.get(m.workload) is None:
                 # open_region screens this; backstop so it can never reach
-                # ladder validation as a bare None (audit finding 4)
+                # ladder validation as a bare None
                 raise RuntimeError(f"region eval set unpriced for workload {m.workload!r}")
             sets.append(EvalSet(
                 label=m.workload,
@@ -785,8 +785,7 @@ class JobRunner:
 
         def unwind():
             """Every failure path must leave the model, the artifact record,
-            and the patch surface exactly as before this attempt (the
-            2026-08-31 audit found all three could be left corrupted)."""
+            and the patch surface exactly as before this attempt."""
             for path, occupant in reversed(installed_now):
                 try:
                     swap_uninstall(self.model, path, occupant)
@@ -967,7 +966,7 @@ class JobRunner:
             self.candidates.append(_region_line(region, "closed", run))
             self.report.write(self.work_dir / "report.json")  # a crash still leaves the story so far
 
-        # The job's headline number is a ratio, so law 4 applies to it too: the
+        # The headline is a ratio of two clocks taken together: the
         # untouched model is re-measured here, interleaved with the patched one,
         # never subtracted from the job-start clock taken on a different machine
         # state. "before" stays in the report as the job-start observation it is.
@@ -1183,7 +1182,8 @@ _ENVELOPE_KEYS = frozenset({"rtol", "atol", "tolerance", "kappa", "floor",
 
 def _safe_detail(detail: dict | None) -> dict:
     """Judge-visible gate detail: distances like max_excess only, never the
-    acceptance envelope (hard law; plan section 10 permits the excess alone)."""
+    acceptance envelope. The judge may learn how far a check missed, never
+    where the line is."""
     def strip(value):
         if isinstance(value, dict):
             return {k: strip(v) for k, v in value.items() if k not in _ENVELOPE_KEYS}

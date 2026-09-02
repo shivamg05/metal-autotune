@@ -1,4 +1,4 @@
-"""M2: seeded workload materialization. Determinism is the load-bearing property."""
+"""Seeded workload materialization. Determinism is the load-bearing property."""
 
 import hashlib
 import subprocess
@@ -64,8 +64,8 @@ def _digest(tensors):
 
 
 def test_materialize_byte_identical_across_processes():
-    """M2 done-when: same manifest and seed materialize byte-identical tensors
-    in two processes."""
+    """The same manifest and seed materialize byte-identical tensors in two
+    processes."""
     w = Workload(inputs=(spec([32, 64]), spec([4, "L"], "int32")), name="w")
     here = _digest(materialize(w, {"L": 13}, seed=1234))
     child_src = textwrap.dedent("""

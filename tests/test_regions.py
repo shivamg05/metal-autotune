@@ -1,4 +1,4 @@
-"""M4: region building, fingerprints, pricing, roofline, ranking, sweep.
+"""Region building, fingerprints, pricing, roofline, ranking, sweep.
 
 Candidate sets are checked against hand-derived expectations per fixture; the
 pricing tests use the real region clock on the real GPU.
@@ -295,7 +295,7 @@ def test_capture_aborts_on_nondeterministic_model():
 
 def test_sweep_span_resolves_at_other_size():
     """A region priced at one size resolves and replays at another via its
-    sweep instance (plan 5.6)."""
+    sweep instance."""
     model = load_fixture("repeated_layers")
     tr = tracer()
     x512 = mx.random.normal((512, 16), key=mx.random.key(2))

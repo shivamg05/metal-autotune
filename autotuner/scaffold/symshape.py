@@ -1,4 +1,4 @@
-"""Symbolic shapes for naive lowering (plan 5.9).
+"""Symbolic shapes for naive lowering.
 
 A Dim is one array dimension carrying its concrete value at every traced
 instance plus two renderings: launch-grammar text for the host side and a

@@ -1,4 +1,4 @@
-"""Record mode: node capture, array identity, module addressing (plan 5.1).
+"""Record mode: node capture, array identity, module addressing.
 
 The recorder holds a strong reference to every array it sees, so id() is a
 sound identity for the whole pass. Mutation (x[i] = v, an in-place dunder

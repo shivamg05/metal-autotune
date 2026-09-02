@@ -1,4 +1,4 @@
-"""Stitched scaffolds (plan 5.9, PLATFORM.md spike_08): build the correct
+"""Stitched scaffolds: build the correct
 starting kernel from the Metal source the installed mlx wheel ships, for ops
 the naive lowerer cannot emit.
 
@@ -11,8 +11,7 @@ own, verbatim. flatten_header inlines a root header's repo-relative includes
 into one self-contained string, because metal_kernel resolves no nested
 includes; it skips the utils.h prelude metal_kernel auto-prepends (re-inlining
 it redefines its symbols) and ends with a newline (a header ending in a line
-comment otherwise swallows the generated signature). Both traps are measured
-in spike_08.
+comment otherwise swallows the generated signature).
 
 stitch_quantized_matmul covers mx.quantized_matmul(x, w, scales, biases,
 transpose=True) for affine quantization. K and N are read at run time from

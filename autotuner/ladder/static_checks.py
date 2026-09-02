@@ -1,5 +1,5 @@
-"""Gate 1: static checks on a KernelSpec against the region's IO contract
-(plan section 7). No GPU work runs here.
+"""Gate 1: static checks on a KernelSpec against the region's IO contract.
+No GPU work runs here.
 
 Tolerance secrecy is structural: the contract carries names, ranks, dtypes,
 and liveness only, so this module cannot see or leak tolerance values.
@@ -18,8 +18,8 @@ from dataclasses import dataclass
 from autotuner_runtime.grammar import Expr, GrammarError
 from autotuner_runtime.kernels import _DTYPES, KernelSpec
 
-# spike_04: the kernel name is pasted into the generated signature; a bad name
-# fails only at probe eval, so it is gated here.
+# The kernel name is pasted into the generated signature; a bad name fails
+# only at probe eval, so it is gated here.
 _C_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _TEMPLATE_INPUT_REF = re.compile(r"^in\d+$")
 

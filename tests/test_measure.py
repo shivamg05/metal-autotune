@@ -1,4 +1,4 @@
-"""M1: the measurement kit. Timing tests use real GPU work and modest sample
+"""The measurement kit. Timing tests use real GPU work and modest sample
 counts; assertions are on paired quantities so machine load cannot flip them.
 """
 
@@ -18,7 +18,7 @@ def session():
 
 def require_quiet_machine():
     """Some assertions here are about chip physics and the session floor; a
-    machine busy with other work cannot measure either (laws 1, 8, 11). The
+    machine busy with other work cannot measure either. The
     paired design survives load, but a 3% planted signal does not clear a
     contention-inflated floor, and a starved bandwidth run is not a peak.
     Thermal throttle is the same problem at zero load, so both gates apply."""
@@ -114,7 +114,7 @@ def test_injected_slowdown_is_bit_identical():
 
 
 def test_injected_slowdown_is_detected(session):
-    """M1 done-when: a known ~3% planted slowdown is caught by the paired
+    """A known ~3% planted slowdown is caught by the paired
     comparison while outputs stay bit-identical."""
     require_quiet_machine()
     base = synthetic_workload(depth=33, seed=5)
@@ -146,8 +146,8 @@ def test_peaks_are_physically_sane(session):
 
 
 def test_implausible_peaks_are_named():
-    """The degraded-machine guard (seen live: work-2026-08-31-halted, a GPU at
-    a tenth of its known speed within one boot session)."""
+    """The degraded-machine guard (seen live: a GPU at a tenth of its known
+    speed within one boot session)."""
     from autotuner.measure.peaks import Peaks, implausible
 
     healthy = Peaks(bandwidth_gbps=92.8, flops_gflops={"float32": 2800.0}, launch_us=6.0)

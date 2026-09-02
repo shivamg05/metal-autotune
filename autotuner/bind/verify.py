@@ -1,5 +1,4 @@
-"""Literal retrace verification (plan 7.10). With replay-wrapper delivery the
-spec's check is checkable directly: after a bind, a record-mode retrace of the
+"""Literal retrace verification: after a bind, a record-mode retrace of the
 patched model must show the cut's member ops gone, one custom-kernel node per
 copy consuming the cut's inputs and feeding its downstream consumers, and the
 stream elsewhere unchanged.

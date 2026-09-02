@@ -68,8 +68,8 @@ def freeze(
     for arr in produced_by:
         consumed = tuple(sorted(consumers.get(arr, ())))
         # Retained wins over everything: a kept reference is unswappable no
-        # matter who else reads the value (plan 5.1, disagreement resolves
-        # toward retained). Step-output-ness stays visible via trace.step_outputs.
+        # matter who else reads the value. Step-output-ness stays visible via
+        # trace.step_outputs.
         if arr in retained:
             kind = Retention.PYTHON_RETAINED
         elif arr in step_output_set:

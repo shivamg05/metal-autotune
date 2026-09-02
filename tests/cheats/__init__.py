@@ -1,4 +1,4 @@
-"""The cheat zoo (plan section 12): bad kernels, each built to die at ONE
+"""The cheat zoo: bad kernels, each built to die at ONE
 ladder gate. The harness's job is rejecting bad kernels, so its tests are
 these. Builders return (KernelSpec, description); tests/test_ladder_gates.py
 runs each up the full ladder and asserts the intended gate catches it.

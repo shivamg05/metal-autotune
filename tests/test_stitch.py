@@ -467,7 +467,7 @@ def test_chain_timing_within_3x_of_library():
 
     mx.eval(stitched(), library())  # warm and compile both
     ts, tl = [], []
-    for _ in range(12):  # paired and interleaved (plan 6); short for the fanless chip
+    for _ in range(12):  # paired and interleaved; short for the fanless chip
         mx.synchronize()
         t0 = time.perf_counter()
         mx.eval(stitched())

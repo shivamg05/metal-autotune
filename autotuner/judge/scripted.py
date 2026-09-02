@@ -1,4 +1,4 @@
-"""Deterministic fake judge (plan 5.11). All loop and ladder tests run against
+"""Deterministic fake judge. All loop and ladder tests run against
 this; no test depends on a live LLM.
 
 A script is a list of raw response payloads consumed one per call, each pushed

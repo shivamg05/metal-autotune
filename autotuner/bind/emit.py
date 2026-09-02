@@ -1,4 +1,4 @@
-"""Wrapper generation (plan 5.2): readable Python whose __call__ replays the
+"""Wrapper generation: readable Python whose __call__ replays the
 scope's recorded op stream with shipped cuts replaced by kernel calls.
 
 Generated source calls ops by live mx attribute lookup and operators, so

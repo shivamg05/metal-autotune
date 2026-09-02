@@ -1,6 +1,6 @@
 """TraceNode serialization: nodes cross the sandbox boundary as JSON so a
-patch-free worker can replay a region span from the spec alone (plan section
-8: nothing is pickled, no state is shared)."""
+patch-free worker can replay a region span from the spec alone: nothing is
+pickled, no state is shared."""
 
 from __future__ import annotations
 

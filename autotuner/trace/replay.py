@@ -1,4 +1,4 @@
-"""Replay: re-execute a recorded node sequence (plan 5.4).
+"""Replay: re-execute a recorded node sequence.
 
 Four consumers share this one module: region-clock pricing, the fp32 golden,
 sweep reference generation, and the wrapper generator (which emits the same op

@@ -1,5 +1,5 @@
-"""Pins from spike_03_weakref_retention (PLATFORM.md): the liveness facts plan 5.1
-builds retention detection on. If an mlx upgrade breaks any of these, freeze-time
+"""Pins from spike_03_weakref_retention (PLATFORM.md): the liveness facts
+retention detection is built on. If an mlx upgrade breaks any of these, freeze-time
 liveness classification (consumed vs python_retained) silently misclassifies arrays,
 so these tests must fail loudly instead.
 """
@@ -45,7 +45,7 @@ def walk_arrays(root):
 
 
 def test_weakref_accepted_and_lazy_array_dies():
-    """Protects plan 5.1's GC probe: retention is detected by dropping the
+    """Protects the GC probe: retention is detected by dropping the
     recorder's references and probing weakrefs, so mx.array must accept
     weakref.ref and a lazy (never evaluated) array must die after del+gc."""
     a = mx.random.normal((8, 8))

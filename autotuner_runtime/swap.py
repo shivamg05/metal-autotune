@@ -1,5 +1,5 @@
 """Module swap: resolve scope addresses on a live model, install and uninstall
-wrapper instances (plan 5.3).
+wrapper instances.
 
 Addresses are dot paths for serialization only; the swap always happens on
 live instances by parent attribute assignment (or container index assignment

@@ -1,9 +1,8 @@
 """Measurement session: the timing recipe, duty-cycle pacing, warm-until-stable.
 
-Plan section 6 laws 2, 3, and 6 live here as invariants, with two M0 spike
-refinements baked in (spike_10): pacing is chunk-granular, and after every
-pacing idle the GPU runs at ramped-down clocks, so each new chunk takes
-unmeasured ramp-warm samples before anything is timed. Timing a sample right
+Pacing is chunk-granular, and after every pacing idle the GPU runs at
+ramped-down clocks, so each new chunk takes unmeasured ramp-warm samples
+before anything is timed. Timing a sample right
 after an idle reads 1.5-1.6x slow and would bias whichever arm ran first.
 """
 
@@ -23,12 +22,12 @@ MAX_CHUNK_WORK_S = 0.25
 RAMP_WARM_SAMPLES = 2
 RAMP_WARM_S = 0.05  # this much GPU work brings the clocks back up after an idle
 WARM_STABLE_RTOL = 0.01
-WARM_STABLE_ABS_S = 100e-6  # spike_10: 1% of a ~1ms kernel is under dispatch jitter
+WARM_STABLE_ABS_S = 100e-6  # 1% of a ~1ms kernel is under dispatch jitter
 WARM_CAP = 30
 
 
 def time_once(fn: Callable[[], object]) -> float:
-    """The one timing recipe (law 6): synchronize, run, eval outputs, synchronize.
+    """The one timing recipe: synchronize, run, eval outputs, synchronize.
 
     fn returns its outputs (an array or a tree of arrays); evaluating them here
     is what defeats laziness for whatever fn computed.
@@ -81,7 +80,7 @@ class Session:
     def fresh_chunk(self, fns: Sequence[Callable[[], object]]) -> None:
         """Call before a block of timed samples of fns. Pays pacing debt when a
         chunk's worth has accrued, then ramp-warms with unmeasured samples so
-        the block never starts on ramped-down clocks (spike_10 pacing-clock-ramp)."""
+        the block never starts on ramped-down clocks."""
         if self._debt_s < self.max_chunk_work_s:
             return
         idle = self.duty_idle_factor * self._debt_s
@@ -116,7 +115,7 @@ class Session:
         """Law 3: first call thrown away (Metal compile), then repeat until two
         consecutive timings agree within max(rtol, abs floor). The absolute
         floor exists because 1% of a small kernel is under dispatch jitter
-        (spike_10 warm-until-stable). Returns the kept warmup timings."""
+        Returns the kept warmup timings."""
         self.timed(fn)
         times: list[float] = []
         for _ in range(cap):

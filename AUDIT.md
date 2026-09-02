@@ -309,7 +309,7 @@ names, in this order.
       tracer fixture.
 - [x] 10. Leanness: dead code out, duplicate helpers folded, gate bodies in
       the ladder package, the loop split by stage.
-- [ ] 11. Writing: comments and docstrings without citations; the operator
+- [x] 11. Writing: comments and docstrings without citations; the operator
       guide, the agent guide, the ledgers, and the plan brought back in line.
 - [ ] 12. Remaining spec gaps, in this order as time allows: the shape sweep
       inside a job, the plain-versus-compiled baseline, the reordered-math

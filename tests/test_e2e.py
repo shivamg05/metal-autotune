@@ -1,4 +1,4 @@
-"""M8: e2e floor, patched-vs-original, weight sharing, and the step veto."""
+"""The e2e floor, patched-vs-original, weight sharing, and the step veto."""
 
 import importlib.util
 from pathlib import Path

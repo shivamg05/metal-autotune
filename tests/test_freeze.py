@@ -1,4 +1,4 @@
-"""M3 groundwork: freeze semantics on synthetic call lists, no GPU."""
+"""Freeze semantics on synthetic call lists, no GPU."""
 
 import pytest
 

@@ -66,8 +66,7 @@ def test_oob_read_without_validation_is_silent_zeros():
 
 def test_validation_with_stderr_report_at_launch_flags_oob_read():
     """Protects: validate mode is BOTH env vars at subprocess launch plus
-    parsing child stderr for 'Invalid device load' (spike_07 amends plan
-    section 8: MTL_SHADER_VALIDATION=1 alone gives no detectable signal).
+    parsing child stderr for 'Invalid device load' (spike_07).
     Validation zerofills and never faults, so exit codes carry no signal.
     """
     p = run_oob_child(extra_env={
@@ -140,7 +139,8 @@ def test_compiled_callable_is_stale_after_module_swap():
 
 
 def test_recompiling_same_function_object_stays_stale_while_old_alive():
-    """Protects: law 10's remedy must be stronger than 'call mx.compile again'.
+    """Protects: the fresh-callable rule after a swap must be stronger than
+    'call mx.compile again'.
     The compile cache is keyed on function object identity and kept while any
     old compiled object is alive, so recompiling step returns the stale graph.
     """

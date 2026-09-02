@@ -1,4 +1,4 @@
-"""The static replayability screen and identity certification (plan 5.2).
+"""The static replayability screen and identity certification.
 
 The screen is content-monotone: anything disqualifying inside the smallest
 enclosing scope is inside every ancestor too, so one check at the region's own

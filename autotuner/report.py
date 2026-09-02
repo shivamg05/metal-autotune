@@ -1,7 +1,6 @@
 """report.json: everything a reader needs to trust or reproduce the job.
 
-Per the spec's artifact block plus plan 5.12/5.13: per-region and
-per-hypothesis rows, the step clocks before and after, the baseline choice,
+It holds per-region and per-hypothesis rows, the step clocks before and after, the baseline choice,
 every defaulted or tuned constant actually used, pinned versions, seeds, the
 relevant environment variables, and the sign convention statement itself.
 """

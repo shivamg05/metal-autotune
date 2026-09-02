@@ -1,6 +1,6 @@
 """The op name table: op name <-> callable, built by importing mx.
 
-Both the patch installer and replay consume this one table (plan 5.4), so
+Both the patch installer and replay consume this one table, so
 replayed-in-process and generated-as-source share one semantics, and replay
 works in a patch-free subprocess. Names look like "mx.add", "mx.fast.rms_norm",
 "array.__add__", "array.reshape".
@@ -37,7 +37,7 @@ MUTATING_METHODS = frozenset({
     "__ior__", "__ixor__", "__ilshift__", "__irshift__",
 })
 
-# The array surface (spike_01 inventory): every present dunder plus the public
+# The array surface: every present dunder plus the public
 # array-returning methods. Non-existent reflected dunders raise unpatched too,
 # so they are not holes.
 ARRAY_DUNDERS = (

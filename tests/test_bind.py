@@ -1,4 +1,4 @@
-"""M8 core: generated replay wrappers, identity certification, the literal
+"""Generated replay wrappers, identity certification, the literal
 retrace check, shape fallback, and rollback, on real fixtures."""
 
 import importlib.util

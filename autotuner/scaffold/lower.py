@@ -1,4 +1,4 @@
-"""Naive lowering (plan 5.9, milestone M7): one correct Metal kernel per region.
+"""Naive lowering: one correct Metal kernel per region.
 
 lower_naive turns a region stretch into a KernelSpec that runs the recorded
 ops back to back, correctness first. Each compute node becomes a stage that
@@ -17,9 +17,9 @@ serial across rows. The ladder, not this module, decides whether it is fast.
 
 Launch sizes and output shapes are launch-grammar expressions over the
 boundary inputs; a dim bakes as a literal only when it is constant across
-every provided instance. fp16/bf16 stages accumulate in float (legal internal
-precision, plan section 7); transcendentals use metal::precise:: so they
-match library bits (PLATFORM.md spike_04).
+every provided instance. fp16/bf16 stages accumulate in float (a legal
+internal precision); transcendentals use metal::precise:: so they match
+library bits.
 """
 
 from __future__ import annotations

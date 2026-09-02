@@ -1,4 +1,4 @@
-"""The launch grammar (plan 5.8): grid, threadgroup, output shapes, and
+"""The launch grammar: grid, threadgroup, output shapes, and
 fallback predicates are expressions over the call's shape environment,
 evaluated fresh at every call so one kernel launches correctly at every size.
 
