@@ -1,8 +1,8 @@
-model: llama8b.py
+model: models/llama8b_decode.py
 workloads:
-  - name: prefill
+  - name: decode
     inputs:
-      - shape: [1, 512]
+      - shape: [1, 1]
         dtype: int32
         low: 0
         high: 128000

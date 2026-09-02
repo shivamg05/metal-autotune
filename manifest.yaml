@@ -1,9 +1,10 @@
-model: llama8b_decode.py
+model: models/qwen3_0.6b_decode.py
 workloads:
   - name: decode
     inputs:
       - shape: [1, 1]
         dtype: int32
         low: 0
-        high: 128000
+        high: 151936    # Qwen3's vocabulary size
+baseline: compiled      # "faster" is measured against the model under mx.compile
 budget: {per_region: 8, total: 40}

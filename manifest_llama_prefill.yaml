@@ -1,0 +1,9 @@
+model: models/llama8b.py
+workloads:
+  - name: prefill
+    inputs:
+      - shape: [1, 512]
+        dtype: int32
+        low: 0
+        high: 128000
+budget: {per_region: 8, total: 40}
