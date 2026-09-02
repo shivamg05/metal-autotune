@@ -109,6 +109,11 @@ class JobRunner:
         self.sweep_spans: dict[tuple[str, str], Stretch] = {}
         self.step_ms: dict[str, float] = {}
         self.peaks = None  # measured by measure_machine before any clock
+        # read before this process has done anything on the GPU: the counter
+        # trails by seconds, so a reading taken after the model loads reports
+        # the job's own work as another process (seen live: 81 to 89% on an
+        # idle laptop, 0 one sample later)
+        self.gpu_busy_at_start = gpu_utilization()
         self.total_hypotheses = 0
         self.lessons: list[dict] = []  # what the judge wrote down for later regions
         self.installed: dict[str, tuple] = {}  # scope -> (original module, splices, kernels)
@@ -386,7 +391,7 @@ class JobRunner:
         in one window, so another process on the GPU or a throttled chip
         hides small wins and skews the absolute figures (the room line, the
         peaks) without ever creating a false ship; the operator is told."""
-        busy = gpu_utilization()
+        busy = self.gpu_busy_at_start
         self.report.session["gpu_utilization_at_start_pct"] = busy
         if busy is not None and busy > BUSY_GPU_PERCENT:
             self._env_warning(f"the GPU is {busy:.0f}% busy before this job has issued any work; "
@@ -1044,6 +1049,7 @@ class JobRunner:
             budget_per_region=self.manifest.budget_per_region,
             budget_total=self.manifest.budget_total,
             defaulted=list(self.manifest.defaulted),
+            gpu_utilization_pct=self.gpu_busy_at_start,
         )
         self.load_model()
         self.trace_workloads()

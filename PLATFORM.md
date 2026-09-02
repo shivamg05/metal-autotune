@@ -318,7 +318,11 @@ counter reads 100% for a window that merely animates (measured that evening:
 paired comparison in one window and the region floor is now a probe clocked
 beside the region, so contention hides small wins and skews the absolute
 figures (peaks, the room line) but cannot ship a false win; the job records the
-reading and goes on.
+reading and goes on. The counter is also a trailing window: taken after the job
+had loaded its model twice and captured reference outputs it read 81% and 87% on
+an idle, freshly booted laptop (loading alone drives it to 89%, and it fell to
+0 one sample later), so the job reads it the moment it is created, before it
+has done anything on the GPU.
 
 ## Scaffold coverage build (2026-08-31): quantized matmul, two ways
 

@@ -321,12 +321,15 @@ def test_a_busy_or_throttled_machine_is_named_not_refused(tmp_path, monkeypatch)
     """A laptop's GPU is shared with whatever else is open, and every verdict
     is a paired comparison taken in one window, so the job goes on: the busy
     reading and an implausible peak each become an env_warning the operator
-    can read, never a refusal."""
+    can read, never a refusal. The busy reading is the one taken when the
+    job object is made, before it has loaded a model: the counter trails, so
+    a later reading would report the job's own loading as another process."""
     import autotuner.loop as loop_mod
     from autotuner.measure.peaks import Peaks
 
     manifest = write_manifest(tmp_path, "planted_win.py", (64, 1024))
-    monkeypatch.setattr(loop_mod, "gpu_utilization", lambda: 100.0)
+    readings = iter([100.0, 0.0, 0.0])
+    monkeypatch.setattr(loop_mod, "gpu_utilization", lambda: next(readings))
     monkeypatch.setattr(loop_mod, "measure_peaks",
                         lambda session: Peaks(bandwidth_gbps=9.4, flops_gflops={"float32": 180.0}))
     runner = JobRunner(manifest, tmp_path / "work", judge_factory=yielding_judge,
