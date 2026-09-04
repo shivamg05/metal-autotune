@@ -41,6 +41,7 @@ from .symshape import (
     accessor,
     broadcast_shapes,
     contiguous,
+    dim_add,
     dims_equal,
     drop_axes,
     insert_axis,
@@ -49,6 +50,7 @@ from .symshape import (
     permute,
     prod_dims,
     shapes_equal,
+    slice_axis,
 )
 
 TGX = 128  # threads per threadgroup; the reduction tree assumes a power of two
@@ -130,6 +132,9 @@ _VIEW_NAMES = frozenset({
     "array.reshape", "mx.reshape", "array.transpose", "mx.transpose", "array.T",
     "array.squeeze", "mx.squeeze", "mx.expand_dims",
 })
+_GETITEM_NAMES = frozenset({"array.__getitem__"})
+_SPLIT_NAMES = frozenset({"mx.split", "array.split"})
+_CONCAT_NAMES = frozenset({"mx.concatenate"})
 
 
 @dataclass
@@ -148,7 +153,7 @@ class _Value:
 
 @dataclass
 class _Stage:
-    kind: str                       # ew | copy | matmul | rms | reduce | qmm
+    kind: str                       # ew | copy | matmul | rms | reduce | qmm | concat
     op: str                         # recorded op name, for messages
     out: _Buffer | None
     srcs: list = field(default_factory=list)  # _Value or python scalars, arg order
@@ -159,6 +164,7 @@ class _Stage:
     qmm_bits: int = 0
     qmm_group: int = 0
     rope_args: tuple = ()           # (dims, traditional, base, scale, offset)
+    concat_axis: int = 0            # axis the concat sources join along
 
 
 def stretch_input_shapes(trace: Trace, stretch: Stretch) -> tuple[tuple[int, ...], ...]:
@@ -177,6 +183,17 @@ def _first_specs(nodes: Sequence[TraceNode]) -> dict[int, tuple]:
         for aid, spec in zip(node.out_arrays, node.out_specs):
             specs.setdefault(aid, spec)
     return specs
+
+
+def _has_array_ref(obj) -> bool:
+    """An array anywhere in a getitem key: it is a gather, not a basic slice."""
+    if isinstance(obj, ArrayRef):
+        return True
+    if isinstance(obj, (list, tuple)):
+        return any(_has_array_ref(v) for v in obj)
+    if isinstance(obj, slice):
+        return any(_has_array_ref(v) for v in (obj.start, obj.stop, obj.step))
+    return False
 
 
 class _Lowering:
@@ -242,23 +259,36 @@ class _Lowering:
 
     def run(self) -> KernelSpec:
         for node in self.nodes:
+            if node.op in _SPLIT_NAMES:
+                # the one multi-output op: each part is its own view of the input
+                for aid, value in zip(node.out_arrays, self._apply_split(node)):
+                    self._check_shape(node, aid, value.view.shape)
+                    self.env[aid] = value
+                continue
             if len(node.out_arrays) != 1:
                 raise NoScaffold("multi-output-op", node.op)
             if node.op in _CAST_NAMES:
                 value = self._apply_cast(node)
+            elif node.op in _GETITEM_NAMES:
+                value = self._apply_getitem(node)
             elif node.op in _VIEW_NAMES:
                 value = self._apply_view(node)
             else:
                 value = self._build_stage(node)
-            got = tuple(d.values[0] for d in value.view.shape)
-            if got != node.out_specs[0][0]:
-                raise NoScaffold(
-                    "shape-inference-mismatch",
-                    f"{node.op} inferred {got}, recorded {node.out_specs[0][0]}",
-                )
+            self._check_shape(node, node.out_arrays[0], value.view.shape)
             self.env[node.out_arrays[0]] = value
         self._materialize_outputs()
         return self._assemble()
+
+    def _check_shape(self, node: TraceNode, aid: int, shape: tuple[Dim, ...]) -> None:
+        """The inferred primary shape must match the recorded spec for aid."""
+        i = node.out_arrays.index(aid)
+        got = tuple(d.values[0] for d in shape)
+        if got != node.out_specs[i][0]:
+            raise NoScaffold(
+                "shape-inference-mismatch",
+                f"{node.op} inferred {got}, recorded {node.out_specs[i][0]}",
+            )
 
     def _materialize_outputs(self) -> None:
         """Every region output must fill its own contiguous out buffer; an
@@ -271,6 +301,7 @@ class _Lowering:
             direct = (
                 p in self.out_bufs
                 and v.buf is self.out_bufs[p]
+                and v.view.offset.is_zero
                 and is_contiguous(v.view, self.n_inst)
                 and shapes_equal(v.view.shape, v.buf.shape)
             )
@@ -308,6 +339,8 @@ class _Lowering:
             stage, shape = self._rope_stage(node)
         elif node.op in _REDUCE_NAMES:
             stage, shape = self._reduce_stage(node)
+        elif node.op in _CONCAT_NAMES:
+            stage, shape = self._concat_stage(node)
         else:
             raise NoScaffold("op-not-lowered", node.op)
         stage.out = self._stage_buffer(node.out_arrays[0], node.out_specs[0][1], shape)
@@ -493,6 +526,37 @@ class _Lowering:
         return _Stage(kind="reduce", op=node.op, out=None, srcs=[x],
                       reduce_op=_REDUCE_NAMES[node.op]), shape
 
+    def _concat_stage(self, node: TraceNode):
+        """mx.concatenate: join a list of arrays along one axis. args[0] is a
+        list of ArrayRefs that _operands does not unwrap, so resolve them here.
+        The kernel writes its output contiguously and reads each source through
+        its own view, so sliced sources work; it runs single-threadgroup."""
+        raw_args = node.scalar_args["args"]
+        kwargs = node.scalar_args["kwargs"]
+        if not raw_args or not isinstance(raw_args[0], (list, tuple)) or not raw_args[0] \
+                or not all(isinstance(r, ArrayRef) for r in raw_args[0]):
+            raise NoScaffold("op-args-not-lowered", f"{node.op} operands")
+        srcs = [self.env[node.in_arrays[r.index]] for r in raw_args[0]]
+        axis = kwargs.get("axis", raw_args[1] if len(raw_args) > 1 else 0)
+        if {k for k in kwargs if k != "axis"} or not isinstance(axis, int):
+            raise NoScaffold("op-args-not-lowered", f"{node.op} kwargs {sorted(kwargs)}")
+        rank = len(srcs[0].view.shape)
+        if any(len(s.view.shape) != rank for s in srcs):
+            raise NoScaffold("op-args-not-lowered", f"{node.op} operand ranks differ")
+        axis %= rank
+        dtype = node.out_specs[0][1]
+        if dtype not in _MSL or any(s.buf.dtype != dtype for s in srcs):
+            raise NoScaffold("dtype-not-lowered", f"{node.op} dtype {dtype}")
+        for d in range(rank):
+            if d != axis and any(not dims_equal(s.view.shape[d], srcs[0].view.shape[d])
+                                 for s in srcs[1:]):
+                raise NoScaffold("op-args-not-lowered", f"{node.op} dim {d} differs")
+        axis_dim = srcs[0].view.shape[axis]
+        for s in srcs[1:]:
+            axis_dim = dim_add(axis_dim, s.view.shape[axis])
+        shape = srcs[0].view.shape[:axis] + (axis_dim,) + srcs[0].view.shape[axis + 1:]
+        return _Stage(kind="concat", op=node.op, out=None, srcs=srcs, concat_axis=axis), shape
+
     # -- cast ----------------------------------------------------------------
 
     def _apply_cast(self, node: TraceNode) -> _Value:
@@ -571,7 +635,7 @@ class _Lowering:
         target = self._int_list(rest, kwargs.pop("shape", None))
         if kwargs:
             raise NoScaffold("op-args-not-lowered", f"reshape kwargs {sorted(kwargs)}")
-        if not is_contiguous(v.view, self.n_inst):
+        if not is_contiguous(v.view, self.n_inst) or not v.view.offset.is_zero:
             v = self.materialize(v, node.op)  # the library copies here too
         numel = prod_dims(v.view.shape, self.n_inst)
         known, minus = 1, None
@@ -601,6 +665,104 @@ class _Lowering:
             dims.insert(minus, inferred)
         shape = tuple(dims)
         return _Value(v.buf, contiguous(shape, self.n_inst))
+
+    # -- slicing (getitem, split) --------------------------------------------
+
+    def _apply_getitem(self, node: TraceNode) -> _Value:
+        """array.__getitem__ with a basic slice/int key: a zero-copy view. An
+        int drops its axis; a full slice on an axis leaves it untouched. Any
+        array in the key is a gather, and a step, a bool, or a newaxis are not
+        lowered. Bounds resolve against the concrete axis size, so a slice of a
+        swept axis whose bounds move is refused rather than baked wrong."""
+        raw_args = node.scalar_args["args"]
+        if len(raw_args) != 2 or not isinstance(raw_args[0], ArrayRef) \
+                or node.scalar_args["kwargs"]:
+            raise NoScaffold("op-args-not-lowered", node.op)
+        v = self.env[node.in_arrays[raw_args[0].index]]
+        index = raw_args[1]
+        key = index if isinstance(index, tuple) else (index,)
+        if _has_array_ref(key):
+            raise NoScaffold("op-args-not-lowered", f"{node.op} array index (gather)")
+        if any(e is None for e in key):
+            raise NoScaffold("op-args-not-lowered", f"{node.op} newaxis")
+        rank = len(v.view.shape)
+        ell = [i for i, e in enumerate(key) if e is Ellipsis]
+        if len(ell) > 1:
+            raise NoScaffold("op-args-not-lowered", f"{node.op} multiple ellipsis")
+        if ell:
+            fill = rank - (len(key) - 1)
+            if fill < 0:
+                raise NoScaffold("op-args-not-lowered", f"{node.op} too many indices")
+            key = key[:ell[0]] + (slice(None),) * fill + key[ell[0] + 1:]
+        if len(key) > rank:
+            raise NoScaffold("op-args-not-lowered", f"{node.op} too many indices")
+        key = key + (slice(None),) * (rank - len(key))
+        view, drop = v.view, set()
+        for axis, e in enumerate(key):
+            sizes = view.shape[axis].values
+            if isinstance(e, bool):
+                raise NoScaffold("op-args-not-lowered", f"{node.op} bool index")
+            if isinstance(e, int):
+                starts = {e if e >= 0 else e + s for s in sizes}
+                if len(starts) != 1:
+                    raise NoScaffold("getitem-swept-index", f"{node.op} axis {axis}")
+                view = slice_axis(view, axis, starts.pop(), 1, self.n_inst)
+                drop.add(axis)
+            elif isinstance(e, slice):
+                if e.step not in (None, 1):
+                    raise NoScaffold("op-args-not-lowered", f"{node.op} step {e.step}")
+                spans = [slice(e.start, e.stop, 1).indices(s)[:2] for s in sizes]
+                los = [lo for lo, _ in spans]
+                lens = [max(0, hi - lo) for lo, hi in spans]
+                if all(lo == 0 for lo in los) and lens == list(sizes):
+                    continue  # a full slice on this axis is a no-op, keep its dim
+                if len(set(los)) != 1 or len(set(lens)) != 1:
+                    raise NoScaffold("getitem-swept-slice", f"{node.op} axis {axis}")
+                view = slice_axis(view, axis, los[0], lens[0], self.n_inst)
+            else:
+                raise NoScaffold("op-args-not-lowered", f"{node.op} index {e!r}")
+        if drop:
+            view = drop_axes(view, drop)
+        return _Value(v.buf, view)
+
+    def _apply_split(self, node: TraceNode) -> list[_Value]:
+        """mx.split: cut one axis into parts, each a view of the input. An int
+        gives equal sections (mlx requires the axis to divide evenly); a list
+        gives cut points, negatives resolved and out-of-range clamped, with a
+        part running from one raw point to the next, exactly like the library."""
+        raw_args = node.scalar_args["args"]
+        kwargs = node.scalar_args["kwargs"]
+        if not raw_args or not isinstance(raw_args[0], ArrayRef):
+            raise NoScaffold("op-args-not-lowered", node.op)
+        x = self.env[node.in_arrays[raw_args[0].index]]
+        spec = raw_args[1] if len(raw_args) > 1 else None
+        axis = kwargs.get("axis", raw_args[2] if len(raw_args) > 2 else 0)
+        if {k for k in kwargs if k != "axis"} or not isinstance(axis, int):
+            raise NoScaffold("op-args-not-lowered", f"{node.op} kwargs {sorted(kwargs)}")
+        axis %= len(x.view.shape)
+        sizes = x.view.shape[axis].values
+        if len(set(sizes)) != 1:
+            raise NoScaffold("split-swept-axis", f"{node.op} axis {axis} varies {sizes}")
+        size = sizes[0]
+        if isinstance(spec, bool):
+            raise NoScaffold("op-args-not-lowered", node.op)
+        if isinstance(spec, int):
+            if spec <= 0 or size % spec:
+                raise NoScaffold("split-uneven", f"{node.op} {size} into {spec}")
+            seg = size // spec
+            parts = [(i * seg, seg) for i in range(spec)]
+        elif isinstance(spec, (list, tuple)) and all(
+                isinstance(p, int) and not isinstance(p, bool) for p in spec):
+            cuts = [min(max(p if p >= 0 else p + size, 0), size) for p in spec]
+            edges = [0, *cuts, size]
+            parts = [(edges[i], max(0, edges[i + 1] - edges[i])) for i in range(len(edges) - 1)]
+        else:
+            raise NoScaffold("op-args-not-lowered", f"{node.op} split {spec!r}")
+        if len(parts) != len(node.out_arrays):
+            raise NoScaffold("op-args-not-lowered",
+                             f"{node.op} {len(parts)} parts vs {len(node.out_arrays)} outputs")
+        return [_Value(x.buf, slice_axis(x.view, axis, start, length, self.n_inst))
+                for start, length in parts]
 
     # -- launch mode analysis ------------------------------------------------
 
@@ -714,8 +876,9 @@ def _flit(v) -> str:
 
 
 def _offset(view: View, idxs: list[str]) -> str:
-    """Flat offset into the view's base buffer; idxs right-align to the view."""
-    terms = []
+    """Flat offset into the view's base buffer; idxs right-align to the view.
+    Starts from the view's own start offset, then adds a term per strided axis."""
+    terms = [] if view.offset.is_zero else [view.offset.body]
     for d in range(len(view.shape)):
         if view.shape[d].is_one:
             continue
@@ -746,8 +909,10 @@ def _decomp(dims: tuple[Dim, ...], src: str) -> tuple[list[str], list[str]]:
 
 
 def _flat(v: _Value, shape: tuple[Dim, ...], n_inst: int) -> bool:
-    """The view reads at the same flat index the iteration writes."""
-    return is_contiguous(v.view, n_inst) and shapes_equal(v.view.shape, shape)
+    """The view reads at the same flat index the iteration writes: dense strides
+    for this shape and no start offset, so buf[F_] is the right element."""
+    return (v.view.offset.is_zero and is_contiguous(v.view, n_inst)
+            and shapes_equal(v.view.shape, shape))
 
 
 def _indent(lines: list[str]) -> list[str]:
@@ -762,7 +927,7 @@ def _emit_body(stages: list[_Stage], ctx: _Ctx) -> str:
             lines.append(f"threadgroup float sh_[{TGX}];")
     emitters = {"ew": _emit_ew, "copy": _emit_ew, "matmul": _emit_matmul,
                 "rms": _emit_rms, "ln": _emit_ln, "reduce": _emit_reduce,
-                "qmm": _emit_qmm, "rope": _emit_rope}
+                "qmm": _emit_qmm, "rope": _emit_rope, "concat": _emit_concat}
     for i, st in enumerate(stages):
         lines.append(f"{{ // {st.op} -> {st.out.name}")
         lines.extend(_indent(emitters[st.kind](st, ctx)))
@@ -1020,8 +1185,10 @@ def _row_reduce_tree(comb_fmt: str) -> list[str]:
 
 def _row_offset(x: _Value, n_inst: int) -> tuple[list[str], str]:
     """Offset of element (row_, j_) of a row-shaped operand, with any index
-    decomposition lines it needs. row_ is the flat index over the lead dims."""
-    if is_contiguous(x.view, n_inst):
+    decomposition lines it needs. row_ is the flat index over the lead dims.
+    The flat fast path needs a zero offset; a sliced view routes through
+    _offset, which carries the start offset."""
+    if x.view.offset.is_zero and is_contiguous(x.view, n_inst):
         return [], f"row_ * ({x.view.shape[-1].body}) + j_"
     dlines, lead_idxs = _decomp(x.view.shape[:-1], "row_")
     return dlines, _offset(x.view, lead_idxs + ["j_"])
@@ -1147,6 +1314,38 @@ def _emit_reduce(st: _Stage, ctx: _Ctx) -> list[str]:
         f"{st.out.name}[row_] = ({cast}){final('a_')};",
     ]
     return [f"for (int row_ = lid_; row_ < ({rows.body}); row_ += {TGX}) {{",
+            *_indent(inner), "}"]
+
+
+def _emit_concat(st: _Stage, ctx: _Ctx) -> list[str]:
+    """Write the joined output contiguously. For each output element an
+    if-ladder over the cumulative source sizes picks which source owns its
+    concat-axis index, then reads that source at the same indices with the
+    concat index made source-local, through _offset so sliced sources work.
+    Concat runs single-threadgroup, so this is one flat loop over numel."""
+    dims = st.out.shape
+    axis = st.concat_axis
+    cast = ctx.msl[st.out.dtype]
+    numel = prod_dims(dims, ctx.n_inst)
+    dlines, idxs = _decomp(dims, "F_")
+    a_ = idxs[axis]
+    n = len(st.srcs)
+    inner = list(dlines)
+    cum = lit(0, ctx.n_inst)
+    for i, s in enumerate(st.srcs):
+        local = list(idxs)
+        local[axis] = a_ if cum.is_zero else f"({a_} - ({cum.body}))"
+        store = f"{st.out.name}[F_] = ({cast}){s.buf.name}[{_offset(s.view, local)}];"
+        cum = dim_add(cum, s.view.shape[axis])
+        if n == 1:
+            inner.append(store)
+        elif i == 0:
+            inner.append(f"if ({a_} < ({cum.body})) {{ {store} }}")
+        elif i < n - 1:
+            inner.append(f"else if ({a_} < ({cum.body})) {{ {store} }}")
+        else:
+            inner.append(f"else {{ {store} }}")
+    return [f"for (int F_ = lid_; F_ < ({numel.body}); F_ += {TGX}) {{",
             *_indent(inner), "}"]
 
 

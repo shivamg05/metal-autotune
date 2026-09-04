@@ -635,11 +635,185 @@ def test_reduction_over_first_axis_raises():
 
 
 def test_view_op_not_lowered_raises():
-    class Gather:
+    class Swap:
         def __call__(self, x):
-            return mx.abs(x[0:2])  # basic-slice __getitem__ is a view op we do not fold
+            return mx.abs(mx.swapaxes(x, 0, 1))  # a view op the scaffold does not fold
 
-    x, t = traced(Gather(), (4, 8), 28)
+    x, t = traced(Swap(), (4, 8), 28)
     with pytest.raises(NoScaffold) as e:
         lower_naive(t, cut(t, 0, len(t.nodes) - 1))
     assert e.value.reason in ("op-not-lowered", "view-not-lowered")
+
+
+# -- getitem (basic slicing) --------------------------------------------------
+
+
+class _GetLast:
+    def __call__(self, x):
+        return x[:, 2:5]  # last-axis slice, start offset zero, batch swept
+
+
+def test_getitem_last_axis_slice():
+    """A last-axis slice of a swept-batch input. The batch axis passes through
+    as an accessor and reaches the multi-threadgroup mode (a slice of an input
+    is row-local), the sliced axis bakes its literal length. Order preserved,
+    so bitwise."""
+    spec, sizes = lower_swept(_GetLast(), lambda b: (b, 6), (0, 0), keys=(50, 51, 52))
+    assert spec.output_shapes[0] == ("in0.shape[0]", "3")
+    assert "in0.shape[0]" in spec.grid[1]  # multi mode: one threadgroup per row
+    for x, t, s in sizes:
+        check(spec, _GetLast(), [x], t, s, bitwise=True)
+
+
+class _GetFirst:
+    def __call__(self, x):
+        return x[1:3, :] + 1.0  # first-axis slice: dense strides, nonzero offset
+
+
+def test_getitem_first_axis_offset_add():
+    """A first-axis slice has dense strides yet a nonzero start offset, so the
+    add must read it through the offset path, not the plain flat index. Bitwise
+    catches an offset the fast path would drop: it would read the wrong rows."""
+    spec, sizes = lower_swept(_GetFirst(), lambda b: (b, 6), (0, 1), keys=(53, 54, 55))
+    assert spec.output_shapes[0] == ("2", "6")  # sliced batch is a constant 2
+    for x, t, s in sizes:
+        check(spec, _GetFirst(), [x], t, s, bitwise=True)
+
+
+class _GetIntScalar:
+    def __call__(self, x):
+        return x[1]  # int index on a 1-D input drops the axis: a scalar view
+
+
+def test_getitem_int_index_scalar():
+    """x[1] on a 1-D array has shape () and offset 1: the only nonzero term is
+    the offset, so _offset must emit it and not fall back to "0". The output is
+    a scalar the copy stage still fills."""
+    spec, sizes = lower_swept(_GetIntScalar(), lambda b: (b,), (0, 0), keys=(56, 57, 58))
+    assert spec.output_shapes[0] == ()
+    for x, t, s in sizes:
+        check(spec, _GetIntScalar(), [x], t, s, bitwise=True)
+
+
+def test_getitem_multi_axis():
+    """A multi-axis slice from the fixture: axis 0 whole, axes 1 and 2 sliced,
+    so the view carries a compound offset with dense strides."""
+    model = load_fixture("slice_read")
+    spec, sizes = lower_swept(model, lambda b: (b, 4, 8), (0, 0), keys=(59, 60, 61))
+    assert spec.output_shapes[0] == ("in0.shape[0]", "2", "4")
+    for x, t, s in sizes:
+        check(spec, model, [x], t, s, bitwise=True)
+
+
+class _MaxOfSlice:
+    def __call__(self, x):
+        return mx.max(x[1:3, :], axis=-1)  # a reduction reads the offset view
+
+
+def test_reduce_of_slice_bitwise():
+    """A row reduction over a first-axis slice. The reduce's row-offset fast
+    path is valid only at zero offset; the slice must route through the offset
+    path. max is order-insensitive, so any offset mistake shows up bitwise."""
+    spec, sizes = lower_swept(_MaxOfSlice(), lambda b: (b, 6), (0, 1), keys=(62, 63, 64))
+    for x, t, s in sizes:
+        check(spec, _MaxOfSlice(), [x], t, s, bitwise=True)
+
+
+def test_getitem_gather_and_step_refused():
+    """The cases getitem cannot lower cleanly: an array key is a gather, and a
+    step other than 1 is a strided read. Both raise, so a region holding one is
+    skipped rather than lowered wrong."""
+    class _Gather(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.idx = mx.array([0, 2, 1])
+
+        def __call__(self, x):
+            return mx.abs(x[self.idx])
+
+    x, t = traced(_Gather(), (4, 8), 65)
+    with pytest.raises(NoScaffold) as e:
+        lower_naive(t, cut(t, 0, len(t.nodes) - 1))
+    assert e.value.reason == "op-args-not-lowered" and "gather" in str(e.value)
+
+    class _Step:
+        def __call__(self, x):
+            return x[:, ::2]
+
+    x, t = traced(_Step(), (4, 8), 66)
+    with pytest.raises(NoScaffold) as e:
+        lower_naive(t, cut(t, 0, 0))
+    assert e.value.reason == "op-args-not-lowered" and "step" in str(e.value)
+
+
+# -- split (multi-output) -----------------------------------------------------
+
+
+def test_split_equal_sections():
+    """Equal-sections split from the fixture: two views of one buffer at
+    different offsets, both region outputs. mlx requires the axis to divide
+    evenly, which the recorded call guarantees."""
+    model = load_fixture("split_heads")
+    spec, sizes = lower_swept(model, lambda b: (b, 6), (0, 1), keys=(67, 68, 69))
+    assert spec.output_names[:2] == ("out0", "out1")
+    for x, t, s in sizes:
+        assert len(s.output_ids) == 2
+        check(spec, model, [x], t, s, bitwise=True)
+
+
+class _SplitIdx:
+    def __call__(self, x):
+        return mx.split(x, [2, 5], axis=-1)  # cut points -> parts of 2, 3, 1
+
+
+def test_split_index_list():
+    """Split at explicit cut points, three uneven parts as three outputs."""
+    spec, sizes = lower_swept(_SplitIdx(), lambda b: (b, 6), (0, 0), keys=(70, 71, 72))
+    assert spec.output_names[:3] == ("out0", "out1", "out2")
+    for x, t, s in sizes:
+        assert len(s.output_ids) == 3
+        check(spec, _SplitIdx(), [x], t, s, bitwise=True)
+
+
+# -- concatenate --------------------------------------------------------------
+
+
+class _ConcatSliced:
+    def __call__(self, x):
+        return mx.concatenate([x[:, 0:2], x[:, 4:6]], axis=-1)  # sliced sources
+
+
+def test_concat_last_axis_sliced_sources():
+    """Concatenate two slices along the last axis. The concat reads each source
+    through its own view, so the second source's nonzero offset is honored. It
+    runs single-threadgroup; the ladder, not this module, judges its speed."""
+    spec, sizes = lower_swept(_ConcatSliced(), lambda b: (b, 6), (0, 2), keys=(73, 74, 75))
+    assert spec.output_shapes[0] == ("in0.shape[0]", "4")
+    assert spec.grid[1] == "1"  # concat regions launch single-threadgroup
+    for x, t, s in sizes:
+        check(spec, _ConcatSliced(), [x], t, s, bitwise=True)
+
+
+class _ConcatMid:
+    def __call__(self, x):
+        return mx.concatenate([mx.abs(x), x], axis=1)  # join along a middle axis
+
+
+def test_concat_middle_axis():
+    """Concatenate along a middle axis, so the flat write index decomposes and
+    the if-ladder selects the source by the middle-axis index."""
+    spec, sizes = lower_swept(_ConcatMid(), lambda b: (b, 3, 8), (0, 1), keys=(76, 77, 78))
+    assert spec.output_shapes[0] == ("in0.shape[0]", "6", "8")
+    for x, t, s in sizes:
+        check(spec, _ConcatMid(), [x], t, s, bitwise=True)
+
+
+def test_composed_split_ew_concat():
+    """The composed pipeline from the fixture: split into two offset views, run
+    a different elementwise op on each, concatenate back. It proves offset views
+    feed stages and that concat reads their outputs, all in one kernel."""
+    model = load_fixture("concat_join")
+    spec, sizes = lower_swept(model, lambda b: (b, 6), (0, 3), keys=(79, 80, 81))
+    assert spec.output_shapes[0] == ("in0.shape[0]", "6")
+    for x, t, s in sizes:
+        check(spec, model, [x], t, s, bitwise=True)

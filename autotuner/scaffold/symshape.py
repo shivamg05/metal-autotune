@@ -5,8 +5,8 @@ instance plus two renderings: launch-grammar text for the host side and a
 Metal int expression for the device side. Dims constant across instances
 render as literals; varying dims render as inK.shape[j] accessors (grammar)
 and inK_shape[j] reads (body, via the shape buffers mlx injects), so one
-kernel is correct at every sweep size. A View is (shape, strides) over a
-contiguous buffer; view ops are stride algebra.
+kernel is correct at every sweep size. A View is (shape, strides, offset) over
+a base buffer; view ops are stride algebra.
 """
 
 from __future__ import annotations
@@ -37,6 +37,10 @@ class Dim:
     def is_one(self) -> bool:
         return all(v == 1 for v in self.values)
 
+    @property
+    def is_zero(self) -> bool:
+        return all(v == 0 for v in self.values)
+
 
 def lit(value: int, n_inst: int) -> Dim:
     return Dim((value,) * n_inst, str(value), str(value))
@@ -55,6 +59,17 @@ def dim_mul(a: Dim, b: Dim) -> Dim:
     if a.is_literal and b.is_literal:
         return Dim(values, str(values[0]), str(values[0]))
     return Dim(values, f"({a.grammar} * {b.grammar})", f"({a.body} * {b.body})")
+
+
+def dim_add(a: Dim, b: Dim) -> Dim:
+    if a.is_zero:
+        return b
+    if b.is_zero:
+        return a
+    values = tuple(x + y for x, y in zip(a.values, b.values))
+    if a.is_literal and b.is_literal:
+        return Dim(values, str(values[0]), str(values[0]))
+    return Dim(values, f"({a.grammar} + {b.grammar})", f"({a.body} + {b.body})")
 
 
 def prod_dims(dims: tuple[Dim, ...], n_inst: int) -> Dim:
@@ -97,6 +112,7 @@ def broadcast_shapes(a: tuple[Dim, ...], b: tuple[Dim, ...]) -> tuple[Dim, ...]:
 class View:
     shape: tuple[Dim, ...]
     strides: tuple[Dim, ...]
+    offset: Dim              # flat element offset into the base buffer
 
 
 def contiguous_strides(shape: tuple[Dim, ...], n_inst: int) -> tuple[Dim, ...]:
@@ -109,7 +125,7 @@ def contiguous_strides(shape: tuple[Dim, ...], n_inst: int) -> tuple[Dim, ...]:
 
 
 def contiguous(shape: tuple[Dim, ...], n_inst: int) -> View:
-    return View(shape, contiguous_strides(shape, n_inst))
+    return View(shape, contiguous_strides(shape, n_inst), lit(0, n_inst))
 
 
 def is_contiguous(view: View, n_inst: int) -> bool:
@@ -126,6 +142,7 @@ def permute(view: View, perm: list[int]) -> View:
     return View(
         tuple(view.shape[p] for p in perm),
         tuple(view.strides[p] for p in perm),
+        view.offset,
     )
 
 
@@ -134,6 +151,7 @@ def drop_axes(view: View, axes: set[int]) -> View:
     return View(
         tuple(view.shape[i] for i in keep),
         tuple(view.strides[i] for i in keep),
+        view.offset,
     )
 
 
@@ -142,4 +160,14 @@ def insert_axis(view: View, axis: int, n_inst: int) -> View:
     strides = list(view.strides)
     shape.insert(axis, lit(1, n_inst))
     strides.insert(axis, lit(0, n_inst))
-    return View(tuple(shape), tuple(strides))
+    return View(tuple(shape), tuple(strides), view.offset)
+
+
+def slice_axis(view: View, axis: int, start: int, length: int, n_inst: int) -> View:
+    """A contiguous slice along one axis: same strides, the axis shortened to
+    length, the start folded into the offset. Dim arithmetic keeps the offset
+    correct when a trailing dim (and so this axis's stride) is swept."""
+    shape = list(view.shape)
+    shape[axis] = lit(length, n_inst)
+    offset = dim_add(view.offset, dim_mul(lit(start, n_inst), view.strides[axis]))
+    return View(tuple(shape), view.strides, offset)
