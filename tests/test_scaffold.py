@@ -499,6 +499,107 @@ def test_rope_fp16_decode_offset():
           bitwise=False, rtol=1e-2, atol=2e-2)
 
 
+# -- layer_norm ---------------------------------------------------------------
+
+
+def test_layer_norm_affine():
+    """layer_norm with weight and bias over the last axis, swept batch. Multi
+    mode: one threadgroup per row, two row reductions (mean then centered
+    variance) sharing sh_. Tolerance because the threadgroup tree reassociates
+    the library's row order; the source assertions pin the two-pass formula
+    and the barrier that guards the sh_ reuse."""
+    model = load_fixture("layer_norm_affine")
+    spec, sizes = lower_swept(model, lambda b: (b, 32), (0, 0), keys=(45, 46, 47))
+    assert "shape[0]" in spec.grid[1]  # one threadgroup per row, batch swept
+    assert spec.output_shapes[0][1] == "32"
+    assert "sv_ += c_ * c_;" in spec.source  # centered (two-pass) variance
+    m = spec.source.index("const float mean_ = sh_[0]")
+    reuse = spec.source.index("sh_[lid_] = sv_;", m)  # sh_ overwritten for the 2nd reduction
+    assert "threadgroup_barrier" in spec.source[m:reuse]  # a barrier guards that reuse
+    for x, t, s in sizes:
+        check(spec, model, [x], t, s, bitwise=False)
+
+
+class _LNWeightOnly(nn.Module):
+    def __init__(self):
+        super().__init__()
+        mx.random.seed(49)
+        self.w = mx.random.normal((32,))
+
+    def __call__(self, x):
+        return mx.fast.layer_norm(x, self.w, None, 1e-5)
+
+
+class _LNNoAffine:
+    def __call__(self, x):
+        return mx.fast.layer_norm(x, None, None, 1e-5)
+
+
+def test_layer_norm_optional_affine():
+    """weight or bias may be None (affine off on that side). The kernel skips
+    the missing term, so a None-affine region reads only x and still matches
+    the library."""
+    wonly = _LNWeightOnly()
+    x, t = traced(wonly, (5, 32), 50)
+    s = cut(t, 0, 0)
+    spec = lower_naive(t, s)
+    assert len(spec.input_names) == 2  # x and weight, no bias
+    check(spec, wonly, [x], t, s, bitwise=False)
+
+    plain = _LNNoAffine()
+    x, t = traced(plain, (5, 32), 51)
+    s = cut(t, 0, 0)
+    spec = lower_naive(t, s)
+    assert spec.input_names == ("in0",)  # x only, no affine buffers
+    check(spec, plain, [x], t, s, bitwise=False)
+
+
+class _LNBigEps(nn.Module):
+    def __init__(self):
+        super().__init__()
+        mx.random.seed(52)
+        self.w = mx.random.normal((32,))
+        self.b = mx.random.normal((32,))
+
+    def __call__(self, x):
+        return mx.fast.layer_norm(x, self.w, self.b, 0.25)
+
+
+def test_layer_norm_eps_placement():
+    """A large eps: misplacing it (outside the sqrt, or unscaled by the row
+    length) shifts results by percent, far past tolerance, which a tiny
+    fixture eps could never expose."""
+    model = _LNBigEps()
+    spec, sizes = lower_swept(model, lambda b: (b, 32), (0, 0), keys=(53, 54, 55))
+    for x, t, s in sizes:
+        check(spec, model, [x], t, s, bitwise=False)
+
+
+class _LNThenNormalize(nn.Module):
+    def __init__(self):
+        super().__init__()
+        mx.random.seed(56)
+        self.w = mx.random.normal((32,))
+        self.b = mx.random.normal((32,))
+
+    def __call__(self, x):
+        h = mx.fast.layer_norm(x, self.w, self.b, 1e-5)
+        return h / mx.sum(mx.abs(h), axis=-1, keepdims=True)
+
+
+def test_layer_norm_single_threadgroup():
+    """layer_norm feeding a broadcast divide by its own row sum: the divide
+    reads a stage-written (B, 1) buffer across the row, not row-local, so the
+    lowering falls back to the single-threadgroup launch. layer_norm must be
+    correct in that serial mode too."""
+    model = _LNThenNormalize()
+    x, t = traced(model, (8, 32), 57)
+    s = cut(t, 0, len(t.nodes) - 1)
+    spec = lower_naive(t, s)
+    assert spec.grid[1] == "1"  # single threadgroup: serial across rows
+    check(spec, model, [x], t, s, bitwise=False)
+
+
 # -- refusal paths ------------------------------------------------------------
 
 

@@ -122,6 +122,7 @@ _REDUCE_NAMES = {
 
 _MATMUL_NAMES = frozenset({"mx.matmul", "array.__matmul__"})
 _RMS_NAMES = frozenset({"mx.fast.rms_norm"})
+_LN_NAMES = frozenset({"mx.fast.layer_norm"})
 _QMM_NAMES = frozenset({"mx.quantized_matmul"})
 _ROPE_NAMES = frozenset({"mx.fast.rope"})
 _CAST_NAMES = frozenset({"array.astype", "mx.astype"})
@@ -299,6 +300,8 @@ class _Lowering:
             stage, shape = self._matmul_stage(node)
         elif node.op in _RMS_NAMES:
             stage, shape = self._rms_stage(node)
+        elif node.op in _LN_NAMES:
+            stage, shape = self._ln_stage(node)
         elif node.op in _QMM_NAMES:
             stage, shape = self._qmm_stage(node)
         elif node.op in _ROPE_NAMES:
@@ -369,6 +372,26 @@ class _Lowering:
         if len(w.view.shape) != 1 or not dims_equal(w.view.shape[0], x.view.shape[-1]):
             raise NoScaffold("op-args-not-lowered", "rms_norm weight shape")
         return _Stage(kind="rms", op=node.op, out=None, srcs=[x, w],
+                      eps=float(eps)), x.view.shape
+
+    def _ln_stage(self, node: TraceNode):
+        """mx.fast.layer_norm over the last axis: two-pass (centered)
+        variance, matching the library at fp32 rtol 1e-5, then the optional
+        affine. args are (x, weight, bias, eps); weight and bias are each an
+        input of the last axis's length or None (affine off on that side)."""
+        args, kwargs = self._operands(node)
+        if kwargs or len(args) != 4:
+            raise NoScaffold("op-args-not-lowered", node.op)
+        x, w, b, eps = args
+        if not isinstance(x, _Value) or not isinstance(eps, (int, float)) \
+                or any(v is not None and not isinstance(v, _Value) for v in (w, b)):
+            raise NoScaffold("op-args-not-lowered", node.op)
+        affine = [v for v in (w, b) if v is not None]
+        self._float_values(node, [x, *affine])
+        for v in affine:
+            if len(v.view.shape) != 1 or not dims_equal(v.view.shape[0], x.view.shape[-1]):
+                raise NoScaffold("op-args-not-lowered", "layer_norm weight/bias shape")
+        return _Stage(kind="ln", op=node.op, out=None, srcs=[x, w, b],
                       eps=float(eps)), x.view.shape
 
     def _qmm_stage(self, node: TraceNode):
@@ -582,7 +605,7 @@ class _Lowering:
     # -- launch mode analysis ------------------------------------------------
 
     def _stage_rows(self, st: _Stage) -> Dim:
-        if st.kind in ("rms", "reduce"):
+        if st.kind in ("rms", "ln", "reduce"):
             return prod_dims(st.srcs[0].view.shape[:-1], self.n_inst)
         return prod_dims(st.out.shape[:-1], self.n_inst)
 
@@ -605,6 +628,10 @@ class _Lowering:
         if st.kind == "rms":
             x, w = st.srcs
             return w.buf.kind == "input" and own_row(x, None)
+        if st.kind == "ln":
+            x, w, b = st.srcs
+            affine = [v for v in (w, b) if v is not None]
+            return all(v.buf.kind == "input" for v in affine) and own_row(x, None)
         if st.kind == "qmm":
             # weight, scales, biases are plain inputs by construction
             return own_row(st.srcs[0], None)
@@ -731,11 +758,11 @@ def _emit_body(stages: list[_Stage], ctx: _Ctx) -> str:
     lines = ["const int lid_ = (int)thread_position_in_threadgroup.x;"]
     if ctx.mode == "multi":
         lines.append("const int tg_ = (int)thread_position_in_grid.y;")
-        if any(st.kind in ("rms", "reduce") for st in stages):
+        if any(st.kind in ("rms", "ln", "reduce") for st in stages):
             lines.append(f"threadgroup float sh_[{TGX}];")
     emitters = {"ew": _emit_ew, "copy": _emit_ew, "matmul": _emit_matmul,
-                "rms": _emit_rms, "reduce": _emit_reduce, "qmm": _emit_qmm,
-                "rope": _emit_rope}
+                "rms": _emit_rms, "ln": _emit_ln, "reduce": _emit_reduce,
+                "qmm": _emit_qmm, "rope": _emit_rope}
     for i, st in enumerate(stages):
         lines.append(f"{{ // {st.op} -> {st.out.name}")
         lines.extend(_indent(emitters[st.kind](st, ctx)))
@@ -1031,6 +1058,61 @@ def _emit_rms(st: _Stage, ctx: _Ctx) -> list[str]:
         "    p_ += v_ * v_;",
         "}",
         f"const float scale_ = metal::precise::rsqrt(p_ / ((float)({d})) + {eps});",
+        f"for (int j_ = 0; j_ < ({d}); ++j_) {{",
+        f"    {store} = ({cast})({normed});",
+        "}",
+    ]
+    return [f"for (int row_ = lid_; row_ < ({rows.body}); row_ += {TGX}) {{",
+            *_indent(inner), "}"]
+
+
+def _emit_ln(st: _Stage, ctx: _Ctx) -> list[str]:
+    """layer_norm over the last axis: mean, then centered variance (two-pass,
+    matching the library at fp32 rtol 1e-5), then the optional affine. Multi
+    mode reuses sh_ for both row reductions, so a barrier separates reading
+    the mean from overwriting sh_ or a lane would read a clobbered sum."""
+    x, w, b = st.srcs
+    d = x.view.shape[-1].body
+    cast = ctx.msl[st.out.dtype]
+    eps = _flit(st.eps)
+    dlines, off = _row_offset(x, ctx.n_inst)
+    store = f"{st.out.name}[row_ * ({d}) + j_]"
+    normed = f"(((float){x.buf.name}[{off}]) - mean_) * scale_"
+    if w is not None:
+        normed += f" * ((float){w.buf.name}[{_offset(w.view, ['j_'])}])"
+    if b is not None:
+        normed += f" + ((float){b.buf.name}[{_offset(b.view, ['j_'])}])"
+    if ctx.mode == "multi":
+        return _row_block(dlines + [
+            "float sx_ = 0.0f;",
+            f"for (int j_ = lid_; j_ < ({d}); j_ += {TGX}) sx_ += (float){x.buf.name}[{off}];",
+            "sh_[lid_] = sx_;",
+            *_row_reduce_tree("({a} + {x})"),
+            f"const float mean_ = sh_[0] / ((float)({d}));",
+            "threadgroup_barrier(mem_flags::mem_threadgroup);",
+            "float sv_ = 0.0f;",
+            f"for (int j_ = lid_; j_ < ({d}); j_ += {TGX}) {{",
+            f"    const float c_ = (float){x.buf.name}[{off}] - mean_;",
+            "    sv_ += c_ * c_;",
+            "}",
+            "sh_[lid_] = sv_;",
+            *_row_reduce_tree("({a} + {x})"),
+            f"const float scale_ = metal::precise::rsqrt(sh_[0] / ((float)({d})) + {eps});",
+            f"for (int j_ = lid_; j_ < ({d}); j_ += {TGX}) {{",
+            f"    {store} = ({cast})({normed});",
+            "}",
+        ], ctx)
+    rows = prod_dims(x.view.shape[:-1], ctx.n_inst)
+    inner = dlines + [
+        "float sx_ = 0.0f;",
+        f"for (int j_ = 0; j_ < ({d}); ++j_) sx_ += (float){x.buf.name}[{off}];",
+        f"const float mean_ = sx_ / ((float)({d}));",
+        "float sv_ = 0.0f;",
+        f"for (int j_ = 0; j_ < ({d}); ++j_) {{",
+        f"    const float c_ = (float){x.buf.name}[{off}] - mean_;",
+        "    sv_ += c_ * c_;",
+        "}",
+        f"const float scale_ = metal::precise::rsqrt(sv_ / ((float)({d})) + {eps});",
         f"for (int j_ = 0; j_ < ({d}); ++j_) {{",
         f"    {store} = ({cast})({normed});",
         "}",
