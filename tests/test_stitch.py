@@ -1,10 +1,11 @@
 """Stitched quantized_matmul scaffold vs the library kernel, on the real GPU.
 
-mx.quantized_matmul's own dispatch is the reference. On decode shapes (x rows
-M == 1) both sides run the wheel's qmv algorithm, so outputs must be bitwise
-equal, aligned or not. For M > 1 the library may dispatch a different kernel
-with another accumulation order, so that case compares within a few fp16
-ulps instead."""
+mx.quantized_matmul's own dispatch is the reference. Decode rows (M == 1) run
+the wheel's qmv algorithm and must be bitwise equal, aligned or not. Prefill
+rows (M at or above the library's qmv batch limit, with split_k <= 1) run its
+qmm_t matrix kernel, stitched here and also bitwise. The small-batch middle
+(2 <= M < limit) runs a qmv the stitch only matches within a few fp16 ulps, so
+that case compares loosely."""
 
 import statistics
 import time
@@ -15,7 +16,9 @@ import pytest
 from autotuner.scaffold import build_scaffold
 from autotuner.scaffold.stitch import (
     _QMV_ROOTS,
+    _split_k,
     flatten_header,
+    stitch_affine_qmm_t,
     stitch_qmm_chain,
     stitch_quantized_matmul,
 )
@@ -60,6 +63,63 @@ def assert_bitwise(out, ref):
     assert mx.array_equal(out, ref).item(), f"not bitwise equal, max abs diff {diff}"
 
 
+def qmm_specs(lead, K, N, group_size, bits, dt="bfloat16"):
+    """The four (shape, dtype) input specs for a quantized_matmul of these dims,
+    without materializing tensors; for the refusal tests."""
+    return (((*lead, K), dt), ((N, K // (32 // bits)), "uint32"),
+            ((N, K // group_size), dt), ((N, K // group_size), dt))
+
+
+def qmm_t_stitched_and_ref(lead, K, N, group_size, bits, dtype):
+    inputs = make_case(lead, K, N, group_size, bits, dtype)
+    spec = stitch_affine_qmm_t(*(spec_of(a) for a in inputs),
+                               group_size=group_size, bits=bits)
+    out = call(spec, list(inputs))[0]
+    ref = mx.quantized_matmul(*inputs, transpose=True, group_size=group_size, bits=bits)
+    mx.eval(out, ref)
+    return spec, out, ref
+
+
+# prefill shapes the library runs plain qmm_t on (M above the qmv limit,
+# split_k <= 1): FLUX projections, plus a spread of dtypes, group sizes, bit
+# widths, and 2-D and 3-D inputs.
+@pytest.mark.parametrize("lead,K,N,gs,bits,dt", [
+    ((256,), 3072, 3072, 64, 4, mx.bfloat16),      # FLUX denoiser projection
+    ((256,), 3072, 9216, 64, 4, mx.bfloat16),      # FLUX fused qkv
+    ((1, 256), 3072, 3072, 64, 4, mx.bfloat16),    # rank 3, batch 1
+    ((384,), 4096, 4096, 64, 4, mx.float16),
+    ((256,), 8192, 2048, 32, 4, mx.bfloat16),
+    ((512,), 2048, 1024, 128, 8, mx.float32),
+])
+def test_qmm_t_prefill_bitwise(lead, K, N, gs, bits, dt):
+    """The stitched qmm_t matrix kernel is bitwise identical to the library
+    across dtypes, group sizes, bit widths, and 2-D and 3-D inputs."""
+    _, out, ref = qmm_t_stitched_and_ref(lead, K, N, gs, bits, dt)
+    assert_bitwise(out, ref)
+
+
+def test_qmm_t_refuses_split_k():
+    """A small M*N where the library splits K and adds a reduction: qmm_t refuses
+    it (the naive lowering takes the region) rather than claim a wrong match."""
+    assert _split_k(64, 128, 4096, 64) > 1
+    with pytest.raises(NoScaffold):
+        stitch_affine_qmm_t(*qmm_specs((64,), 4096, 128, 64, 4), group_size=64, bits=4)
+
+
+def test_qmm_t_refuses_below_qmv_limit():
+    """Rows below the library's qmv batch limit are the vector kernel's job;
+    qmm_t refuses them so it never diverges from the qmv the library runs."""
+    with pytest.raises(NoScaffold):
+        stitch_affine_qmm_t(*qmm_specs((1,), 3072, 384, 64, 4), group_size=64, bits=4)
+
+
+def test_qmv_refuses_at_qmv_limit():
+    """The qmv vector stitch refuses M at or above the batch limit, where the
+    library runs qmm_t; build_scaffold then reaches the qmm_t stitch."""
+    with pytest.raises(NoScaffold):
+        stitch_quantized_matmul(*qmm_specs((256,), 3072, 3072, 64, 4), group_size=64, bits=4)
+
+
 @pytest.mark.parametrize("K,N", DECODE_KN)
 def test_decode_shapes_bitwise_4bit(K, N):
     spec, out, ref = stitched_and_ref((1, 1), K, N, 64, 4, mx.float16)
@@ -96,8 +156,11 @@ def test_general_variant_unaligned_bitwise(K, N, bits):
 
 
 def test_small_batch_rows_within_fp16():
-    """M=6: the stitched qmv covers every x row via the grid; the library may
-    use another kernel here, so agree within accumulation-order rounding."""
+    """M=6: the stitched qmv covers every x row via the grid, agreeing with the
+    library only within accumulation-order rounding. This 8-fp16-ulp bound is
+    looser than the ladder's bf16 gate, which this M range fails, so in a bf16
+    job those regions are gate-skipped; only M==1 (qmv, bitwise) and M above the
+    batch limit (qmm_t, bitwise) reliably pass."""
     _, out, ref = stitched_and_ref((2, 3), 4096, 1024, 64, 4, mx.float16)
     assert tuple(out.shape) == tuple(ref.shape)
     ref32 = ref.astype(mx.float32)

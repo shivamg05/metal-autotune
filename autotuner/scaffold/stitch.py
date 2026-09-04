@@ -35,6 +35,7 @@ import re
 from typing import Sequence
 
 import mlx
+import mlx.core as mx
 
 from autotuner_runtime.kernels import KernelSpec
 
@@ -56,6 +57,70 @@ _INCLUDE_RE = re.compile(r'^\s*#\s*include\s+"([^"]+)"')
 _QMV_ROOTS = (f"{_KERNELS}/steel/gemm/gemm.h", f"{_KERNELS}/quantized.h")
 
 _FLOATS = ("float16", "bfloat16", "float32")
+
+
+@functools.lru_cache(maxsize=1)
+def _arch_gen_size() -> tuple[int, str]:
+    """This GPU's architecture generation and size letter (e.g. (16, 'g') for an
+    M4's applegpu_g16g), which drive the library's qmv-vs-qmm_t batch limit. An
+    unreadable arch refuses the stitch rather than route on a guessed limit."""
+    arch = str(mx.device_info().get("architecture", ""))
+    m = re.search(r"g(\d+)([a-z])", arch)
+    if not m:
+        raise NoScaffold("stitch-unknown-arch", f"cannot read qmv limit from {arch!r}")
+    return int(m.group(1)), m.group(2)
+
+
+def _qmv_batch_limit(k: int, n: int) -> int:
+    """mlx get_qmv_batch_limit(D=K, O=N): the row count at or above which the
+    library runs the qmm_t matrix kernel instead of a qmv vector kernel. Copied
+    from the wheel's dispatch so the stitch matches which kernel actually runs."""
+    gen, size = _arch_gen_size()
+    small, mid = (k <= 2048 and n <= 2048), (k <= 4096 and n <= 4096)
+    if gen >= 17 and size != "d":
+        return 33 if small else 25 if mid else 13
+    if gen >= 15 and size != "d":
+        return 13 if small else 15 if mid else 13
+    if size == "d":
+        return 32 if small else 18 if mid else 12
+    if gen >= 13:
+        return 14 if small else 10 if mid else 6
+    return 18 if small else 12 if mid else 10
+
+
+def _split_k(m: int, n: int, k: int, group_size: int) -> int:
+    """mlx qmm_splitk's K-split count. At <= 1 the library runs plain qmm_t, which
+    stitch_affine_qmm_t reproduces bitwise; above 1 it splits K and reduces, which
+    the stitch does not reproduce."""
+    tiles = ((n + 31) // 32) * ((m + 31) // 32)
+    sk = min(max(1, 512 // tiles), k // (group_size if group_size > 32 else 32))
+    k_align = group_size if group_size > 32 else 32
+    while sk > 1 and k % (sk * k_align):
+        sk -= 1
+    return sk
+
+
+def _affine_operands(x_spec: "Spec", w_spec: "Spec", scales_spec: "Spec",
+                     biases_spec: "Spec", group_size: int, bits: int):
+    """Shared validation for the affine quantized-matmul stitches. Returns
+    (xs, xdt, n, k) or raises NoScaffold with a stable reason."""
+    (xs, xdt), (ws, wdt) = (tuple(x_spec[0]), x_spec[1]), (tuple(w_spec[0]), w_spec[1])
+    (ss, sdt), (bs, bdt) = (tuple(scales_spec[0]), scales_spec[1]), (tuple(biases_spec[0]), biases_spec[1])
+    if bits not in (4, 8):
+        raise NoScaffold("stitch-bits", f"bits={bits}; only 4 and 8 are stitched")
+    if xdt not in _FLOATS or sdt != xdt or bdt != xdt:
+        raise NoScaffold("stitch-dtype", f"x={xdt} scales={sdt} biases={bdt}")
+    if wdt != "uint32":
+        raise NoScaffold("stitch-dtype", f"w={wdt}, want uint32 packing")
+    if len(xs) < 1 or len(ws) != 2:
+        raise NoScaffold("stitch-shape", f"x rank {len(xs)}, w rank {len(ws)}, want >=1 and 2")
+    k, (n, kw) = xs[-1], ws
+    if kw * (32 // bits) != k or group_size <= 0 or k % group_size:
+        raise NoScaffold("stitch-shape", f"w {ws} does not pack K={k} at {bits} bits, group {group_size}")
+    groups = (n, k // group_size)
+    if ss != groups or bs != groups:
+        raise NoScaffold("stitch-shape", f"scales {ss} biases {bs}, want {groups}")
+    return xs, xdt, n, k
 
 # The impl reads K and N from the injected shape buffers (constant address
 # space, so they bind to the const constant int& parameters). tid.x is the
@@ -121,33 +186,24 @@ def stitch_quantized_matmul(
 
     Specs are (shape, dtype name) pairs as the trace records them. The spec
     mirrors the library's dispatch rule: the fast variant when K divides into
-    full blocks and N into blocks of 8 output rows, the guarded general
-    variant otherwise, so on decode shapes (x rows M == 1) the output is
-    bitwise identical to the library. Larger M stays correct via the grid but
-    the library may pick a different kernel there, so agreement is only
-    within accumulation-order rounding. Raises NoScaffold with a stable
+    full blocks and N into blocks of 8 output rows, the guarded general variant
+    otherwise, so the output is bitwise identical to the library. Refused at or
+    above the library's qmv batch limit, where it runs the qmm_t matrix kernel
+    instead (stitch_affine_qmm_t covers that). Raises NoScaffold with a stable
     reason when the inputs are outside what this stitch supports.
     """
-    (xs, xdt), (ws, wdt) = (tuple(x_spec[0]), x_spec[1]), (tuple(w_spec[0]), w_spec[1])
-    (ss, sdt), (bs, bdt) = (tuple(scales_spec[0]), scales_spec[1]), (tuple(biases_spec[0]), biases_spec[1])
-    if bits not in (4, 8):
-        raise NoScaffold("stitch-bits", f"bits={bits}; only 4 and 8 are stitched")
-    if xdt not in _FLOATS or sdt != xdt or bdt != xdt:
-        raise NoScaffold("stitch-dtype", f"x={xdt} scales={sdt} biases={bdt}")
-    if wdt != "uint32":
-        raise NoScaffold("stitch-dtype", f"w={wdt}, want uint32 packing")
-    if len(xs) < 1 or len(ws) != 2:
-        raise NoScaffold("stitch-shape", f"x rank {len(xs)}, w rank {len(ws)}, want >=1 and 2")
-    k, (n, kw) = xs[-1], ws
-    pack_factor = 32 // bits
-    if kw * pack_factor != k or group_size <= 0 or k % group_size:
-        raise NoScaffold("stitch-shape", f"w {ws} does not pack K={k} at {bits} bits, group {group_size}")
-    groups = (n, k // group_size)
-    if ss != groups or bs != groups:
-        raise NoScaffold("stitch-shape", f"scales {ss} biases {bs}, want {groups}")
+    xs, xdt, n, k = _affine_operands(x_spec, w_spec, scales_spec, biases_spec, group_size, bits)
+    m_rows = 1
+    for d in xs[:-1]:
+        m_rows *= d
+    if m_rows >= _qmv_batch_limit(k, n):
+        # at this row count the library runs qmm_t, not qmv; refuse so the
+        # qmm_t stitch (or naive) takes the region instead
+        raise NoScaffold("stitch-qmv-batch", f"M={m_rows} >= qmv limit for K={k} N={n}")
 
     # library dispatch rule: qmv_fast needs whole blocks of 32 threads times
     # 2 packs, 8 output rows per threadgroup, and a scale step per thread
+    pack_factor = 32 // bits
     vpt_fast = 2 * pack_factor
     fast = k % (32 * vpt_fast) == 0 and n % 8 == 0 and group_size % vpt_fast == 0
     if not fast and group_size % pack_factor:
@@ -168,6 +224,69 @@ def stitch_quantized_matmul(
         header=flatten_header(_QMV_ROOTS),
         grid=(grid_x, "ceil_div(in1.shape[0], 8) * 2", "1"),
         threadgroup=("32", "2", "1"),
+        output_shapes=(tuple(lead) + ("in1.shape[0]",),),
+        output_dtypes=(xdt,),
+        template=(("T", "in0"),),
+    )
+
+
+# 32x32x32 tiles, 2x2 simdgroups (the library's affine_qmm_t defaults); Xs/Ws
+# are its threadgroup blocks, BK padded by 16/sizeof(T) as the library pads them.
+_QMM_T_BODY = """\
+threadgroup T Xs[32 * (32 + 16 / sizeof(T))];
+threadgroup T Ws[32 * (32 + 16 / sizeof(T))];
+qmm_t_impl<T, {group_size}, {bits}, {aligned_N}, 32, 32, 32>(
+    in1, in2, in3, in0, out0, Xs, Ws,
+    in0_shape[in0_ndim - 1], in1_shape[0], in0_shape[in0_ndim - 2], in0_shape[in0_ndim - 1],
+    threadgroup_position_in_grid, thread_index_in_threadgroup,
+    simdgroup_index_in_threadgroup, thread_index_in_simdgroup);
+"""
+
+
+def stitch_affine_qmm_t(
+    x_spec: Spec,
+    w_spec: Spec,
+    scales_spec: Spec,
+    biases_spec: Spec,
+    group_size: int = 64,
+    bits: int = 4,
+) -> KernelSpec:
+    """A KernelSpec reproducing mx.quantized_matmul(x, w, scales, biases,
+    transpose=True) for a prefill by calling the wheel's own qmm_t matrix impl
+    with the library's 32x32x32 tiles. Only the shapes where the library runs
+    plain qmm_t are stitched: the leading batch collapsed to one matrix, M at or
+    above the qmv batch limit, and the library's split_k <= 1 (above that it
+    splits K and adds a reduction, which this does not reproduce). Bitwise
+    against the library, verified in tests/test_stitch.py. Raises NoScaffold
+    otherwise, so the naive lowering takes the region.
+    """
+    xs, xdt, n, k = _affine_operands(x_spec, w_spec, scales_spec, biases_spec, group_size, bits)
+    if len(xs) < 2:
+        raise NoScaffold("stitch-shape", f"qmm_t needs an M axis, x rank {len(xs)}")
+    b_lead = 1
+    for d in xs[:-2]:
+        b_lead *= d
+    if b_lead != 1:
+        raise NoScaffold("stitch-qmm-batch", f"leading batch {b_lead} != 1")
+    m = xs[-2]
+    if m < _qmv_batch_limit(k, n):
+        raise NoScaffold("stitch-qmm-small", f"M={m} below qmv limit; qmv handles it")
+    if _split_k(m, n, k, group_size) > 1:
+        raise NoScaffold("stitch-qmm-splitk", f"library splits K for M={m} N={n} K={k}")
+    rank = len(xs)
+    lead = [f"in0.shape[{i}]" for i in range(rank - 1)]
+    name = f"stitch_affine_qmm_t_g{group_size}_b{bits}_a{int(n % 32 == 0)}_r{rank}"
+    return KernelSpec(
+        kernel_id=name,
+        name=name,
+        input_names=("in0", "in1", "in2", "in3"),
+        output_names=("out0",),
+        source=_QMM_T_BODY.format(group_size=group_size, bits=bits,
+                                  aligned_N="true" if n % 32 == 0 else "false"),
+        header=flatten_header(_QMV_ROOTS),
+        grid=("ceil_div(in1.shape[0], 32) * 32",
+              f"ceil_div(in0.shape[{rank - 2}], 32) * 2", "2"),
+        threadgroup=("32", "2", "2"),
         output_shapes=(tuple(lead) + ("in1.shape[0]",),),
         output_dtypes=(xdt,),
         template=(("T", "in0"),),
