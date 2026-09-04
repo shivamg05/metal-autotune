@@ -5,14 +5,14 @@ source when the region is a single library op we can wrap verbatim (library
 parity by construction), naive lowering otherwise."""
 
 from .lower import (
-    _EW_NAMES, _MATMUL_NAMES, _QMM_NAMES, _REDUCE_NAMES, _RMS_NAMES, _ROPE_NAMES, _VIEW_NAMES,
-    lower_naive, stretch_input_shapes,
+    _CAST_NAMES, _EW_NAMES, _MATMUL_NAMES, _QMM_NAMES, _REDUCE_NAMES, _RMS_NAMES, _ROPE_NAMES,
+    _VIEW_NAMES, lower_naive, stretch_input_shapes,
 )
 from .stitch import stitch_qmm_chain, stitch_quantized_matmul
 from .symshape import NoScaffold
 
 _COVERED = (frozenset(_EW_NAMES) | frozenset(_REDUCE_NAMES) | _MATMUL_NAMES | _RMS_NAMES
-            | _QMM_NAMES | _ROPE_NAMES | _VIEW_NAMES)
+            | _QMM_NAMES | _ROPE_NAMES | _VIEW_NAMES | _CAST_NAMES)
 
 
 def uncovered_op(ops) -> str | None:

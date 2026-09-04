@@ -124,6 +124,7 @@ _MATMUL_NAMES = frozenset({"mx.matmul", "array.__matmul__"})
 _RMS_NAMES = frozenset({"mx.fast.rms_norm"})
 _QMM_NAMES = frozenset({"mx.quantized_matmul"})
 _ROPE_NAMES = frozenset({"mx.fast.rope"})
+_CAST_NAMES = frozenset({"array.astype", "mx.astype"})
 _VIEW_NAMES = frozenset({
     "array.reshape", "mx.reshape", "array.transpose", "mx.transpose", "array.T",
     "array.squeeze", "mx.squeeze", "mx.expand_dims",
@@ -242,7 +243,9 @@ class _Lowering:
         for node in self.nodes:
             if len(node.out_arrays) != 1:
                 raise NoScaffold("multi-output-op", node.op)
-            if node.op in _VIEW_NAMES:
+            if node.op in _CAST_NAMES:
+                value = self._apply_cast(node)
+            elif node.op in _VIEW_NAMES:
                 value = self._apply_view(node)
             else:
                 value = self._build_stage(node)
@@ -466,6 +469,25 @@ class _Lowering:
         shape = x.view.shape[:-1] + ((lit(1, self.n_inst),) if keepdims else ())
         return _Stage(kind="reduce", op=node.op, out=None, srcs=[x],
                       reduce_op=_REDUCE_NAMES[node.op]), shape
+
+    # -- cast ----------------------------------------------------------------
+
+    def _apply_cast(self, node: TraceNode) -> _Value:
+        """astype: a same-shape dtype change. A no-op cast folds away; a real
+        one is a copy stage whose store casts to the target dtype (a cast the
+        recorded ops already contain, so the frozen-dtype law is not broken)."""
+        args, _ = self._operands(node)
+        if not args or not isinstance(args[0], _Value):
+            raise NoScaffold("op-args-not-lowered", node.op)
+        v = args[0]
+        target = node.out_specs[0][1]
+        if target == v.buf.dtype:
+            return v
+        if target not in _MSL:
+            raise NoScaffold("dtype-not-lowered", f"{node.op} to {target}")
+        buf = self._stage_buffer(node.out_arrays[0], target, v.view.shape)
+        self.stages.append(_Stage(kind="copy", op=node.op, out=buf, srcs=[v]))
+        return _Value(buf, contiguous(v.view.shape, self.n_inst))
 
     # -- view folding --------------------------------------------------------
 
