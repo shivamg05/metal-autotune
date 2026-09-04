@@ -135,6 +135,7 @@ _VIEW_NAMES = frozenset({
 _GETITEM_NAMES = frozenset({"array.__getitem__"})
 _SPLIT_NAMES = frozenset({"mx.split", "array.split"})
 _CONCAT_NAMES = frozenset({"mx.concatenate"})
+_STACK_NAMES = frozenset({"mx.stack"})
 
 
 @dataclass
@@ -341,6 +342,8 @@ class _Lowering:
             stage, shape = self._reduce_stage(node)
         elif node.op in _CONCAT_NAMES:
             stage, shape = self._concat_stage(node)
+        elif node.op in _STACK_NAMES:
+            stage, shape = self._stack_stage(node)
         else:
             raise NoScaffold("op-not-lowered", node.op)
         stage.out = self._stage_buffer(node.out_arrays[0], node.out_specs[0][1], shape)
@@ -526,11 +529,11 @@ class _Lowering:
         return _Stage(kind="reduce", op=node.op, out=None, srcs=[x],
                       reduce_op=_REDUCE_NAMES[node.op]), shape
 
-    def _concat_stage(self, node: TraceNode):
-        """mx.concatenate: join a list of arrays along one axis. args[0] is a
-        list of ArrayRefs that _operands does not unwrap, so resolve them here.
-        The kernel writes its output contiguously and reads each source through
-        its own view, so sliced sources work; it runs single-threadgroup."""
+    def _join_operands(self, node: TraceNode):
+        """The array list and axis shared by concatenate and stack. args[0] is a
+        list of ArrayRefs _operands does not unwrap, so resolve it here; axis is
+        a kwarg or the next positional, default 0. Every source and the output
+        share one dtype."""
         raw_args = node.scalar_args["args"]
         kwargs = node.scalar_args["kwargs"]
         if not raw_args or not isinstance(raw_args[0], (list, tuple)) or not raw_args[0] \
@@ -540,13 +543,20 @@ class _Lowering:
         axis = kwargs.get("axis", raw_args[1] if len(raw_args) > 1 else 0)
         if {k for k in kwargs if k != "axis"} or not isinstance(axis, int):
             raise NoScaffold("op-args-not-lowered", f"{node.op} kwargs {sorted(kwargs)}")
+        dtype = node.out_specs[0][1]
+        if dtype not in _MSL or any(s.buf.dtype != dtype for s in srcs):
+            raise NoScaffold("dtype-not-lowered", f"{node.op} dtype {dtype}")
+        return srcs, axis
+
+    def _concat_stage(self, node: TraceNode):
+        """mx.concatenate: join arrays along one existing axis. The kernel writes
+        its output contiguously and reads each source through its own view, so
+        sliced sources work; it runs single-threadgroup."""
+        srcs, axis = self._join_operands(node)
         rank = len(srcs[0].view.shape)
         if any(len(s.view.shape) != rank for s in srcs):
             raise NoScaffold("op-args-not-lowered", f"{node.op} operand ranks differ")
         axis %= rank
-        dtype = node.out_specs[0][1]
-        if dtype not in _MSL or any(s.buf.dtype != dtype for s in srcs):
-            raise NoScaffold("dtype-not-lowered", f"{node.op} dtype {dtype}")
         for d in range(rank):
             if d != axis and any(not dims_equal(s.view.shape[d], srcs[0].view.shape[d])
                                  for s in srcs[1:]):
@@ -556,6 +566,20 @@ class _Lowering:
             axis_dim = dim_add(axis_dim, s.view.shape[axis])
         shape = srcs[0].view.shape[:axis] + (axis_dim,) + srcs[0].view.shape[axis + 1:]
         return _Stage(kind="concat", op=node.op, out=None, srcs=srcs, concat_axis=axis), shape
+
+    def _stack_stage(self, node: TraceNode):
+        """mx.stack: join arrays that share one shape along a NEW axis. Each
+        source gains a unit axis at that position, which turns it into the same
+        contiguous concat with source i owning stacked index i, so it reuses the
+        concat stage and emitter."""
+        srcs, axis = self._join_operands(node)
+        base = srcs[0].view.shape
+        if any(not shapes_equal(s.view.shape, base) for s in srcs[1:]):
+            raise NoScaffold("op-args-not-lowered", f"{node.op} operand shapes differ")
+        axis %= len(base) + 1
+        expanded = [_Value(s.buf, insert_axis(s.view, axis, self.n_inst)) for s in srcs]
+        shape = base[:axis] + (lit(len(srcs), self.n_inst),) + base[axis:]
+        return _Stage(kind="concat", op=node.op, out=None, srcs=expanded, concat_axis=axis), shape
 
     # -- cast ----------------------------------------------------------------
 

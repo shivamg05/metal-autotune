@@ -817,3 +817,65 @@ def test_composed_split_ew_concat():
     assert spec.output_shapes[0] == ("in0.shape[0]", "6")
     for x, t, s in sizes:
         check(spec, model, [x], t, s, bitwise=True)
+
+
+# -- stack --------------------------------------------------------------------
+
+
+class _StackFirst:
+    def __call__(self, x):
+        return mx.stack([x, mx.abs(x)])  # a new leading axis, default axis 0
+
+
+def test_stack_new_first_axis():
+    """stack with no axis puts the new axis first: two (b, C) sources become
+    (2, b, C). Each source keeps its own view, and the unit axis inserted to
+    make it a concat is skipped in the address, so it reads straight through."""
+    spec, sizes = lower_swept(_StackFirst(), lambda b: (b, 5), (0, 1), keys=(90, 91, 92))
+    assert spec.output_shapes[0] == ("2", "in0.shape[0]", "5")
+    assert spec.grid[1] == "1"  # stack reuses concat's single-threadgroup launch
+    for x, t, s in sizes:
+        check(spec, _StackFirst(), [x], t, s, bitwise=True)
+
+
+class _StackMid:
+    def __call__(self, x):
+        return mx.stack([mx.abs(x), x + 1.0], axis=1)  # a new axis in the middle
+
+
+def test_stack_middle_axis():
+    """stack along a middle axis: (b, C) sources become (b, 2, C), so the flat
+    write index decomposes and the if-ladder picks the source by that axis."""
+    spec, sizes = lower_swept(_StackMid(), lambda b: (b, 5), (0, 2), keys=(93, 94, 95))
+    assert spec.output_shapes[0] == ("in0.shape[0]", "2", "5")
+    for x, t, s in sizes:
+        check(spec, _StackMid(), [x], t, s, bitwise=True)
+
+
+class _StackLast:
+    def __call__(self, x):
+        return mx.stack([x, x * 2.0, mx.abs(x)], axis=-1)  # three, new trailing axis
+
+
+def test_stack_last_axis_three_sources():
+    """Three sources stacked on a new last axis: (b, C) become (b, C, 3)."""
+    spec, sizes = lower_swept(_StackLast(), lambda b: (b, 5), (0, 2), keys=(96, 97, 98))
+    assert spec.output_shapes[0] == ("in0.shape[0]", "5", "3")
+    for x, t, s in sizes:
+        check(spec, _StackLast(), [x], t, s, bitwise=True)
+
+
+class _StackOfSlices:
+    def __call__(self, x):
+        a, b, c = mx.split(x, 3, axis=-1)
+        return mx.stack([a, b, c], axis=1)  # stack reads three offset views
+
+
+def test_stack_of_split_offset_views():
+    """The composed case: split the last axis into three offset views, then
+    stack them on a new middle axis. It proves stack reads its sources through
+    their views, including the nonzero start offsets of the later parts."""
+    spec, sizes = lower_swept(_StackOfSlices(), lambda b: (b, 9), (0, 1), keys=(99, 100, 101))
+    assert spec.output_shapes[0] == ("in0.shape[0]", "3", "3")
+    for x, t, s in sizes:
+        check(spec, _StackOfSlices(), [x], t, s, bitwise=True)
