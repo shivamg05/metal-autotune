@@ -17,11 +17,15 @@ from dataclasses import dataclass
 from typing import Callable, Sequence
 
 import mlx.core as mx
+import mlx.nn as nn
 
-from ..trace.recorder import OPAQUE_OP
+from ..trace.recorder import OPAQUE_OP, UNNAMED_KERNEL_OP
 from ..trace.types import Retention, ScopeCall, Trace
 from ..trace.walk import flatten_arrays
+from ..artifact.validate import _structure
 from .emit import MODULE_HEADER, NotReplayable, emit_wrapper, scope_nodes
+from autotuner_runtime.exact import bitwise_equal
+from autotuner_runtime.swap import ReplayWrapper, install as swap_install, uninstall as swap_uninstall, resolve
 
 
 def find_scope_call(trace: Trace, stack: tuple[str, ...]) -> ScopeCall | None:
@@ -48,6 +52,8 @@ def screen_scope(trace: Trace, stack: tuple[str, ...]) -> str | None:
     for node in nodes:
         if node.op == OPAQUE_OP:
             return "the scope contains a compiled call the harness cannot name"
+        if node.op == UNNAMED_KERNEL_OP and node.kernel_definition is None:
+            return "the scope contains a custom kernel the harness cannot name"
         for out in node.out_arrays:
             if trace.liveness[out].kind is Retention.PYTHON_RETAINED:
                 return (
@@ -69,6 +75,7 @@ def screen_scope(trace: Trace, stack: tuple[str, ...]) -> str | None:
 class CertificationResult:
     ok: bool
     reason: str = ""
+    scope: str | None = None   # the scope whose identity failed, when one is known
 
 
 def certify_identity(
@@ -117,3 +124,90 @@ def _flatten(tree: object) -> list[mx.array]:
     out = flatten_arrays(tree)
     mx.eval(out)
     return out
+
+
+def certify_identities(model, wrappers: dict[str, object], runs: Sequence[Callable],
+                       repeated_calls: int = 3) -> CertificationResult:
+    """Check a batch of independent scopes in six model passes per workload.
+
+    Observe every scope's outputs in both arms, so two wrong wrappers cannot
+    pass by cancelling at the model output. Nested targets run in separate
+    batches: a parent's replay may bypass its children. All temporary swaps
+    unwind even when a call or comparison raises. Runs must rewind model state,
+    as they do for the other whole-model correctness checks.
+    """
+    pending = dict(wrappers)
+    if repeated_calls < 1:
+        raise ValueError("identity certification requires at least one call per arm")
+    while pending:
+        paths = [p for p in pending if not any(p.startswith(q + ".") for q in pending if q != p)]
+        batch = {p: pending.pop(p) for p in paths}
+        result = _certify_batch(model, batch, runs, repeated_calls)
+        if not result.ok:
+            return result
+    return CertificationResult(True)
+
+
+def _certify_batch(model, wrappers, runs, repeated_calls):
+    def snapshot(out):
+        # Preserve scalar state and container structure as well as array values.
+        return _structure(out), [mx.array(a) for a in flatten_arrays(out)]
+
+    class Observed(ReplayWrapper):
+        def __init__(self, wrapped, path, observations, order):
+            nn.Module.__init__(self)
+            self.wrapped = wrapped
+            object.__setattr__(self, "_path", path)
+            object.__setattr__(self, "_observations", observations)
+            object.__setattr__(self, "_order", order)
+
+        def __call__(self, *args, **kwargs):
+            self._order.setdefault(self._path, len(self._order))
+            out = self.wrapped(*args, **kwargs)
+            # Snapshot handles before the model can update an array in place.
+            self._observations[self._path].append(snapshot(out))
+            return out
+
+    def collect(run, replacement):
+        observations = {path: [] for path in wrappers}
+        order = {}  # path -> position of its first call: a changed output blames the earliest scope
+        installed = []
+        try:
+            for path in wrappers:
+                original = resolve(model, path)[2]
+                target = wrappers[path] if replacement else original
+                previous = swap_install(model, path, Observed(target, path, observations, order))
+                installed.append((path, previous))
+            observations[""] = [snapshot(run())]
+            order[""] = len(order)
+            mx.eval([values for calls in observations.values() for _, values in calls])
+            return observations, order
+        finally:
+            for path, original in reversed(installed):
+                swap_uninstall(model, path, original)
+
+    seen = set()
+    for index, run in enumerate(runs):
+        # Keep only one pair's activations, rather than three full passes.
+        for repetition in range(repeated_calls):
+            (expected, _), (actual, order) = collect(run, False), collect(run, True)
+            # A scope whose compiled output differs changes every scope after
+            # it, so the mismatch that executed first is the one to blame.
+            for path in sorted(expected, key=lambda p: order.get(p, len(order))):
+                if expected[path]:
+                    seen.add(path)
+                if len(expected[path]) != len(actual[path]):
+                    return CertificationResult(False, f"identity scope {path!r}: call count changed at workload {index}", path)
+                for call_index, (want, got) in enumerate(zip(expected[path], actual[path])):
+                    want_structure, want_values = want
+                    got_structure, got_values = got
+                    if (want_structure != got_structure or len(want_values) != len(got_values)
+                            or any(not bitwise_equal(a, b) for a, b in zip(want_values, got_values))):
+                        return CertificationResult(False, f"identity scope {path or '<model>'!r}: output changed "
+                                                   f"at workload {index}, repetition {repetition}, call {call_index}",
+                                                   path or None)
+            del expected, actual
+    missing = set(wrappers) - seen
+    if missing:
+        return CertificationResult(False, f"identity scopes never executed: {sorted(missing)}", sorted(missing)[0])
+    return CertificationResult(True)

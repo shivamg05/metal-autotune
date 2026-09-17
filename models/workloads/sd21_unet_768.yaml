@@ -1,0 +1,28 @@
+model: ../sd21_unet.py
+baseline: plain
+workloads:
+- name: sd21_unet_768
+  inputs:
+  - shape:
+    - 2
+    - 96
+    - 96
+    - 4
+    dtype: float16
+  - shape:
+    - 2
+    dtype: int32
+    low: 0
+    high: 1000
+  - shape:
+    - 2
+    - 77
+    - 1024
+    dtype: float16
+budget:
+  per_region: 8
+  total: 24
+final_benchmark:
+  steps: 20
+  pairs: 4
+  warmup_steps: 3

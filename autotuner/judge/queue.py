@@ -13,6 +13,7 @@ from typing import Iterable, Sequence
 from .schema import (
     CONDITIONS,
     OUTCOMES,
+    RESERVED_ITEM_IDS,
     DeleteItem,
     InsertItem,
     Mutation,
@@ -67,16 +68,20 @@ class Queue:
         """The front item whose depends_on condition holds, left in place."""
         return next((item for item in self._items if self._satisfied(item)), None)
 
+    def ready_item(self, wanted: str | None = None) -> QueueItem | None:
+        """The front ready item, or the item named by wanted when it is
+        ready, left in place."""
+        ready = [item for item in self._items if self._satisfied(item)]
+        if wanted is None:
+            return ready[0] if ready else None
+        return next((item for item in ready if item.id == wanted), None)
+
     def pop_ready(self, wanted: str | None = None) -> QueueItem | None:
         """Remove and return the front ready item, or the item named by
         wanted, which must itself be ready: a kernel written for one item is
         never evaluated under another's name. Unsatisfied items are skipped,
         not consumed."""
-        ready = [item for item in self._items if self._satisfied(item)]
-        if wanted is None:
-            chosen = ready[0] if ready else None
-        else:
-            chosen = next((item for item in ready if item.id == wanted), None)
+        chosen = self.ready_item(wanted)
         if chosen is None:
             return None
         self._items.remove(chosen)
@@ -149,10 +154,9 @@ class Queue:
 
     def _insert(self, items: list[QueueItem], m: InsertItem) -> list[QueueItem]:
         new = m.item
-        if new.id in ("scaffold", "scafix"):
-            # these tag harness-built kernels; a judge item using one would
-            # silently overwrite the real kernel's identity
-            raise QueueError(f"item id {new.id!r} is reserved for harness kernels")
+        if new.id in RESERVED_ITEM_IDS:
+            # Protect original starters and role aliases as well as scaffolds.
+            raise QueueError(f"item id {new.id!r} is reserved for harness kernels or parent aliases")
         if new.id in self._executed() or any(it.id == new.id for it in items):
             raise QueueError(f"item id {new.id!r} already exists in this region")
         if m.before is None:

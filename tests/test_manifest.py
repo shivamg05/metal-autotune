@@ -43,7 +43,38 @@ def test_good_manifest_loads_with_defaults(tmp_path):
     assert m.budget_per_region == DEFAULT_BUDGET_PER_REGION
     assert m.budget_total == DEFAULT_BUDGET_TOTAL
     assert m.tolerances is None
-    assert set(m.defaulted) == {"primary.L", "tolerances", "budget.per_region", "budget.total", "seed", "baseline"}
+    assert set(m.defaulted) == {"primary.L", "tolerances", "budget.per_region", "budget.total", "seed",
+                              "baseline", "final_benchmark.steps", "final_benchmark.pairs",
+                              "final_benchmark.warmup_steps", "use_library_inference"}
+
+
+def test_library_inference_is_an_optional_boolean(tmp_path):
+    manifest = load(write_manifest(tmp_path, GOOD))
+    assert manifest.use_library_inference is None
+    for value in (True, False):
+        manifest = load(write_manifest(tmp_path, GOOD + f"use_library_inference: {str(value).lower()}\n"))
+        assert manifest.use_library_inference is value
+        assert "use_library_inference" not in manifest.defaulted
+
+
+@pytest.mark.parametrize("value", ["null", "1", "0", "'true'", "inference", "[]", "{}"])
+def test_library_inference_rejects_non_booleans(tmp_path, value):
+    with pytest.raises(ManifestError, match="use_library_inference must be true or false"):
+        load(write_manifest(tmp_path, GOOD + f"use_library_inference: {value}\n"))
+
+
+def test_final_benchmark_defaults_and_overrides(tmp_path):
+    m = load(write_manifest(tmp_path, GOOD))
+    assert (m.final_benchmark.steps, m.final_benchmark.pairs, m.final_benchmark.warmup_steps) == (10, 4, 3)
+    m = load(write_manifest(tmp_path, GOOD + "final_benchmark: {steps: 50, pairs: 6, warmup_steps: 4}\n"))
+    assert (m.final_benchmark.steps, m.final_benchmark.pairs, m.final_benchmark.warmup_steps) == (50, 6, 4)
+
+
+@pytest.mark.parametrize("config", ["{steps: 0}", "{steps: true}", "{pairs: 2}",
+                                    "{pairs: 5}", "{warmup_steps: 0}", "{unknown: 1}", "[]"])
+def test_invalid_final_benchmark_is_rejected_before_gpu_work(tmp_path, config):
+    with pytest.raises(ManifestError, match="final_benchmark"):
+        load(write_manifest(tmp_path, GOOD + f"final_benchmark: {config}\n"))
 
 
 def test_baseline_defaults_to_compiled_and_accepts_plain(tmp_path):
@@ -77,6 +108,15 @@ def test_tolerances_explicit_and_per_dtype_defaults(tmp_path):
     assert m2.tolerance_for("float16") == (1e-3, 1e-4)
     with pytest.raises(ManifestError, match="no tolerance default"):
         m.tolerance_for("int32")
+
+
+@pytest.mark.parametrize("field", ["rtol", "atol"])
+@pytest.mark.parametrize("value", [".inf", "-.inf", ".nan", "-0.01"])
+def test_invalid_tolerances_cannot_disable_correctness(tmp_path, field, value):
+    values = {"rtol": "0", "atol": "0", field: value}
+    body = GOOD + f"tolerances: {{rtol: {values['rtol']}, atol: {values['atol']}}}\n"
+    with pytest.raises(ManifestError, match="finite and non-negative"):
+        load(write_manifest(tmp_path, body))
 
 
 @pytest.mark.parametrize(
@@ -165,3 +205,58 @@ def test_manifest_is_frozen(tmp_path):
         m.budget_total = 1
     with pytest.raises(TypeError):
         m.sweep["L"] = (2,)
+
+
+def test_a_ship_is_not_a_manifest_knob(tmp_path):
+    """What decides a ship is not configurable: it is always the whole model.
+    A stale ship_on key is rejected like any unknown key."""
+    with pytest.raises(ManifestError, match="unknown"):
+        load(write_manifest(tmp_path, GOOD + "ship_on: model\n"))
+
+
+CONTEXT = """
+model: ./model.py
+workloads:
+  - inputs: [{shape: [1, 1], dtype: int32}]
+    name: decode
+    context: 512
+"""
+
+
+def test_context_is_the_tokens_already_in_place(tmp_path):
+    m = load(write_manifest(tmp_path, CONTEXT))
+    assert m.workloads[0].context == 512
+    assert load(write_manifest(tmp_path, CONTEXT.replace("512", "0"))).workloads[0].context == 0
+    assert [w.context for w in load(write_manifest(tmp_path, GOOD)).workloads] == [None, None]
+
+
+@pytest.mark.parametrize("body, message", [
+    (CONTEXT.replace("512", "-1"), "whole number"),
+    (CONTEXT.replace("512", "true"), "whole number"),
+    (CONTEXT.replace("512", "'512'"), "whole number"),
+    (CONTEXT.replace("512", "1.5"), "whole number"),
+    (CONTEXT.replace("[{shape: [1, 1], dtype: int32}]",
+                     "[{shape: [1, 1], dtype: int32}, {shape: [1], dtype: float32}]"), "one input"),
+    (CONTEXT.replace("dtype: int32", "dtype: float16"), "token ids"),
+    (CONTEXT + "  - inputs: [{shape: [1, L], dtype: int32}]\n    name: prefill\n", "only workload"),
+])
+def test_invalid_context_is_rejected_before_gpu_work(tmp_path, body, message):
+    with pytest.raises(ManifestError, match=message):
+        load(write_manifest(tmp_path, body))
+
+
+@pytest.mark.parametrize("field", ["rtol", "atol"])
+def test_boolean_tolerance_is_not_a_number(tmp_path, field):
+    values = {"rtol": "0", "atol": "0", field: "true"}
+    body = GOOD + f"tolerances: {{rtol: {values['rtol']}, atol: {values['atol']}}}\n"
+    with pytest.raises(ManifestError, match="not booleans"):
+        load(write_manifest(tmp_path, body))
+
+
+
+@pytest.mark.parametrize("field", ["rtol", "atol"])
+def test_tolerance_must_fit_the_actual_comparison_dtype(tmp_path, field):
+    values = {"rtol": "0", "atol": "0", field: "1.0e300"}
+    body = GOOD + f"tolerances: {{rtol: {values['rtol']}, atol: {values['atol']}}}\n"
+    with pytest.raises(ManifestError, match="fit in float32"):
+        load(write_manifest(tmp_path, body))

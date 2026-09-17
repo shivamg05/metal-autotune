@@ -1,8 +1,44 @@
 """autotune run manifest.yaml"""
 
 import argparse
+from contextlib import contextmanager
+import fcntl
+import os
 import sys
+import tempfile
 from pathlib import Path
+
+
+@contextmanager
+def _run_lock():
+    """Only one CLI job may measure the shared GPU; crashes release the lock."""
+    path = Path(tempfile.gettempdir()) / f"metal-autotune-{os.getuid()}.lock"
+    with path.open("a+") as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise RuntimeError("another autotune CLI job is running; wait for it to finish") from None
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+
+
+def _output_paths(work_dir, artifact):
+    work = Path(work_dir).resolve()
+    if work.exists() and (not work.is_dir() or any(work.iterdir())):
+        raise ValueError(f"work directory is not empty: {work}; choose a fresh directory")
+    out = Path(artifact).resolve() if artifact else work / "artifact"
+    if out == work or out in work.parents:
+        raise ValueError("--artifact must not be the work directory or one of its parents")
+    for name in ("kernels", "boundaries", "checkpoints", "judge_io", "run.jsonl",
+                 "session.jsonl", "report.json", "judge.jsonl", "candidates.log"):
+        reserved = work / name
+        if out == reserved or reserved in out.parents:
+            raise ValueError(f"--artifact overlaps run files: {reserved}")
+    if out.exists() and (not out.is_dir() or any(out.iterdir())):
+        raise ValueError(f"artifact destination already exists: {out}; choose a fresh destination")
+    return out
 
 
 def main(argv=None) -> int:
@@ -11,30 +47,69 @@ def main(argv=None) -> int:
     run = sub.add_parser("run", help="run one optimization job")
     run.add_argument("manifest")
     run.add_argument("--work-dir", default="autotune_work")
-    run.add_argument("--artifact", default="artifact")
-    run.add_argument("--model", default="claude-opus-5", help="judge model id")
-    run.add_argument("--judge", choices=("api", "claude-cli", "agent"), default="api",
+    run.add_argument("--artifact", default=None, help="fresh output directory; defaults to <work-dir>/artifact")
+    run.add_argument("--model", default=None, help="judge model id; defaults to the selected provider's model")
+    run.add_argument("--judge", default="api",
                      help="api: Anthropic SDK (needs ANTHROPIC_API_KEY); "
-                          "claude-cli: local `claude -p` on this machine's Claude Code login; "
-                          "agent: a live agent answers <work-dir>/judge_io (see AGENT_JUDGE.md)")
+                          "claude-cli, codex, gemini: that agent's CLI, headless, in an empty dir; "
+                          "agent: answer <work-dir>/judge_io by hand (see AGENT_JUDGE.md)")
+    run.add_argument("--judge-cmd", default=None,
+                     help="run this exact command as the judge, any headless agent CLI; a "
+                          "{system}/{prompt} token is filled in, else the prompt goes on stdin. "
+                          "Overrides --judge.")
+    finish = sub.add_parser("finish", help="stop new search attempts and finish validation/export")
+    finish.add_argument("--work-dir", required=True)
     args = parser.parse_args(argv)
+    if args.command == "finish":
+        work = Path(args.work_dir).resolve()
+        if not (work / "run.jsonl").is_file():
+            parser.error(f"no run.jsonl in {work}")
+        (work / "finish-search.request").write_text("operator requested final validation\n")
+        print("Finish requested: the running job will finish its current work, then validate and export if confirmed.")
+        return 0
+
+    try:
+        args.artifact = _output_paths(args.work_dir, args.artifact)
+    except ValueError as error:
+        parser.error(str(error))
+    with _run_lock():
+        return _execute(args, parser)
+
+
+def _execute(args, parser):
 
     from .loop import JobRunner
+    from .judge.agent import CLI_PRESETS, AgentFileJudge, CliJudge
 
-    if args.judge == "api":
-        from .judge.client import AnthropicJudge
-        judge = AnthropicJudge(model=args.model)
-    elif args.judge == "claude-cli":
-        from .judge.agent import ClaudeCLIJudge
-        judge = ClaudeCLIJudge(model=args.model)
-    else:
-        from .judge.agent import AgentFileJudge
+    if args.judge_cmd:
+        import shlex
+        judge = CliJudge(shlex.split(args.judge_cmd))
+        label = args.judge_cmd
+    elif args.judge == "api":
+        from .judge.client import AnthropicJudge, DEFAULT_MODEL
+        judge = AnthropicJudge(model=args.model or DEFAULT_MODEL)
+        label = f"api ({args.model or DEFAULT_MODEL})"
+    elif args.judge in CLI_PRESETS:
+        judge = CliJudge(CLI_PRESETS[args.judge](args.model))
+        label = f"{args.judge} ({args.model or 'provider default'})"
+    elif args.judge == "agent":
         mailbox = Path(args.work_dir) / "judge_io"
         judge = AgentFileJudge(mailbox)
         print(f"agent judge: answer requests in {mailbox}/ (protocol in AGENT_JUDGE.md)")
+        label = "agent"
+    else:
+        parser.error(f"--judge must be api, agent, or one of {sorted(CLI_PRESETS)}, "
+                     f"or use --judge-cmd; got {args.judge!r}")
 
+    if isinstance(judge, CliJudge):
+        print("Checking judge connection and model access before loading the model...", flush=True)
+        try:
+            judge.check_available()
+        except ValueError as error:
+            parser.error(str(error))
+        print("Judge readiness check passed.", flush=True)
     judge.transcript = Path(args.work_dir) / "judge.jsonl"
-    print(f"judge: {args.judge} ({args.model})")
+    print(f"judge: {label}")
     print(f"run log: {Path(args.work_dir) / 'run.jsonl'} (one JSON line per event; tail it)")
     print(f"candidates: {Path(args.work_dir) / 'candidates.log'} (one line per attempt)")
     runner = JobRunner(
@@ -43,18 +118,33 @@ def main(argv=None) -> int:
         judge_factory=lambda region: judge,
     )
     report = runner.run()
-    artifact = runner.emit_artifact(args.artifact)
+    artifact = None
+    if report.accepted:
+        artifact = runner.emit_artifact(args.artifact)
+    else:
+        report.session.update(status="complete", outcome="no_improvement", artifact=None)
+        report.write(Path(args.work_dir) / "report.json")
     shipped = [r for r in report.regions if r.get("s")]
     print(f"job done: {len(shipped)}/{len(report.regions)} regions shipped")
     for w, clocks in report.step_ms.items():
         # the untouched model is re-measured beside the patched one at the end;
         # the job-start clock is a different window and never enters this line
         if clocks.get("speedup"):
-            print(f"  {w}: patched {clocks['after']:.3f} ms vs untouched "
-                  f"{clocks['baseline_at_end']:.3f} ms ({report.baseline.get('choice')} "
-                  f"baseline), measured together: {clocks['speedup']:.3f}x "
-                  f"(pair agreement {clocks['stability']:.2f})")
-    print(f"artifact: {artifact}")
+            result = (f"{clocks['speedup']:.3f}x confirmed speedup" if clocks.get("win_confirmed")
+                      else "no confirmed speedup")
+            print(f"  {w}: patched {clocks['after']:.3f} ms vs baseline "
+                  f"{clocks['baseline_at_end']:.3f} ms ({report.baseline.get('choice')}), "
+                  f"measured together: {result} (pair agreement {clocks['stability']:.2f})")
+        sequence = report.final.get("sequences", {}).get(w)
+        if sequence and clocks.get("sequence_speedup"):
+            # the deployment-shaped number: whole runs of consecutive steps,
+            # each uninterrupted, the two models alternated in both orders
+            result = (f"{clocks['sequence_speedup']:.3f}x confirmed speedup"
+                      if clocks.get("sequence_win_confirmed") else "no confirmed speedup")
+            print(f"  {w}: {sequence['steps']} consecutive steps: patched "
+                  f"{sequence['candidate_sequence_ms']:.1f} ms vs untouched "
+                  f"{sequence['baseline_sequence_ms']:.1f} ms, run whole and alternated: {result}")
+    print(f"artifact: {artifact}" if artifact else "no artifact: no improvement was installed")
     return 0
 
 

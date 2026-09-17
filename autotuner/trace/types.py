@@ -30,6 +30,7 @@ class TraceNode:
     # full enclosing call chain, outermost first; module_address == stack[-1].
     # Region delivery scopes are common prefixes of member stacks.
     module_stack: tuple[str, ...] = ()
+    kernel_definition: dict | None = None
 
 
 class Retention(Enum):
@@ -56,6 +57,11 @@ class Trace:
     in_pass_evaluation: bool = False            # model evaluated mid-record (memory warning)
     eval_sites: tuple[tuple[str, ...], ...] = ()  # addr stacks where the model evaluated
     scope_calls: tuple["ScopeCall", ...] = ()   # per module call: entry/exit record
+    evaluated: frozenset[int] = frozenset()     # array_ids the model itself evaluated mid-record
+    # Recorded calls whose results nothing ever needs: not returned, not kept,
+    # not evaluated, not read by a call that is. MLX is lazy, so the model
+    # never runs them; no region, price or floor may count them.
+    dead: frozenset[int] = frozenset()          # seqs
 
     def python_retained(self) -> list[int]:
         """Arrays the model itself kept after the pass: a value it stored on

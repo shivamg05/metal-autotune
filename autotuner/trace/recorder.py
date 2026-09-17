@@ -19,23 +19,35 @@ from .freeze import freeze
 from .optable import MUTATING_METHODS
 from .types import STATE_PREFIX, ScopeCall, Trace, TraceNode
 from .walk import flatten_arrays, reachable, snapshot_arrays
+from autotuner_runtime.swap import state_signature
 
 OPAQUE_OP = "compiled_fn"       # a compiled call the harness cannot name
 COMPILED_PREFIX = "compiled:"   # a compiled call named by its import path
+UNNAMED_KERNEL_OP = "metal_kernel"   # source-backed call (or legacy uncaptured call)
+KERNEL_PREFIX = "metal_kernel:"      # a custom kernel call named by its import path
 
 
 def compiled_op(path: str | None) -> str:
     return f"{COMPILED_PREFIX}{path}" if path else OPAQUE_OP
 
 
+def kernel_op(path: str | None) -> str:
+    return f"{KERNEL_PREFIX}{path}" if path else UNNAMED_KERNEL_OP
+
+
 def is_opaque(op: str) -> bool:
-    """A compiled section or a state call: never inside a region, always a
-    chain barrier."""
-    return op == OPAQUE_OP or op.startswith(COMPILED_PREFIX) or op.startswith(STATE_PREFIX)
+    """A compiled section, a custom kernel call, or a state call: never inside
+    a region, always a chain barrier."""
+    return (op in (OPAQUE_OP, UNNAMED_KERNEL_OP) or op.startswith(COMPILED_PREFIX)
+            or op.startswith(KERNEL_PREFIX) or op.startswith(STATE_PREFIX))
 
 
 def compiled_path(op: str) -> str | None:
     return op[len(COMPILED_PREFIX):] if op.startswith(COMPILED_PREFIX) else None
+
+
+def kernel_path(op: str) -> str | None:
+    return op[len(KERNEL_PREFIX):] if op.startswith(KERNEL_PREFIX) else None
 
 
 def state_method(op: str) -> str | None:
@@ -82,6 +94,10 @@ class Recorder:
         # id(object) -> path for the objects holding model state; the patcher
         # sets it when it wraps the model, before any pass
         self.state_holders: dict[int, str] = {}
+        # Node seqs whose outputs keep a value snapshot; None keeps every one.
+        # A snapshot pins its array version until the pass ends, so a trace
+        # keeps none and a capture keeps only the boundary it came for.
+        self.snapshot_seqs: set[int] | None = None
         self._reset_pass()
 
     def _reset_pass(self) -> None:
@@ -96,6 +112,7 @@ class Recorder:
         self.step_outputs: list[int] = []
         self.in_pass_evaluation = False
         self.eval_sites: list[tuple[str, ...]] = []
+        self.evaluated: set[int] = set()
         self._addr_stack: list[str] = []
         self._pending_scopes: list[tuple] = []
         self.scope_calls: list[ScopeCall] = []
@@ -119,31 +136,36 @@ class Recorder:
         finally:
             self._suppress -= 1
 
-    def _register(self, arr: mx.array) -> int:
+    def _register(self, arr: mx.array, snapshot: bool = True) -> int:
+        # Keep an independent lazy handle: later in-place updates to arr must
+        # not rewrite the value captured under this version of its array id.
         oid = id(arr)
         if oid in self._ids:
             return self._ids[oid]
         self._holds.append(arr)
         self._ids[oid] = self._next_id
-        self._by_aid[self._next_id] = arr
+        if snapshot:
+            self._by_aid[self._next_id] = mx.array(arr)
         self._next_id += 1
         return self._ids[oid]
 
-    def _register_output(self, arr: mx.array) -> int:
+    def _register_output(self, arr: mx.array, seq: int) -> int:
         """An output object already known under an id was mutated (or returned
         unchanged): rename so the node is its producer from here on."""
+        snapshot = self.snapshot_seqs is None or seq in self.snapshot_seqs
         oid = id(arr)
         if oid in self._ids:
             self._holds.append(arr)
             self._ids[oid] = self._next_id
-            self._by_aid[self._next_id] = arr
+            if snapshot:
+                self._by_aid[self._next_id] = mx.array(arr)
             self._next_id += 1
             return self._ids[oid]
-        return self._register(arr)
+        return self._register(arr, snapshot)
 
     def arrays_for(self, ids: Iterable[int]) -> dict[int, mx.array]:
-        """The live (possibly lazy) arrays for array_ids, valid until the holds
-        drop at freeze. Boundary capture evaluates and saves these."""
+        """Lazy snapshots of the recorded array versions, valid until freeze.
+        Boundary capture evaluates these without observing later mutations."""
         return {aid: self._by_aid[aid] for aid in ids}
 
     # -- pass lifecycle ------------------------------------------------------
@@ -215,6 +237,7 @@ class Recorder:
             in_pass_evaluation=self.in_pass_evaluation,
             eval_sites=tuple(self.eval_sites),
             scope_calls=tuple(self.scope_calls),
+            evaluated=self.evaluated,
         )
         self._holds.clear()
         self._by_aid.clear()
@@ -222,10 +245,16 @@ class Recorder:
 
     # -- hooks called by the patch surface -----------------------------------
 
-    def note_evaluation(self) -> None:
+    def note_evaluation(self, *values) -> None:
+        """The model evaluated these arrays itself: that work is live even
+        when nothing recorded reads the result."""
         if self.recording:
             self.in_pass_evaluation = True
             self.eval_sites.append(tuple(self._addr_stack))
+            for arr in flatten_arrays(values):
+                aid = self._ids.get(id(arr))
+                if aid is not None:
+                    self.evaluated.add(aid)
 
     def module_enter(self, instance: object, args: tuple = (), kwargs: dict | None = None) -> None:
         path = self._instance_paths.get(id(instance), f"?{type(instance).__name__}")
@@ -295,15 +324,24 @@ class Recorder:
     ) -> None:
         if not self.recording:
             return
-        out_objs = ([args[0]] if mutates_first else []) + flatten_arrays(result)
+        out_objs = flatten_arrays(result)
+        if mutates_first and all(arr is not args[0] for arr in out_objs):
+            out_objs.insert(0, args[0])
         if not out_objs:
             return
         self._append_node(op_name, args, kwargs, out_objs)
 
     def state_enter(self, obj: object) -> None:
-        """A call on a state holder begins: where the record stands, and
-        which arrays the object holds."""
-        self._frames.append([len(self.nodes), _array_ids(obj), False])
+        """A call on a state holder begins: where the record stands, which
+        arrays the object holds, and its position counter. Replay guards the
+        captured position rather than guessing the provenance of scalars
+        from equal integer values."""
+        try:
+            signature = state_signature(obj)
+        except TypeError:
+            signature = None  # a field no wrapper can describe; graph delivery declines the scope
+        self._frames.append([len(self.nodes), _array_ids(obj), False,
+                             getattr(obj, "offset", None), signature])
 
     def state_abort(self) -> None:
         self._frames.pop()
@@ -314,9 +352,10 @@ class Recorder:
         rebinding) collapses into one opaque state call: the wrapper replays
         it by calling the same method on the same object, so what it does to
         its state happens for real, where the recorder cannot see it."""
-        start, before, mutated = self._frames.pop()
+        start, before, mutated, offset_before, signature = self._frames.pop()
         inner = self.nodes[start:]
-        if not (mutated or _array_ids(obj) != before or any(_mutates(n.op) for n in inner)):
+        if not (method in {"__getitem__", "__setitem__", "__getattribute__", "state"} or mutated
+                or _array_ids(obj) != before or any(_mutates(n.op) for n in inner)):
             return
         if self._frames:
             self._frames[-1][2] = True  # a method that calls a mutating one mutated state too
@@ -325,14 +364,18 @@ class Recorder:
             self._pos_counts[(n.module_address, n.op)] -= 1
             ops += n.scalar_args["receiver"]["inner_ops"] if n.op.startswith(STATE_PREFIX) else [n.op]
         del self.nodes[start:]
-        receiver = {"id": id(obj), "path": self.state_holders.get(id(obj)), "inner_ops": ops}
+        receiver = {"id": id(obj), "path": self.state_holders.get(id(obj)),
+                    "inner_ops": ops, "offset_before": offset_before}
+        if signature is not None:
+            receiver["state_signature"] = signature
         self._append_node(f"{STATE_PREFIX}{type(obj).__name__}.{method}", args, kwargs,
                           flatten_arrays(result), receiver=receiver)
 
     def _append_node(self, op_name: str, args: tuple, kwargs: dict, out_objs: list,
                      receiver: dict | None = None) -> None:
         args_t, kwargs_t, in_ids, in_specs, _ = self._templatize(args, kwargs)
-        out_ids = [self._register_output(a) for a in out_objs]
+        seq = len(self.nodes)
+        out_ids = [self._register_output(a, seq) for a in out_objs]
         scalar_args: dict = {"args": args_t, "kwargs": kwargs_t}
         if receiver is not None:
             scalar_args["receiver"] = receiver

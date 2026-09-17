@@ -1,6 +1,8 @@
 """report.json: the fields a reader needs to trust a hypothesis row, and a
 stranded list that does not repeat one reason a hundred times."""
 
+import json
+
 from autotuner.report import LEGEND, Report
 
 
@@ -40,3 +42,19 @@ def test_stranded_regions_group_by_reason():
     grouped = r.to_dict()["stranded"]
     assert [(g["reason"], g["count"]) for g in grouped] == [("same reason", 3), ("another", 1)]
     assert grouped[0]["regions"][1] == {"fingerprint": "f1", "ops": ["mx.exp"]}
+
+
+def test_failed_numeric_checks_still_produce_valid_json(tmp_path):
+    r = Report()
+    r.final = {"passed": False, "checks": [{"max_abs": float("inf"),
+                                          "cosine": float("nan")}]}
+    r.accepted = [{"timings": {"main": {"sigma_ms": float("inf")}}}]
+    path = tmp_path / "report.json"
+    r.write(path)
+
+    def reject_constant(value):
+        raise AssertionError(f"invalid JSON constant: {value}")
+
+    saved = json.loads(path.read_text(), parse_constant=reject_constant)
+    assert saved["final"]["checks"] == [{"max_abs": "inf", "cosine": "nan"}]
+    assert saved["accepted"][0]["timings"]["main"]["sigma_ms"] == "inf"

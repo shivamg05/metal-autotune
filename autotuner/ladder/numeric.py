@@ -1,19 +1,14 @@
-"""The comparison rules for gates 5 and 8: assoc-preserving
-tolerance compare floored by the library's own run-to-run wobble, the
-non-finite pattern rule, worst-offender reporting, and the adversarial
-value-regime generators. Tolerance values live with the caller; this module
-only applies the numbers it is handed.
-"""
+"""Shared numeric helpers and adversarial input regimes for region validation."""
 
 from __future__ import annotations
 
 import random as _random
-from dataclasses import dataclass
 from typing import Sequence
 
 import mlx.core as mx
 
-FLOAT_DTYPES = (mx.float16, mx.bfloat16, mx.float32)
+from autotuner_runtime.numeric import (FLOAT_DTYPES, CompareResult, compare,
+                                        nonfinite_pattern_ok)
 
 # Regime constants for gate 5. Non-float inputs pass through unchanged in
 # every regime: their values are semantics (indices, masks), not magnitudes.
@@ -24,64 +19,6 @@ OUTLIER_COUNT = 3
 REGIMES = ("scaled_up", "scaled_down", "outliers", "zeros", "nonfinite")
 
 
-@dataclass(frozen=True)
-class CompareResult:
-    passed: bool
-    reason: str                    # "" | shape | dtype | nonfinite_pattern | tolerance
-    max_excess: float              # worst |c - r| minus allowed; <= 0 on a pass
-    index: tuple[int, ...] | None  # the worst offender (or first pattern violation)
-    detail: str = ""
-
-
-def nonfinite_pattern_ok(candidate: mx.array, reference: mx.array) -> mx.array:
-    """Elementwise: the candidate is finite wherever the reference is finite,
-    NaN where NaN, and the same signed inf where inf."""
-    finite_ok = mx.isfinite(reference) & mx.isfinite(candidate)
-    nan_ok = mx.isnan(reference) & mx.isnan(candidate)
-    inf_ok = mx.isinf(reference) & (candidate == reference)
-    return finite_ok | nan_ok | inf_ok
-
-
-def compare(
-    candidate: mx.array,
-    reference: mx.array,
-    rtol: float,
-    atol: float,
-    wobble_floor: float = 0.0,
-) -> CompareResult:
-    """Assoc-preserving compare: |c - r| <= max(atol + rtol * |r|, wobble_floor)
-    elementwise, after the non-finite pattern rule. wobble_floor is the
-    library's own run-to-run wobble, measured on the spot by the caller."""
-    if tuple(candidate.shape) != tuple(reference.shape):
-        return CompareResult(False, "shape", float("inf"), None,
-                             f"{tuple(candidate.shape)} != {tuple(reference.shape)}")
-    if candidate.dtype != reference.dtype:
-        return CompareResult(False, "dtype", float("inf"), None,
-                             f"{candidate.dtype} != {reference.dtype}")
-    if candidate.size == 0:
-        return CompareResult(True, "", 0.0, None)
-
-    c = candidate.astype(mx.float32)
-    r = reference.astype(mx.float32)
-    ok = nonfinite_pattern_ok(c, r)
-    if not mx.all(ok).item():
-        viol = ~ok
-        return CompareResult(
-            False, "nonfinite_pattern", float("inf"), _first_index(viol),
-            f"{int(mx.sum(viol).item())} elements break the non-finite pattern",
-        )
-
-    allowed = mx.maximum(atol + rtol * mx.abs(r), wobble_floor)
-    # non-finite positions already matched the pattern exactly: zero excess
-    excess = mx.where(mx.isfinite(r), mx.abs(c - r) - allowed, mx.zeros_like(r))
-    worst = float(mx.max(excess).item())
-    index = _unravel(int(mx.argmax(excess).item()), tuple(reference.shape))
-    if worst > 0:
-        over = int(mx.sum(excess > 0).item())
-        return CompareResult(False, "tolerance", worst, index,
-                             f"{over} elements over tolerance")
-    return CompareResult(True, "", worst, index)
-
 
 def max_abs_diff(a: mx.array, b: mx.array) -> float:
     """The wobble measurement: worst |a - b| between two runs, 0.0 where both
@@ -90,6 +27,8 @@ def max_abs_diff(a: mx.array, b: mx.array) -> float:
         return float("inf")
     if a.size == 0:
         return 0.0
+    if a.dtype not in FLOAT_DTYPES:
+        return 0.0 if mx.array_equal(a, b).item() else float("inf")
     af, bf = a.astype(mx.float32), b.astype(mx.float32)
     if not mx.all(nonfinite_pattern_ok(af, bf)).item():
         return float("inf")
@@ -140,19 +79,3 @@ def _with_nonfinite_lanes(a: mx.array, rng: _random.Random) -> mx.array:
     lane = mx.arange(n0).reshape((n0,) + (1,) * (a.ndim - 1))
     b = mx.where(lane == i_inf, mx.array(float("inf"), dtype=a.dtype), a)
     return mx.where(lane == i_nan, mx.array(float("nan"), dtype=a.dtype), b)
-
-
-def _first_index(viol: mx.array) -> tuple[int, ...]:
-    """Index of the first True in a violation mask, deterministically: score
-    each position by how early it is, then argmax."""
-    n = viol.size
-    score = viol.reshape(-1).astype(mx.int64) * mx.arange(n, 0, -1)
-    return _unravel(int(mx.argmax(score).item()), tuple(viol.shape))
-
-
-def _unravel(flat: int, shape: tuple[int, ...]) -> tuple[int, ...]:
-    idx: list[int] = []
-    for dim in reversed(shape):
-        flat, r = divmod(flat, dim)
-        idx.append(r)
-    return tuple(reversed(idx))

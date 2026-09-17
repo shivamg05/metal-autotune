@@ -1,0 +1,17 @@
+model: ../whisper_small_encoder.py
+baseline: plain
+workloads:
+- name: whisper_small_encoder_30s
+  inputs:
+  - shape:
+    - 1
+    - 3000
+    - 80
+    dtype: float16
+budget:
+  per_region: 8
+  total: 24
+final_benchmark:
+  steps: 10
+  pairs: 4
+  warmup_steps: 3

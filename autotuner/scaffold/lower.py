@@ -12,8 +12,9 @@ and every read of a stage-written buffer stays inside its own row, one
 threadgroup owns each row and runs all stages for it with device-memory
 barriers in between (rms_norm and row reductions use a cooperative
 threadgroup-memory tree, fixed order, so results are deterministic).
-Otherwise a single threadgroup runs the whole region, still correct, just
-serial across rows. The ladder, not this module, decides whether it is fast.
+Otherwise a single threadgroup runs the whole region, serial across rows.
+Large serial scaffolds are refused before any GPU work: a correct program
+can still monopolize the display GPU long enough to crash WindowServer.
 
 Launch sizes and output shapes are launch-grammar expressions over the
 boundary inputs; a dim bakes as a literal only when it is constant across
@@ -31,6 +32,7 @@ from typing import Sequence
 
 from autotuner_runtime.kernels import KernelSpec
 
+from ..ladder.static_checks import launch_resource_failure
 from ..regions.types import Stretch
 from ..trace.recorder import ArrayRef
 from ..trace.types import Trace, TraceNode
@@ -55,6 +57,7 @@ from .symshape import (
 
 TGX = 128  # threads per threadgroup; the reduction tree assumes a power of two
 RB = 8     # rows per threadgroup when a rank-2 matmul is present (register blocking)
+SINGLE_GROUP_WORK_LIMIT = 1 << 24  # scalar stage work, a policy rather than a timing prediction
 
 _MSL = {"float32": "float", "float16": "half", "bfloat16": "bfloat16_t", "bool": "bool"}
 _FLOATS = ("float32", "float16", "bfloat16")
@@ -350,14 +353,14 @@ class _Lowering:
         self.stages.append(stage)
         return _Value(stage.out, contiguous(shape, self.n_inst))
 
-    def _float_values(self, node: TraceNode, operands) -> list[_Value]:
+    def _float_values(self, node: TraceNode, operands, *, mixed=False) -> list[_Value]:
         values = [o for o in operands if isinstance(o, _Value)]
         if not values:
             raise NoScaffold("op-args-not-lowered", f"{node.op} has no array operand")
         dtypes = {v.buf.dtype for v in values}
         if not dtypes <= set(_FLOATS):
             raise NoScaffold("dtype-not-lowered", f"{node.op} on {sorted(dtypes)}")
-        if len(dtypes) != 1:
+        if len(dtypes) != 1 and not mixed:
             raise NoScaffold("dtype-not-lowered", f"{node.op} mixes {sorted(dtypes)}")
         return values
 
@@ -404,7 +407,7 @@ class _Lowering:
         if kwargs or not isinstance(eps, (int, float)) or \
                 not (isinstance(x, _Value) and isinstance(w, _Value)):
             raise NoScaffold("op-args-not-lowered", node.op)
-        self._float_values(node, [x, w])
+        self._float_values(node, [x, w], mixed=True)
         if len(w.view.shape) != 1 or not dims_equal(w.view.shape[0], x.view.shape[-1]):
             raise NoScaffold("op-args-not-lowered", "rms_norm weight shape")
         return _Stage(kind="rms", op=node.op, out=None, srcs=[x, w],
@@ -423,7 +426,7 @@ class _Lowering:
                 or any(v is not None and not isinstance(v, _Value) for v in (w, b)):
             raise NoScaffold("op-args-not-lowered", node.op)
         affine = [v for v in (w, b) if v is not None]
-        self._float_values(node, [x, *affine])
+        self._float_values(node, [x, *affine], mixed=True)
         for v in affine:
             if len(v.view.shape) != 1 or not dims_equal(v.view.shape[0], x.view.shape[-1]):
                 raise NoScaffold("op-args-not-lowered", "layer_norm weight/bias shape")
@@ -695,8 +698,8 @@ class _Lowering:
     def _apply_getitem(self, node: TraceNode) -> _Value:
         """array.__getitem__ with a basic slice/int key: a zero-copy view. An
         int drops its axis; a full slice on an axis leaves it untouched. Any
-        array in the key is a gather, and a step, a bool, or a newaxis are not
-        lowered. Bounds resolve against the concrete axis size, so a slice of a
+        array in the key is a gather; strided and bool indexing are refused.
+        None inserts a unit axis. Bounds resolve against the concrete axis size, so a slice of a
         swept axis whose bounds move is refused rather than baked wrong."""
         raw_args = node.scalar_args["args"]
         if len(raw_args) != 2 or not isinstance(raw_args[0], ArrayRef) \
@@ -707,22 +710,24 @@ class _Lowering:
         key = index if isinstance(index, tuple) else (index,)
         if _has_array_ref(key):
             raise NoScaffold("op-args-not-lowered", f"{node.op} array index (gather)")
-        if any(e is None for e in key):
-            raise NoScaffold("op-args-not-lowered", f"{node.op} newaxis")
         rank = len(v.view.shape)
         ell = [i for i, e in enumerate(key) if e is Ellipsis]
         if len(ell) > 1:
             raise NoScaffold("op-args-not-lowered", f"{node.op} multiple ellipsis")
         if ell:
-            fill = rank - (len(key) - 1)
+            fill = rank - sum(e is not None and e is not Ellipsis for e in key)
             if fill < 0:
                 raise NoScaffold("op-args-not-lowered", f"{node.op} too many indices")
             key = key[:ell[0]] + (slice(None),) * fill + key[ell[0] + 1:]
-        if len(key) > rank:
+        consumed = sum(e is not None for e in key)
+        if consumed > rank:
             raise NoScaffold("op-args-not-lowered", f"{node.op} too many indices")
-        key = key + (slice(None),) * (rank - len(key))
+        key = key + (slice(None),) * (rank - consumed)
         view, drop = v.view, set()
         for axis, e in enumerate(key):
+            if e is None:
+                view = insert_axis(view, axis, self.n_inst)
+                continue
             sizes = view.shape[axis].values
             if isinstance(e, bool):
                 raise NoScaffold("op-args-not-lowered", f"{node.op} bool index")
@@ -862,7 +867,7 @@ class _Lowering:
                     break
         source = _emit_body(self.stages, _Ctx(mode, msl, self.n_inst, rb, rows.body))
         name = _kernel_name(self.nodes, self.stretch)
-        return KernelSpec(
+        spec = KernelSpec(
             kernel_id=name,
             name=name,
             input_names=tuple(b.name for b in self.in_bufs),
@@ -874,6 +879,31 @@ class _Lowering:
             output_dtypes=tuple(b.dtype for b in outputs),
             template=template,
         )
+        for instance in range(self.n_inst):
+            shapes = [tuple(d.values[instance] for d in buf.shape) for buf in self.in_bufs]
+            failure = launch_resource_failure(spec, shapes)
+            if failure is not None:
+                raise NoScaffold(failure.check, f"instance {instance}: {failure.detail}")
+            if mode == "single" or rows.values[instance] <= rb:
+                work = sum(self._stage_work(st, instance) for st in self.stages)
+                if work > SINGLE_GROUP_WORK_LIMIT:
+                    raise NoScaffold(
+                        "serial_launch", f"instance {instance}: one threadgroup would perform "
+                        f"about {work:,} scalar work units; limit is {SINGLE_GROUP_WORK_LIMIT:,}; "
+                        "choose a smaller region or a tiled lowering")
+        return spec
+
+    @staticmethod
+    def _stage_work(stage: _Stage, instance: int) -> int:
+        """Known generator loops only; this never tries to analyze arbitrary MSL."""
+        size = lambda shape: math.prod(d.values[instance] for d in shape)
+        out = size(stage.out.shape)
+        if stage.kind in ("matmul", "qmm"):
+            return out * stage.srcs[0].view.shape[-1].values[instance]
+        if stage.kind in ("rms", "ln", "reduce"):
+            passes = {"rms": 6, "ln": 8, "reduce": 1}[stage.kind]
+            return passes * size(stage.srcs[0].view.shape)
+        return out
 
 
 def _kernel_name(nodes, stretch: Stretch) -> str:

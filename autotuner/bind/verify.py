@@ -1,5 +1,5 @@
 """Literal retrace verification: after a bind, a record-mode retrace of the
-patched model must show the cut's member ops gone, one custom-kernel node per
+patched model must show the cut's member ops gone, one custom replacement node per
 copy consuming the cut's inputs and feeding its downstream consumers, and the
 stream elsewhere unchanged.
 """
@@ -68,7 +68,7 @@ def verify_retrace(
     if len(got) != len(expected):
         return RetraceReport(False, [
             f"patched stream has {len(got)} events, expected {len(expected)}: "
-            f"the cut did not become one custom dispatch per copy"
+            f"the cut did not become one custom replacement per copy"
         ])
 
     for k, (e, g) in enumerate(zip(expected, got)):
@@ -84,6 +84,13 @@ def verify_retrace(
                 f"event {k} ({e[0]!r}): output specs changed, {e[1]} -> {g[1]}: "
                 f"neighbors are not unchanged"
             )
+            break
+
+        elif e[2].kernel_definition != g[2].kernel_definition:
+            reasons.append(f"event {k}: captured Metal definition changed outside the cut")
+            break
+        elif e[2].kernel_definition is not None and e[2].scalar_args != g[2].scalar_args:
+            reasons.append(f"event {k}: captured Metal launch changed outside the cut")
             break
 
     if not reasons:

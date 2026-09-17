@@ -19,10 +19,13 @@ from autotuner.trace.recorder import is_opaque
 
 tracer = Tracer()
 tracer.install(model_module_name="qwen4bit")
-spec = importlib.util.spec_from_file_location("qwen4bit", "models/qwen3_0.6b_4bit_decode.py")
+from autotuner_runtime.state import context_step
+spec = importlib.util.spec_from_file_location("qwen4bit", "models/qwen3_0.6b_4bit.py")
 mod = importlib.util.module_from_spec(spec); sys.modules["qwen4bit"] = mod
 spec.loader.exec_module(mod)
-model = mod.build()
+# the decode step the harness builds for a workload with context: 512
+model = context_step(mod.build(), 512, mx.random.randint(0, 151936, (1, 512), key=mx.random.key(7)),
+                     [mx.random.randint(0, 151936, (1, 1), key=mx.random.key(8))])
 tok = mx.random.randint(0, 151936, (1, 1), key=mx.random.key(3))
 
 trace, _ = tracer.trace(model, [tok])

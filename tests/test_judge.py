@@ -13,6 +13,7 @@ from autotuner.judge import prompts
 from autotuner.judge.client import AnthropicJudge
 from autotuner.judge.queue import Queue, QueueError
 from autotuner.judge.schema import (
+    ITEM_ID_MAX_CHARS,
     JudgeBabble,
     KernelProposal,
     MalformedResponse,
@@ -82,16 +83,17 @@ def test_validate_next_round_trip():
     assert k.fallback_predicate == "in0.shape[0] > 64"
 
 
-def test_lesson_is_optional_and_bounded():
-    """A reply may carry one sentence for later regions; it is validated,
-    stripped, and refused when empty or too long."""
+def test_lesson_length_does_not_reject_a_proposal():
+    """Prose stays intact here; only the excerpt in future prompts is bounded."""
     seed = validate_response({"queue": [witem()], "lesson": "  keep partials in float  "})
     assert isinstance(seed, SeedResponse) and seed.lesson == "keep partials in float"
     nxt = validate_response({"mutations": [], "kernel": None, "lesson": "one launch beats three"})
     assert isinstance(nxt, NextResponse) and nxt.lesson == "one launch beats three"
     assert validate_response({"mutations": [], "kernel": None}).lesson is None
-    rejects({"mutations": [], "kernel": None, "lesson": ""}, "lesson")
-    rejects({"mutations": [], "kernel": None, "lesson": "x" * 401}, "lesson")
+    assert validate_response({"mutations": [], "kernel": None, "lesson": "  "}).lesson is None
+    long_note = "This is an observation, with details. " * 40
+    reply = validate_response({"mutations": [], "kernel": proposal(), "lesson": long_note})
+    assert reply.lesson == long_note.strip() and reply.kernel is not None
     rejects({"queue": [witem()], "lesson": 3}, "lesson")
 
 
@@ -100,13 +102,34 @@ def test_validate_next_yield():
     assert resp.mutations == () and resp.kernel is None
 
 
+@pytest.mark.parametrize("label", ["retile (M=32, N=64)", "reuse → unpack once",
+                                   "x" * 100, "  tile\n  and\t reuse  "])
+def test_prose_labels_do_not_cause_a_retry(label):
+    from autotuner.judge.client import JsonJudge
+
+    payload = {"mutations": [{"op": "insert", "item": witem(kind=label)}],
+               "kernel": proposal(), "lesson": "Keep the measured result. " * 40}
+    judge = JsonJudge()
+    calls = []
+    def ask(system, messages):
+        calls.append(messages)
+        assert len(calls) == 1, 'cosmetic metadata caused a second judge call'
+        return json.dumps(payload)
+    judge._ask = ask
+    result = judge.next({}, None)
+    assert result.mutations[0].item.kind == " ".join(label.split())
+    assert result.kernel.source == payload["kernel"]["source"]
+    assert result.kernel.grid == tuple(payload["kernel"]["grid"])
+    assert result.lesson == payload["lesson"].strip()
+
+
 def test_validate_rejects_shapes_and_items():
     rejects("nope", "JSON object")
     rejects({"queue": []}, "non-empty")
     rejects({"queue": [witem()], "kernel": None}, "seed response")
     rejects({"mutations": []}, "keys must be")
-    rejects({"queue": [witem(kind="x" * 41)]}, "short label")
-    rejects({"queue": [witem(kind="two\nlines")]}, "short label")
+    rejects({"queue": [witem(kind="  ")]}, "non-empty label")
+    rejects({"queue": [witem(kind=3)]}, "non-empty string")
     rejects({"queue": [witem(assoc_tag="exact")]}, "assoc_tag")
     rejects({"queue": [{"id": "h1", "kind": "fix", "assoc_tag": "preserving"}]}, "hypothesis")
     rejects({"queue": [witem(depends_on="h0")]}, "come together")
@@ -120,8 +143,19 @@ def test_validate_rejects_shapes_and_items():
 
 def test_validate_rejects_harness_owned_kernel_fields():
     # init_value, math_mode, streams, and the kernel name are the harness's
-    for key in ("init_value", "math_mode", "stream", "name", "output_dtypes"):
+    for key in ("init_value", "math_mode", "stream", "name", "output_dtypes",
+                "native_call", "input_signature", "reference_sequence"):
         rejects({"mutations": [], "kernel": proposal(**{key: "x"})}, "not the judge's to set")
+
+
+def test_queue_ids_are_bounded_before_they_become_kernel_filenames(tmp_path):
+    item_id = "k" * ITEM_ID_MAX_CHARS
+    accepted = validate_response({"queue": [witem(item_id)]}).queue[0]
+    (tmp_path / f"r123456_{accepted.id}.launch.json").write_text("{}")
+    for oversized in (item_id + "k", "k" * 260):
+        rejects({"queue": [witem(oversized)]}, "at most")
+        rejects({"mutations": [{"op": "insert", "item": witem(oversized)}],
+                 "kernel": None}, "at most")
 
 
 def test_validate_rejects_bad_launch_config():
@@ -326,6 +360,10 @@ def test_prompt_snapshot():
     rendered = prompts.render_region_state(**state)
     assert rendered["region"] == {
         "fingerprint": "fp-exp-sin",
+        "timing_workloads": ["decode", "prefill"],
+        "default_target_workload": None,
+        "head_workload": None,
+        "shipped_workload": None,
         "ops": state["ops"],
         "io": {
             "decode": {"inputs": [[[1, 64], "float16"]], "outputs": [[[1, 64], "float16"]]},
@@ -372,7 +410,8 @@ def test_prompt_is_structurally_sealed():
     assert set(params) == {"region", "io_specs", "ops", "kernels", "head", "shipped",
                            "head_ms", "shipped_ms", "head_floor_ms", "shipped_floor_ms",
                            "assoc_tag", "queue", "last_verdict", "writing_for", "chip", "budget",
-                           "history", "lessons", "regions_done"}
+                           "history", "lessons", "regions_done", "default_target_workload",
+                           "head_workload", "shipped_workload", "directions", "widening"}
     assert all(p.kind is inspect.Parameter.KEYWORD_ONLY for p in params.values())
 
 
@@ -384,6 +423,44 @@ def test_prompt_refuses_tolerance_keys():
     state = fixed_state()
     state["kernels"] = {"k1": {"verdict": [{"atol": 1e-6}]}}
     with pytest.raises(ValueError, match="atol"):
+        prompts.render_region_state(**state)
+
+
+@pytest.mark.parametrize("field", ["history", "lessons", "regions_done", "chip",
+                                   "budget", "writing_for", "ops"])
+def test_prompt_guard_covers_every_metadata_branch(field):
+    state = fixed_state()
+    hidden = {"nested": [{"ToLeRaNcEs": {"x": 1e-3}}]}
+    state[field] = [hidden] if field in {"history", "lessons", "regions_done", "ops"} else hidden
+    with pytest.raises(ValueError, match="ToLeRaNcEs"):
+        prompts.render_region_state(**state)
+
+
+@pytest.mark.parametrize("key", sorted(prompts.ENVELOPE_KEYS))
+def test_client_guard_covers_the_separate_verdict(key):
+    """next() accepts a second verdict outside render_region_state; it must
+    pass the same guard before any transport or transcript sees it."""
+    sdk = FakeSDK([])
+    judge = AnthropicJudge(client=sdk)
+    with pytest.raises(ValueError, match=key.upper()):
+        judge.next({"stub": True}, {"detail": [{key.upper(): 0.123}]})
+    assert sdk.messages.calls == []
+
+
+def test_client_guard_checks_seed_payload_and_allows_timing_floors():
+    sdk = FakeSDK([json.dumps({"queue": [witem()]})])
+    judge = AnthropicJudge(client=sdk)
+    with pytest.raises(ValueError, match="kappa"):
+        judge.seed({"history": [{"kappa": 1.25}]})
+    assert sdk.messages.calls == []
+    assert isinstance(judge.seed({"floor_ms": 0.01, "roofline_ms": 0.02}), SeedResponse)
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_prompt_refuses_nonfinite_measurements(value):
+    state = fixed_state()
+    state["head_ms"] = value
+    with pytest.raises(TypeError, match="plain JSON"):
         prompts.render_region_state(**state)
 
 
@@ -659,11 +736,35 @@ def test_client_transcript_records_every_ask_and_reply(tmp_path):
     judge.transcript = tmp_path / "judge.jsonl"
     judge.seed({"stub": True})
     rows = [json.loads(l) for l in (tmp_path / "judge.jsonl").read_text().splitlines()]
+    assert [r["event"] for r in rows] == ["request", "reply", "request", "reply"]
+    rows = [r for r in rows if r["event"] == "reply"]
     assert [(r["call"], r["attempt"]) for r in rows] == [("SeedResponse", 0), ("SeedResponse", 1)]
     assert rows[0]["reply"] == "not json"
     assert json.loads(rows[0]["messages"][0]["content"]) == {"region_state": {"stub": True}}
     assert "rejected" in rows[1]["messages"][-1]["content"]
     assert "Response schema (seed)" in rows[1]["system"]
+
+
+def test_client_transcript_records_request_before_transport_and_error_after(tmp_path):
+    from autotuner.judge.client import JsonJudge
+
+    transcript = tmp_path / "judge.jsonl"
+
+    class FailingJudge(JsonJudge):
+        def _ask(self, system, messages):
+            rows = [json.loads(line) for line in transcript.read_text().splitlines()]
+            assert len(rows) == 1 and rows[0]["event"] == "request"
+            assert rows[0]["messages"] == messages and rows[0]["system"] == system
+            raise TimeoutError("judge did not answer")
+
+    judge = FailingJudge()
+    judge.transcript = transcript
+    with pytest.raises(TimeoutError, match="did not answer"):
+        judge.seed({"stub": True})
+    request, error = [json.loads(line) for line in transcript.read_text().splitlines()]
+    assert error["event"] == "error" and error["call"] == request["call"] == "SeedResponse"
+    assert error["attempt"] == 0 and error["elapsed_s"] >= 0
+    assert error["error"] == "TimeoutError: judge did not answer"
 
 
 def test_item_ids_must_be_identifiers_because_they_become_kernel_names():
@@ -736,3 +837,139 @@ def test_chip_facts_reach_the_judge():
     assert rendered["chip"]["gpu_cores"] == 10 and rendered["chip"]["bandwidth_gbps"] == 94.0
     assert "one core" in LEGEND["chip"] and "chip" in rendered["legend"]
     assert any("chip.gpu_cores" in m for m in rendered["moves"])
+
+
+@pytest.mark.parametrize("value, expected", [(float("inf"), "Infinity"),
+                                            (float("-inf"), "-Infinity"),
+                                            (float("nan"), "NaN")])
+def test_diagnostics_encode_nonfinite_without_relaxing_metadata_guard(value, expected):
+    detail = {"nested": [{"max_excess": value}], "reason": "nonfinite_pattern",
+              "count": 3, "finite_distance": 0.5}
+    safe = prompts.diagnostic_metadata(detail)
+    assert safe == {"nested": [{"max_excess": expected}], "reason": "nonfinite_pattern",
+                    "count": 3, "finite_distance": 0.5}
+    prompts.validate_metadata({"detail": safe})
+    with pytest.raises(TypeError, match="plain JSON"):
+        prompts.validate_metadata({"detail": detail})
+
+
+def test_exact_failure_reaches_next_judge_instead_of_becoming_a_paid_error():
+    """The Sep 12 h22 failure contained a raw infinity before log encoding.
+
+    Feed that same detail through the actual verdict/prompt/client boundary.
+    The next idea must reach the transport once and remain available to run.
+    """
+    from autotuner.ladder.gates import LadderResult
+    from autotuner.loop import JobRunner, _verdict_payload
+    failure = LadderResult(
+        "failed", "smoke", {"output": "out0", "reason": "exact",
+        "max_excess": float("inf"), "note": "output must match the original bit-for-bit",
+        "eval_set": "prefill", "input_set": 0, "kind": "stored_ref"},
+        None, None, None, None, ["static", "compile", "poison", "watchdog"])
+    verdict = _verdict_payload("h22", "r3c1d12_h22", "failed", failure)
+    assert verdict["detail"]["max_excess"] == "Infinity"
+    state = fixed_state()
+    state["last_verdict"] = verdict
+    metadata = prompts.render_region_state(**state)
+    sdk = FakeSDK([json.dumps({"mutations": [], "kernel": proposal()})])
+    judge = AnthropicJudge(client=sdk)
+    events = []
+    runner = SimpleNamespace(log=SimpleNamespace(append=lambda kind, **kw: events.append((kind, kw))))
+    run = SimpleNamespace(region=state["region"])
+    response, error = JobRunner._ask_judge(runner, run, "next", lambda: judge.next(metadata, verdict))
+    assert error is None
+    assert response.kernel is not None
+    assert len(sdk.messages.calls) == 1
+    assert not any(data.get("action") == "error" for _kind, data in events)
+    payload = json.loads(sdk.messages.calls[0]["messages"][0]["content"])
+    assert payload["verdict"]["detail"]["reason"] == "exact"
+
+
+def test_diagnostic_normalization_does_not_rewrite_source_or_launch_strings():
+    detail = {"source": "out0[0] = INFINITY; // nan", "grid": ["in0.shape[0]", "1", "1"],
+              "max_excess": float("inf")}
+    safe = prompts.diagnostic_metadata(detail)
+    assert safe["source"] == detail["source"]
+    assert safe["grid"] == detail["grid"]
+
+
+
+def test_original_nonfinite_kernel_constants_are_displayed_without_spec_changes():
+    import math
+    from dataclasses import replace
+    from autotuner.loop import _kernel_view
+    from autotuner_runtime.kernels import KernelSpec
+    native = {"factory": {"input_names": ["x", "limit"], "output_names": ["y"]},
+              "bindings": [{"array": 0}, {"scalar": float("inf")}],
+              "template": [], "signature": [[[1], "float32"]], "init_value": float("nan")}
+    original = {"nodes": [{"kwargs": {"init_value": float("nan"), "minimum": -float("inf")}}]}
+    spec = KernelSpec(kernel_id="constant_display", name="constant_display",
+                      input_names=("in0",), output_names=("out0",),
+                      source="y[0] = x[0]; // INFINITY is untouched text",
+                      grid=("1", "1", "1"), threadgroup=("1", "1", "1"),
+                      native_call=native)
+    sequence_spec = replace(spec, native_call=None, reference_sequence=original)
+    view = _kernel_view(spec)
+    sequence_view = _kernel_view(sequence_spec)
+    prompts.validate_metadata({"kernel": view, "sequence": sequence_view})
+    assert view["native_call"]["init_value"] == "NaN"
+    assert view["native_call"]["bindings"][1]["scalar"] == "Infinity"
+    assert sequence_view["reference_sequence"]["nodes"][0]["kwargs"]["minimum"] == "-Infinity"
+    assert math.isnan(spec.native_call["init_value"])
+    assert math.isinf(spec.native_call["bindings"][1]["scalar"])
+    assert math.isnan(sequence_spec.reference_sequence["nodes"][0]["kwargs"]["init_value"])
+    assert spec.source == view["source"]
+    assert list(spec.grid) == view["grid"]
+
+
+def test_original_op_nonfinite_constants_are_displayed_without_trace_changes():
+    import math
+    from autotuner.loop import _ops_view
+    from autotuner.trace.recorder import ArrayRef
+    node = SimpleNamespace(seq=0, op="mx.maximum", in_arrays=(1,), out_arrays=(2,),
+                           scalar_args={"args": (ArrayRef(0), float("inf")), "kwargs": {}})
+    trace = SimpleNamespace(nodes=[node])
+    span = SimpleNamespace(input_ids=(1,), output_ids=(2,), start_seq=0, end_seq=0)
+    view = _ops_view(trace, span)
+    prompts.validate_metadata({"ops": view})
+    assert view[0]["args"] == ["in0", "Infinity"]
+    assert math.isinf(node.scalar_args["args"][1])
+
+
+
+def test_model_rejection_feedback_hides_acceptance_numbers_and_sample_values():
+    from autotuner.loop import _safe_detail
+    raw = {"model_check": {"status": "correctness_failed", "checks": [{
+        "name": "prefill", "allowance": 0.02, "floor_max_abs": 0.0,
+        "floor_cosine": 1.0, "cosine_allowance": 0.001,
+        "max_abs": 0.5, "reason": "tolerance", "failure": {
+            "output": 0, "index": [3, 9], "reference": 1.0, "candidate": 1.5,
+            "allowance": 0.02, "error": 0.5}}]}}
+    safe = _safe_detail(raw)
+    prompts.validate_metadata({"detail": safe})
+    check = safe["model_check"]["checks"][0]
+    assert check == {"name": "prefill", "max_abs": 0.5, "reason": "tolerance",
+                     "failure": {"output": 0, "index": [3, 9], "error": 0.5}}
+    # Filtering the judge view must not erase the operator's full evidence.
+    assert raw["model_check"]["checks"][0]["failure"]["reference"] == 1.0
+
+
+
+@pytest.mark.parametrize("reserved", ["scaffold", "scafix", "original", "head", "shipped"])
+def test_reserved_hypothesis_ids_cannot_replace_originals_or_shadow_aliases(reserved):
+    rejects({"queue": [witem(reserved)]}, "reserved")
+    rejects({"mutations": [{"op": "insert", "item": witem(reserved)}], "kernel": None}, "reserved")
+    q = Queue()
+    q.seed([item("h1")])
+    with pytest.raises(QueueError, match="reserved"):
+        from autotuner.judge.schema import InsertItem
+        q.apply_mutations([InsertItem(item=item(reserved))])
+    assert q.ids() == ("h1",)
+
+
+def test_reserved_id_is_reasked_before_any_hypothesis_is_queued():
+    sdk = FakeSDK([json.dumps({"queue": [witem("original")]}),
+                   json.dumps({"queue": [witem("repair_original")]})])
+    response = AnthropicJudge(client=sdk).seed({"stub": True})
+    assert response.queue[0].id == "repair_original"
+    assert len(sdk.messages.calls) == 2

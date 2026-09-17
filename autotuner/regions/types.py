@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .price import RegionPrice
 
 
 @dataclass(frozen=True)
@@ -35,6 +39,16 @@ class Region:
     ops: tuple[str, ...]              # canonical op sequence
     members: list[Stretch] = field(default_factory=list)
     rejected: str | None = None       # named reason, or None if viable
+    # how a kernel installs at the region's scope, per workload, read from the
+    # record before any clock: direct (the kernel call alone), graph (the
+    # scope compiled with the cut inserted), or replay (generated Python)
+    delivery: dict[str, str] = field(default_factory=dict)
+    delivery_reasons: dict[str, str] = field(default_factory=dict)   # why graph insertion declined
+
+    def library_arm(self, workload: str, baseline: str) -> str:
+        """What every clock runs the region's library ops as: one compiled
+        graph where the deployed scope compiles, else as the baseline runs."""
+        return "compiled" if baseline == "compiled" or self.delivery.get(workload) == "graph" else "plain"
 
     # pricing, filled by price.py per workload name; t_orig_ms sums every copy
     # (the region's share of the step), t_rep_ms is one representative copy
@@ -46,6 +60,8 @@ class Region:
     p_rep: dict[str, float] = field(default_factory=dict)   # one copy's share
     stability: dict[str, float] = field(default_factory=dict)  # 0..1 per workload
     roofline: Roofline | None = None
+    rooflines: dict[str, Roofline] = field(default_factory=dict)  # each workload has its own measured floor
+    prices: dict[str, RegionPrice] = field(default_factory=dict)  # one paired price per captured shape group
 
     @property
     def copies(self) -> int:
@@ -62,3 +78,29 @@ class Region:
     @property
     def combined_p(self) -> float:
         return sum(self.p.values())
+
+    @property
+    def removable_p(self) -> dict[str, float]:
+        """Amdahl's optimistic step reduction, p * (1 - 1/s_max).
+
+        This is headroom, not a promised win. Each workload uses its own
+        paired price and physical floor. ``roofline`` remains a fallback for
+        older callers that supplied only one representative workload.
+        """
+        reductions = {}
+        for workload, share in self.p.items():
+            roof = self.rooflines.get(workload, self.roofline)
+            reductions[workload] = (
+                max(share, 0.0) * (1.0 - 1.0 / roof.s_max)
+                if roof is not None and roof.s_max > 1.0 else 0.0
+            )
+        return reductions
+
+    @property
+    def combined_removable_p(self) -> float:
+        """Sum of possible fractional savings, with equal workload weight.
+
+        Like combined_p, this sum can exceed one across several workloads;
+        it is a ranking score, never a claimed whole-job speedup.
+        """
+        return sum(self.removable_p.values())

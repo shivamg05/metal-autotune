@@ -1,0 +1,18 @@
+model: ../recurrentgemma_2b.py
+baseline: plain
+workloads:
+- name: recurrentgemma_2b_prefill_512
+  inputs:
+  - shape:
+    - 1
+    - 512
+    dtype: int32
+    low: 0
+    high: 256000
+budget:
+  per_region: 8
+  total: 24
+final_benchmark:
+  steps: 10
+  pairs: 4
+  warmup_steps: 3

@@ -7,10 +7,9 @@ Validation alone reports only to os_log, so validate
 mode also sets MTL_SHADER_VALIDATION_REPORT_TO_STDERR=1 and the parent scans
 child stderr for "Invalid device load"/"Invalid device store" lines.
 
-Kill-and-relaunch is routine, not an error path: an infinite-loop kernel
-truly hangs mx.eval (verified: no OS-side error within 30s), killing the
-child is how the wedged GPU recovers, and the wall timeout maps to a
-structured verdict rather than an exception.
+Workers share the desktop GPU. A short deadline surrounds each GPU evaluation,
+separate from the whole-worker budget and cooling. A timeout stops the job:
+killing the child does not guarantee cancellation of work already on the GPU.
 """
 
 from __future__ import annotations
@@ -18,9 +17,14 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import select
 import subprocess
 import sys
+import tempfile
+import time
 from dataclasses import dataclass, field
+
+from autotuner.sandbox.watchdog import GPU_WINDOW_S
 
 # Never configurable: a timed run past this multiple of the library region
 # time fails the child-side watchdog. The gate exists to catch wedged kernels,
@@ -78,7 +82,7 @@ class LadderSpec:
     eval_sets: tuple[EvalSetSpec, ...]
     tolerances: dict                  # {"rtol": float, "atol": float}
     kappa: float
-    changing_floor: float | None      # None -> the child computes the k-set spread floor
+    changing_floor: float | None      # legacy wire field; unused by current numeric policy
     min_win_ms: float                 # absolute term of the ship margin, copies folded in
     phase: str                        # "validate" | "score"
     seed: int = 0
@@ -86,6 +90,8 @@ class LadderSpec:
     weight_inputs: tuple[bool, ...] = ()  # per input: a model weight, never perturbed
     baseline: str = "plain"           # "compiled": time the library span as one compiled graph
     compute_floor_ms: float = 0.0     # the roofline's flops term, arithmetic; the probe covers the rest
+    timing_incumbent: dict | None = None
+    defer_cooling: bool = False       # only when the parent owns the remaining cooling deadline
     kind: str = "ladder"
 
     def to_json(self) -> str:
@@ -153,33 +159,104 @@ def run_job(spec: LadderSpec, mode: str, timeout_s: float) -> Verdict:
     """Spawn one worker, write the spec to its stdin, read the one JSON verdict
     line from its stdout. Nonzero exit, crash, or wall timeout maps to
     failed_gate "subprocess" with the stderr tail."""
-    env = mode_env(mode)
-    try:
-        proc = subprocess.run(
-            [sys.executable, "-m", "autotuner.sandbox.worker"],
-            input=spec.to_json(),
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=timeout_s,
-        )
-    except subprocess.TimeoutExpired as e:
-        return _subprocess_verdict(
-            f"wall timeout after {timeout_s}s; child killed", _tail(e.stderr)
-        )
-    except OSError as e:
-        # spawn failure under memory pressure is an evaluation failure too
-        return _subprocess_verdict(f"child spawn failed: {e}", "")
-    if proc.returncode != 0:
-        return _subprocess_verdict(f"child exit {proc.returncode}", _tail(proc.stderr))
+    proc = _supervise(
+        [sys.executable, "-m", "autotuner.sandbox.worker"],
+        spec.to_json(), mode_env(mode), timeout_s,
+    )
+    if isinstance(proc, Verdict):
+        proc.detail.update(kernel_id=spec.kernel.get("kernel_id"), phase=spec.phase)
+        return proc
     verdict = _parse_verdict(proc.stdout)
     if verdict is None:
-        return _subprocess_verdict(
+        verdict = _subprocess_verdict(
             "child exited 0 without a verdict line", _tail(proc.stderr)
         )
+        verdict.detail.update(kernel_id=spec.kernel.get("kernel_id"), phase=spec.phase)
+        return verdict
     if mode == "validate":
         _merge_validation(verdict, proc.stderr)
     return verdict
+
+
+def _supervise(command, payload, env, timeout_s, gpu_timeout_s=GPU_WINDOW_S):
+    """Monitor a dedicated pipe so cooling and ordinary stdout cannot reset a GPU deadline."""
+    read_fd, write_fd = os.pipe()
+    proc = None
+    try:
+        with tempfile.TemporaryFile() as stdin, tempfile.TemporaryFile() as stdout, \
+                tempfile.TemporaryFile() as stderr:
+            stdin.write(payload.encode())
+            stdin.seek(0)
+            try:
+                proc = subprocess.Popen(command, stdin=stdin, stdout=stdout, stderr=stderr,
+                                        env={**env, "AUTOTUNER_WATCHDOG_FD": str(write_fd)},
+                                        pass_fds=(write_fd,))
+            except OSError as e:
+                return _subprocess_verdict(f"child spawn failed: {e}", "")
+            deadline = time.monotonic() + timeout_s
+            gpu_deadline = None
+            reason = None
+            while proc.poll() is None:
+                now = time.monotonic()
+                if gpu_deadline is not None and now >= gpu_deadline:
+                    reason = f"GPU evaluation timeout after {gpu_timeout_s}s; stopping the job"
+                    break
+                if now >= deadline:
+                    reason = f"wall timeout after {timeout_s}s; stopping the job"
+                    break
+                ready, _, _ = select.select([read_fd], [], [], min(
+                    0.05, deadline - now,
+                    max(0.0, gpu_deadline - now) if gpu_deadline is not None else 0.05))
+                if ready:
+                    for event in os.read(read_fd, 4096):
+                        if event == ord("B") and gpu_deadline is None:
+                            gpu_deadline = time.monotonic() + gpu_timeout_s
+                        elif event == ord("E"):
+                            gpu_deadline = None
+            if reason is not None:
+                proc.kill()
+                try:
+                    proc.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    reason += "; worker did not exit after kill"
+            stdout.seek(0)
+            stderr.seek(0)
+            out = stdout.read().decode(errors="replace")
+            err = stderr.read().decode(errors="replace")
+            if reason is not None or proc.returncode != 0:
+                v = _subprocess_verdict(reason or f"child exit {proc.returncode}", _tail(err))
+                v.detail["failure_kind"] = "timeout" if reason is not None else "exit"
+                v.detail["gpu_timeout_s"] = gpu_timeout_s
+                return v
+            return subprocess.CompletedProcess(command, proc.returncode, out, err)
+    finally:
+        if proc is not None and proc.poll() is None:
+            proc.kill()
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                pass  # A stuck driver can delay exit even after SIGKILL.
+        os.close(read_fd)
+        os.close(write_fd)
+
+
+class WorkerFailed(RuntimeError):
+    """The worker exited, could not start, or returned no valid verdict."""
+
+
+class WorkerUnresponsive(WorkerFailed):
+    """Stop orchestration without issuing another GPU command."""
+
+
+def require_responsive(verdict: Verdict) -> None:
+    if verdict.detail.get("abort_job"):
+        context = ": ".join(str(verdict.detail[k]) for k in ("kernel_id", "phase")
+                            if verdict.detail.get(k))
+        message = f"{context}: {verdict.detail['reason']}" if context else verdict.detail["reason"]
+        if verdict.detail.get("stderr_tail"):
+            message += "\nWorker stderr:\n" + verdict.detail["stderr_tail"]
+        error_type = WorkerUnresponsive if verdict.detail.get("failure_kind") == "timeout" else WorkerFailed
+        raise error_type(message)
 
 
 def _subprocess_verdict(reason: str, stderr_tail: str) -> Verdict:
@@ -187,7 +264,8 @@ def _subprocess_verdict(reason: str, stderr_tail: str) -> Verdict:
         passed=False,
         failed_gate="subprocess",
         gates_passed=(),
-        detail={"reason": reason, "stderr_tail": stderr_tail},
+        detail={"reason": reason, "stderr_tail": stderr_tail,
+                "abort_job": True, "failure_kind": "exit"},
     )
 
 

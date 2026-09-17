@@ -58,18 +58,18 @@ def _runner(tmp_path, shape: str, extra: str = "", fixture: str = "planted_win.p
 
 
 @pytest.fixture
-def no_step_veto(monkeypatch):
-    """The kernels handed in here are stand-ins with a stated win; a lone
-    elementwise kernel is really a little slower than the library's op, and
-    on a quiet machine the whole-model veto would rightly reject it. The veto
-    itself is tested in test_e2e.py."""
-    import autotuner.e2e as e2e
-
-    monkeypatch.setattr(e2e, "STEP_VETO_PCT", 10.0)
+def model_says_win(monkeypatch):
+    """These tests hand in stand-in kernels to exercise install, compose,
+    re-ship, and rollback. A lone elementwise kernel is really a little slower
+    than the library's op, so force the whole-model win and let the install
+    mechanics run; certification and retrace still run for real. Whether a
+    kernel is actually faster is the whole-model decision tested in test_e2e.py
+    and test_loop.py."""
+    monkeypatch.setattr(JobRunner, "_model_win", lambda self, e2e: True)
 
 
 @pytest.fixture
-def runner(tmp_path, no_step_veto):
+def runner(tmp_path, model_says_win):
     r = _runner(tmp_path, "[64, 1024]")
     yield r
     r.tracer.uninstall()
@@ -77,7 +77,7 @@ def runner(tmp_path, no_step_veto):
 
 
 @pytest.fixture
-def swept(tmp_path, no_step_veto):
+def swept(tmp_path, model_says_win):
     """The row count is a named dim, primary 64, swept to 7."""
     r = _runner(tmp_path, "[L, 1024]", "sweep: {L: [7, 64]}\n        primary: {L: 64}")
     yield r
@@ -105,7 +105,8 @@ def test_wins_compose_on_one_model(runner, tmp_path):
     k_add = elementwise("radd_h1", "out0[i] = in0[i] + in1[i % (uint)in0_shape[1]];", ("in0", "in1"))
     assert runner._bind_and_promote(RegionRun(region=add), k_add, WIN)
     assert len(runner.cuts["main"]) == 4
-    assert sorted(runner.emitted["chain"].kernel_ids) == ["radd_h1", "radd_h1", "rmax_h1", "rmin_h1"]
+    assert set(runner.emitted["chain"].kernel_ids) == {"radd_h1", "rmax_h1", "rmin_h1"}
+    assert list(runner.cuts["main"].values()).count("radd_h1") == 2
 
     # a re-ship on the same span replaces the old kernel everywhere
     k_max2 = elementwise("rmax_h2", "out0[i] = (in0[i] != in0[i]) ? in0[i] : metal::max(in0[i], 0.0f);")
@@ -178,7 +179,7 @@ def test_the_sweep_checks_every_kernel_at_the_other_sizes(swept, tmp_path):
     chain.t_orig_ms["main"] = chain.t_rep_ms["main"] = 1.0  # pricing is not under test
     sets = swept._eval_sets(chain)
     assert [(e.label, e.correctness_only, e.nodes_json is not None) for e in sets] == [
-        ("main", False, False), ("main@L=7", True, True)]
+        ("main", False, True), ("main@L=7", True, True)]
 
     passed = run_ladder(swept._ladder_job(chain, FUSED, "preserving", run_clock=False))
     assert "sweep" in passed.gates_passed, passed
@@ -272,23 +273,25 @@ def test_a_compiled_clock_that_breaks_the_model_stops_the_job(tmp_path, monkeypa
         r.tracer.uninstall()
 
 
-def test_a_crash_mid_install_rolls_the_model_back(runner, tmp_path, monkeypatch):
+@pytest.mark.parametrize("error", [RuntimeError("[METAL] command buffer execution failed"),
+                                  KeyboardInterrupt()])
+def test_a_crash_mid_install_rolls_the_model_back(runner, tmp_path, monkeypatch, error):
     """An unexpected exception inside the install must leave the model, the
     artifact record, and the patch surface exactly as before, and be logged
-    with its reason instead of ending the job."""
+    while the exception stops the job instead of submitting more GPU work."""
     import autotuner.loop as loop_mod
     from autotuner_runtime.swap import ReplayWrapper
 
     def exploding_e2e(*a, **k):
-        raise RuntimeError("[METAL] command buffer execution failed")
+        raise error
 
     monkeypatch.setattr(loop_mod, "run_e2e", exploding_e2e)
-    assert not runner._bind_and_promote(_chain(runner), FUSED, WIN)
+    with pytest.raises(type(error)):
+        runner._bind_and_promote(_chain(runner), FUSED, WIN)
     assert not isinstance(runner.model.chain, ReplayWrapper)
     assert not runner.tracer.patcher.installed
     assert runner.installed == {} and runner.emitted == {} and runner.cuts == {}
-    assert any(r["kind"] == "bind_failed" and "command buffer" in r["reason"]
-               for r in runner.log.rows())
+    assert runner.report.accepted == []
 
 
 def test_a_win_that_fails_the_whole_model_check_leaves_no_trace(runner, tmp_path, monkeypatch):
@@ -298,14 +301,15 @@ def test_a_win_that_fails_the_whole_model_check_leaves_no_trace(runner, tmp_path
 
     import autotuner.loop as loop_mod
 
-    class FailedE2E:
-        passed = False
-        veto_passed = False
-        checks = ()
-
-    monkeypatch.setattr(loop_mod, "run_e2e", lambda *a, **k: FailedE2E())
-    assert not runner._bind_and_promote(_chain(runner), FUSED, WIN)
+    from autotuner.e2e import E2EResult, WorkloadCheck
+    failure = E2EResult(checks=[WorkloadCheck(
+        "main", 0.0, 1.0, 0.0, 1.0, False, reason="output changed")], veto_passed=False)
+    monkeypatch.setattr(loop_mod, "run_e2e", lambda *a, **k: failure)
+    monkeypatch.setattr(JobRunner, "_model_win", lambda self, e2e: e2e.passed)
+    result = runner._bind_and_promote(_chain(runner), FUSED, WIN)
+    assert not result and result.status == "correctness_failed"
     assert runner.emitted == {} and runner.installed == {}
+    runner._final_check()
     art = runner.emit_artifact(tmp_path / "artifact")
     assert json.loads((art / "swap_table.json").read_text()) == []
     assert list((art / "kernels").glob("*.metal")) == []
@@ -321,7 +325,7 @@ def test_a_failed_certification_removes_the_patch_surface(runner, monkeypatch):
         ok = False
         reason = "forced by test"
 
-    monkeypatch.setattr(loop_mod, "certify_identity", lambda **k: FailedCert())
+    monkeypatch.setattr(loop_mod, "certify_identities", lambda **k: FailedCert())
     assert not runner._bind_and_promote(_chain(runner), FUSED, WIN)
     assert not runner.tracer.patcher.installed
     assert runner.installed == {} and "chain" not in runner.certified_scopes

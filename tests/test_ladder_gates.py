@@ -6,7 +6,7 @@ and BoundaryStore, so what the child sees is exactly what the loop will feed.
 """
 
 import statistics
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 
 import importlib.util
 from pathlib import Path
@@ -167,6 +167,7 @@ def make_job(ctx, spec, *, tag="preserving", tol=FP32_TOL, contract_over=None,
     contract = dict(ctx.contract)
     contract.update(contract_over or {})
     return LadderJob(
+        baseline=baseline,
         kernel=spec,
         contract=RegionContract(**contract),
         assoc_tag=tag,
@@ -179,12 +180,14 @@ def make_job(ctx, spec, *, tag="preserving", tol=FP32_TOL, contract_over=None,
         min_win_ms=min_win_ms,
         run_clock=run_clock,
         clock_pairs=8,
-        baseline=baseline,
         timeout_s=TIMEOUT_S,
     )
 
 
 # -- the cheat zoo: every cheat dies at its intended gate ---------------------
+# Toy shaders fuse floating evaluation (including division) and are not
+# bit-identical to MLX. Mark changing where a test needs to reach later gates;
+# keep the same default tolerances, so the planted shape/value bugs still fail.
 
 
 def test_partial_write_dies_at_poison(toy):
@@ -197,7 +200,7 @@ def test_partial_write_dies_at_poison(toy):
 
 def test_shape_hardcoded_dies_at_sweep(toy):
     spec, _ = cheats.shape_hardcoded()
-    r = run_ladder(make_job(toy, spec))
+    r = run_ladder(make_job(toy, spec, tag="changing"))
     assert (r.outcome, r.failed_gate) == ("failed", "sweep")
     # correct at the primary size: smoke and the k sets all passed first
     assert r.gates_passed == VALIDATE_GATES[:-2]
@@ -207,7 +210,7 @@ def test_shape_hardcoded_dies_at_sweep(toy):
 
 def test_stride_lying_dies_at_sweep_transposed_variant(toy):
     spec, _ = cheats.stride_lying()
-    r = run_ladder(make_job(toy, spec))
+    r = run_ladder(make_job(toy, spec, tag="changing"))
     assert (r.outcome, r.failed_gate) == ("failed", "sweep")
     assert r.detail["kind"] == "transposed_variant"
 
@@ -223,7 +226,7 @@ def test_cached_by_shape_dies_at_smoke_k_set_variation(toy):
 
 def test_eps_dropping_dies_at_smoke_tiny_scale_regime(toy):
     spec, _ = cheats.eps_dropping()
-    r = run_ladder(make_job(toy, spec))
+    r = run_ladder(make_job(toy, spec, tag="changing"))
     assert (r.outcome, r.failed_gate) == ("failed", "smoke")
     assert r.detail["kind"] == "regime"
     assert r.detail["regime"] == "scaled_down"
@@ -231,7 +234,7 @@ def test_eps_dropping_dies_at_smoke_tiny_scale_regime(toy):
 
 def test_fallback_declared_but_dead_dies_at_sweep(toy):
     spec, _ = cheats.fallback_declared_but_dead()
-    r = run_ladder(make_job(toy, spec, contract_over={"requires_fallback": True}))
+    r = run_ladder(make_job(toy, spec, tag="changing", contract_over={"requires_fallback": True}))
     assert (r.outcome, r.failed_gate) == ("failed", "sweep")
     assert r.detail["fallback_declared_but_dead"] is True
     assert not any(r.detail["fallback_engaged"].values())  # the log shows it never ran
@@ -254,10 +257,33 @@ def test_fallback_missing_dies_at_static(toy):
     assert "fallback_missing" in {f["check"] for f in r.detail["failures"]}
 
 
+def test_fallback_on_secondary_workload_returns_failure_instead_of_crashing(toy):
+    from dataclasses import replace
+    spec, _ = cheats.stride_lying()
+    spec = replace(spec, fallback_predicate="in0.shape[0] != 64")
+    job = make_job(toy, spec, tag="changing")
+    # This shape is a required optimization workload, rather than a fallback sweep.
+    job.eval_sets = [job.eval_sets[0], replace(job.eval_sets[1], correctness_only=False)]
+    result = run_ladder(job)
+    assert (result.outcome, result.failed_gate) == ("failed", "static"), result
+    assert "fallback_on_workload" in result.detail["reason"]
+
+
 def test_fp16_sloppy_accumulation_dies_at_smoke_regimes(red16):
+    from dataclasses import replace
     spec, _ = cheats.fp16_sloppy_accumulation()
-    r = run_ladder(make_job(red16, spec, tol=FP16_TOL))
-    assert (r.outcome, r.failed_gate) == ("failed", "smoke")
+    # Keep the intended half-accumulation error, but distribute the work so
+    # this numeric regression does not depend on a serial shader's watchdog ratio.
+    spec = replace(spec, source="""uint lane = thread_position_in_grid.x % 32;
+uint r = thread_position_in_grid.x / 32;
+uint D = (uint)x_shape[1];
+half acc = half(0.0);
+for (uint j = lane; j < D; j += 32) { acc += x[r * D + j]; }
+float total = metal::simd_sum((float)acc);
+if (lane == 0) { y[r] = (half)total; }
+""", grid=("in0.shape[0] * 32", "1", "1"), threadgroup=("32", "1", "1"))
+    r = run_ladder(make_job(red16, spec, tag="changing", tol=FP16_TOL))
+    assert (r.outcome, r.failed_gate) == ("failed", "smoke"), r
     assert r.detail["kind"] == "regime"
     assert r.detail["regime"] in ("scaled_up", "outliers")
 
@@ -303,15 +329,25 @@ def test_reordered_reduction_fails_the_preserving_gate(red16):
     spec, _ = cheats.fp16_fp32_accumulation()
     r = run_ladder(make_job(red16, spec, tag="preserving", tol=FP16_TOL))
     assert (r.outcome, r.failed_gate) == ("failed", "smoke")
-    assert r.detail["kind"] == "regime"
+    assert r.detail["kind"] == "stored_ref"
+    assert r.detail["reason"] == "exact"
 
 
-def test_reordered_reduction_passes_the_changing_gate(red16):
+@pytest.mark.parametrize("tol, passes", [(FP16_TOL, False), ((0.02, 0.2), True)])
+def test_reordered_reduction_respects_the_configured_tolerance(red16, tol, passes):
+    # This adversarial cancellation case differs from MLX beyond the default
+    # atol, even though the old FP32-relative rule accepted it. User policy
+    # now decides the acceptable deviation from original behavior.
     spec, _ = cheats.fp16_fp32_accumulation()
-    r = run_ladder(make_job(red16, spec, tag="changing", tol=FP16_TOL))
-    assert r.outcome == "correct_slower" and r.failed_gate is None
-    assert r.gates_passed == VALIDATE_GATES
-    assert r.detail["changing_floor"] > 0  # the child computed the k-set spread floor
+    r = run_ladder(make_job(red16, spec, tag="changing", tol=tol))
+    if not passes:
+        assert (r.outcome, r.failed_gate) == ("failed", "smoke")
+        assert r.detail["reason"] == "tolerance"
+    else:
+        assert r.outcome == "correct_slower" and r.failed_gate is None, r.detail
+        assert r.gates_passed == VALIDATE_GATES
+        assert r.detail["correctness_rule"] == "tolerance"
+        assert "changing_floor" not in r.detail
 
 
 # -- positive controls on the planted win -------------------------------------
@@ -353,13 +389,17 @@ y[i] = v * 0.5f;
 
 
 @pytest.fixture(scope="module")
-def pw(tr, tmp_path_factory):
+def pw(tr, tmp_path_factory, request):
     spec = importlib.util.spec_from_file_location("fixture_lg_pw", FIXTURES / "planted_win.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     model = mod.build()
+    size = getattr(request, "param", 1024)
+    if size != 1024:
+        model.chain.a = mx.random.normal((size,), key=mx.random.key(98))
+        model.chain.b = mx.random.normal((size,), key=mx.random.key(99))
     store = BoundaryStore(tmp_path_factory.mktemp("pw_store"))
-    x0 = mx.random.normal((1024,), key=mx.random.key(100))
+    x0 = mx.random.normal((size,), key=mx.random.key(100))
     trace, _ = tr.trace(model, [x0])
     span = _full_span(trace)
     # kernel input order is the span's input_ids order; name each id's role
@@ -367,7 +407,7 @@ def pw(tr, tmp_path_factory):
     names = tuple("x" if aid in trace.inputs else trace.weight_paths[aid].split(".")[-1]
                   for aid in span.input_ids)
     assert set(names) == {"x", "a", "b"}
-    xs = [x0] + [mx.random.normal((1024,), key=mx.random.key(101 + j)) for j in range(2)]
+    xs = [x0] + [mx.random.normal((size,), key=mx.random.key(101 + j)) for j in range(2)]
     ctx, _, _ = build_ctx(tr, store, "pw", model, xs, names, ("y",))
     return ctx
 
@@ -385,12 +425,14 @@ def pw_spec(ctx, name, source):
     )
 
 
+# A material memory-traffic saving, independent of Python replay overhead.
+@pytest.mark.parametrize("pw", [262144], indirect=True)
 def test_planted_win_ships(pw):
     require_healthy_gpu()
     job = make_job(pw, pw_spec(pw, "ctrl_pw_fused", PW_FUSED),
                    run_clock=True, min_win_ms=0.005)
     r = run_ladder(job)
-    assert r.outcome == "tentative_ship" and r.failed_gate is None
+    assert r.outcome == "tentative_ship" and r.failed_gate is None, asdict(r)
     assert r.gates_passed == VALIDATE_GATES + ["clock"]
     assert r.region_ms > 0 and r.library_ms > 0 and r.sigma_ms >= 0
     assert r.win_ms >= 0.005
@@ -414,3 +456,31 @@ def test_scaffold_run_stops_before_the_clock(pw):
     assert r.outcome == "correct_slower" and r.failed_gate is None
     assert r.gates_passed == VALIDATE_GATES
     assert r.region_ms is None and r.win_ms is None
+
+
+@pytest.mark.parametrize("bad_output", [False, True])
+def test_reordered_reduction_with_scratch(red16, bad_output):
+    """Scratch is not a region output, nor permission to skip a real one."""
+    from dataclasses import replace
+
+    spec, _ = cheats.fp16_fp32_accumulation()
+    spec = replace(
+        spec,
+        kernel_id=f"scratch_reduction_{bad_output}",
+        name=f"scratch_reduction_{bad_output}",
+        output_names=spec.output_names + ("tmp0",),
+        output_shapes=spec.output_shapes + (("1",),),
+        output_dtypes=spec.output_dtypes + ("bfloat16",),
+        # Deliberately unused scratch remains poisoned. Real output still matters.
+        source=spec.source + ("\ny[thread_position_in_grid.x] = half(0);" if bad_output else ""),
+    )
+    result = run_ladder(make_job(red16, spec, tag="changing", tol=(0.02, 0.2)))
+    if bad_output:
+        assert (result.outcome, result.failed_gate) == ("failed", "smoke"), result
+    else:
+        assert result.outcome == "correct_slower" and result.failed_gate is None, result.detail
+        assert result.gates_passed == VALIDATE_GATES
+        # bf16 scratch must not relax the fp16 numeric tolerance.
+        original, _ = cheats.fp16_fp32_accumulation()
+        control = run_ladder(make_job(red16, original, tag="changing", tol=(0.02, 0.2)))
+        assert result.detail["tolerances"] == control.detail["tolerances"]

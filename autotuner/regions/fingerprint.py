@@ -1,7 +1,8 @@
 """Region fingerprints: copy grouping by canonical form.
 
 Two stretches are copies of one region iff their canonical forms match: op
-sequence, dtypes, ranks, non-shape scalar args, and internal edge structure,
+sequence, dtypes, ranks, non-shape scalar args, internal edge structure, and
+ordered boundary roles (which inputs are supplied and outputs must be returned),
 with array identities replaced by role indices. Activation shapes and
 shape-derived scalar args (reshape targets, slice bounds, split sizes) are
 deliberately not part of the form, so the same sequence at two sizes is one
@@ -39,6 +40,21 @@ def _canon_scalar(obj: object) -> object:
     return repr(obj)
 
 
+def boundary_roles(trace: Trace, stretch: Stretch) -> tuple:
+    """Ordered boundary identities by first node/slot, independent of array IDs.
+
+    Counts and shapes alone cannot distinguish two different live intermediates.
+    Use the same first-occurrence rule as the ladder's ID projection.
+    """
+    positions = {}
+    for n, node in enumerate(trace.nodes[stretch.start_seq:stretch.end_seq + 1]):
+        for kind, ids in (("in", node.in_arrays), ("out", node.out_arrays)):
+            for slot, aid in enumerate(ids):
+                positions.setdefault(aid, (kind, n, slot))
+    return (tuple(positions[a] for a in stretch.input_ids),
+            tuple(positions[a] for a in stretch.output_ids))
+
+
 def canonical_form(trace: Trace, stretch: Stretch, weight_like: frozenset[int] | None = None) -> tuple:
     if weight_like is None:
         weight_like = weight_like_ids(trace)
@@ -68,13 +84,21 @@ def canonical_form(trace: Trace, stretch: Stretch, weight_like: frozenset[int] |
                 tuple(_canon_scalar(a) for a in node.scalar_args["args"]),
                 _canon_scalar(node.scalar_args["kwargs"]),
             )
-        form.append((
+        entry = (
             node.op,
             tuple(in_roles),
             tuple((len(s), d) for s, d in node.in_specs),   # rank + dtype, never shape
             tuple((len(s), d) for s, d in node.out_specs),
             scalars,
-        ))
+        )
+        if node.kernel_definition is not None:
+            entry += (_canon_scalar(node.kernel_definition), node.in_specs)
+        form.append(entry)
+    form.append(("boundary", boundary_roles(trace, stretch)))
+    if any(node.kernel_definition is not None for node in nodes):
+        specs = trace.span_specs(stretch.start_seq, stretch.end_seq)
+        form.append(("native_boundary", tuple(specs[a] for a in stretch.input_ids),
+                     tuple(roles[a] for a in stretch.output_ids)))
     return tuple(form)
 
 

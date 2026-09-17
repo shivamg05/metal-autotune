@@ -5,6 +5,7 @@ kernel through bind and e2e, close by rule, and leave a working artifact. The
 vendor-parity run must ship nothing and say so.
 """
 
+import json
 import textwrap
 from pathlib import Path
 
@@ -73,7 +74,29 @@ def yielding_judge(region):
     ])
 
 
-def test_planted_win_job_ships(tmp_path):
+def test_selection_defers_overlaps_without_gpu_prescreen(tmp_path):
+    manifest = write_manifest(tmp_path, "llama_ish.py", (1, 64))
+    # This fixture takes token ids rather than floating activations.
+    text = manifest.read_text().replace("float32", "int32")
+    manifest.write_text(text)
+    runner = JobRunner(manifest, tmp_path / "work", judge_factory=lambda region: None,
+                       clock_pairs=4, session=Session(sleep=lambda s: None))
+    runner.load_model()
+    runner.trace_workloads()
+    regions = runner.build_regions()
+    kept = runner.capture_and_price(regions)
+    selected = {r.fingerprint for r in regions if r.t_orig_ms}
+    deferred = {r.fingerprint for r in runner.pending_regions}
+    rejected = {r.fingerprint for r in regions if r.rejected}
+    assert selected and deferred
+    assert not (selected & deferred)
+    assert selected | deferred | rejected == {r.fingerprint for r in regions}
+    assert all(not r.rejected and not r.t_orig_ms for r in runner.pending_regions)
+    assert not any(row["kind"] == "prescreen" for row in runner.log.rows())
+
+
+@pytest.mark.parametrize('combined_start', [False, True])
+def test_planted_win_job_ships(tmp_path, combined_start):
     from tests.conftest import require_healthy_gpu
 
     require_healthy_gpu()  # ships a real measured win; a mid-test throttle crossing can hide it
@@ -88,6 +111,23 @@ def test_planted_win_job_ships(tmp_path):
 
     def factory(region):
         j = winning_chain_judge(region)
+        if combined_start:
+            from autotuner.judge.client import JsonJudge
+            # Exercise the real JSON client and metadata validation without
+            # paying for a model call. Merge this fixture's seed and first edit.
+            script = list(j._script)
+            first = dict(script[1])
+            first['mutations'] = [{'op': 'insert', 'item': item} for item in script[0]['queue']]
+            if first['kernel'] is not None:
+                first['kernel'] = dict(first['kernel'], item_id=script[0]['queue'][0]['id'])
+            replies = iter([first, *script[2:]])
+
+            class CombinedJudge(JsonJudge):
+                def _ask(self, system, messages):
+                    assert 'There is no separate\nplanning turn' in system
+                    return json.dumps(next(replies, {'mutations': [], 'kernel': None}))
+
+            j = CombinedJudge()
         orig = j.next
 
         def recording_next(meta, verdict):
@@ -111,9 +151,10 @@ def test_planted_win_job_ships(tmp_path):
         assert "queue" in meta and "verdicts" in meta and "budget" in meta
         assert "history" in meta and "lessons" in meta and "regions_done" in meta
         assert meta["launch_grammar"] and meta["menu"] and meta["laws"] and meta["legend"]
+        assert meta["directions"] and meta["widening"]["openers"] >= 1
     # writing_for names the front ready item and is null once nothing is
     # queued; the judge's yields are refused until the region's budget is spent
-    assert [m["writing_for"]["id"] for m in next_payloads if m["writing_for"]] == ["h1"]
+    assert [m["writing_for"]["id"] for m in next_payloads if m["writing_for"]] == ([] if combined_start else ["h1"])
     assert next_payloads[-1]["writing_for"] is None
     closes = [r.get("close_rule") or "" for r in report.regions if r.get("s")]
     assert closes and all("budget is spent" in c for c in closes), closes
@@ -140,7 +181,7 @@ def test_planted_win_job_ships(tmp_path):
         assert expected in kinds, f"missing {expected!r} in run log: {kinds}"
     assert kinds.index("region_open") < kinds.index("scaffold_ok") < kinds.index("shipped")
     judge_rows = [r for r in runner.log.rows() if r["kind"] == "judge"]
-    assert {r["phase"] for r in judge_rows} == {"seed", "next"}
+    assert {r["phase"] for r in judge_rows} == ({"next"} if combined_start else {"seed", "next"})
     assert all("latency_s" in r for r in judge_rows)
     assert (tmp_path / "work" / "report.json").exists()
 
@@ -224,9 +265,8 @@ def only_the_chain(monkeypatch):
                         lambda regions, **k: [r for r in regions if len(r.ops) == 8])
 
 
-def test_judge_transport_error_costs_region_not_job(tmp_path, monkeypatch):
-    """A transport failure (CLI exit, timeout) closes the region with a named
-    reason and the job completes."""
+def test_persistent_judge_transport_error_stops_job(tmp_path, monkeypatch):
+    """Repeated connection failures must not keep opening new regions."""
     class DeadTransport:
         def seed(self, meta):
             raise RuntimeError("claude CLI judge exited 3: no such model")
@@ -239,9 +279,10 @@ def test_judge_transport_error_costs_region_not_job(tmp_path, monkeypatch):
     runner = JobRunner(manifest, tmp_path / "work",
                        judge_factory=lambda region: DeadTransport(),
                        session=Session(sleep=lambda s: None))
-    report = runner.run()  # must complete
-    assert all("judge unavailable" in (r.get("close") or r.get("close_rule") or "")
-               or not r.get("s") for r in report.regions)
+    with pytest.raises(RuntimeError, match="judge unavailable"):
+        runner.run()
+    assert runner.report.session["status"] == "failed"
+    assert runner.total_hypotheses == 0
     assert any(row.get("action") == "error" for row in runner.log.rows()
                if row["kind"] == "judge")
 
@@ -328,8 +369,6 @@ def test_a_refused_seed_is_asked_again_not_closed(tmp_path, monkeypatch):
         if len(region.ops) != 8:
             return yielding_judge(region)
         j = ScriptedJudge([
-            {"queue": [{"id": "scaffold", "kind": "on-chip", "assoc_tag": "preserving",
-                        "hypothesis": "an id the harness keeps for its own kernel"}]},
             {"mutations": [{"op": "insert", "item": {
                 "id": "h1", "kind": "on-chip", "assoc_tag": "preserving",
                 "hypothesis": "keep the chain's intermediates in registers"}}],
@@ -340,6 +379,11 @@ def test_a_refused_seed_is_asked_again_not_closed(tmp_path, monkeypatch):
                 "output_shapes": [["in0.shape[0]", "in0.shape[1]"]],
             }},
         ])
+        # JSON validation now rejects reserved ids before Queue sees them.
+        # Bypass that earlier guard to exercise the queue-refusal recovery path.
+        from autotuner.judge.schema import QueueItem, SeedResponse
+        j.seed = lambda meta: SeedResponse((QueueItem(
+            'scaffold', 'on-chip', 'preserving', 'a reserved id'),))
         orig = j.next
 
         def recording_next(meta, verdict):
@@ -379,6 +423,31 @@ def test_a_busy_or_throttled_machine_is_named_not_refused(tmp_path, monkeypatch)
                        session=Session(sleep=lambda s: None))
     runner.measure_machine()
     warnings = [r["detail"] for r in runner.log.rows() if r["kind"] == "env_warning"]
-    assert any("busy" in w for w in warnings) and any("bandwidth" in w for w in warnings), warnings
+    assert any("utilization" in w for w in warnings) and any("bandwidth" in w for w in warnings), warnings
     assert "job_refused" not in [r["kind"] for r in runner.log.rows()]
     assert runner.report.session["gpu_utilization_at_start_pct"] == 100.0
+
+
+def test_the_whole_model_decides_every_ship(tmp_path):
+    """A region-clock nomination must also improve the whole forward pass."""
+    from tests.conftest import require_healthy_gpu
+
+    require_healthy_gpu()  # a real measured win; a mid-test throttle can hide it
+    manifest = write_manifest(tmp_path, "planted_win.py", ("L", 1024),
+                              "sweep: {L: [7, 4096]}\n        primary: {L: 4096}\n"
+                              "        baseline: plain")
+    runner = JobRunner(manifest, tmp_path / "work", judge_factory=winning_chain_judge,
+                       clock_pairs=8, session=Session(sleep=lambda s: None))
+    report = runner.run()
+
+    kinds = {json.loads(l)["kind"] for l in
+             (tmp_path / "work" / "run.jsonl").read_text().splitlines()}
+    assert kinds & {"shipped", "not_shipped"}, (
+        "no candidate reached the whole-model decision")
+    if [r for r in report.regions if r.get("s")]:
+        assert runner.model_ratio < 1.0, (
+            f"a kernel shipped without the whole model getting faster "
+            f"(model_ratio {runner.model_ratio})")
+    else:
+        # nothing shipped is a real answer here: the whole model refused it
+        assert runner.model_ratio == 1.0 and not runner.installed

@@ -1,0 +1,18 @@
+model: ../qwen3_4b_4bit.py
+baseline: plain
+workloads:
+- name: qwen3_4b_prefill_512
+  inputs:
+  - shape:
+    - 1
+    - 512
+    dtype: int32
+    low: 0
+    high: 151936
+budget:
+  per_region: 8
+  total: 24
+final_benchmark:
+  steps: 10
+  pairs: 4
+  warmup_steps: 3

@@ -25,6 +25,12 @@ def uncovered_op(ops) -> str | None:
 
 def build_scaffold(trace, stretch, instances=()):
     nodes = trace.nodes[stretch.start_seq:stretch.end_seq + 1]
+    if len(nodes) == 1 and nodes[0].kernel_definition is not None:
+        from .native import native_seed
+        return native_seed(trace, stretch)
+    if any(node.kernel_definition is not None for node in nodes):
+        from .native import reference_sequence_seed
+        return reference_sequence_seed(trace, stretch)
     if len(nodes) == 1 and nodes[0].op == "mx.quantized_matmul" \
             and tuple(stretch.input_ids) == tuple(nodes[0].in_arrays) \
             and len(stretch.output_ids) == 1 and len(nodes[0].in_specs) == 4:

@@ -17,7 +17,8 @@ against the matmul peak.
 from __future__ import annotations
 
 import math
-from typing import Iterable
+from dataclasses import replace
+from typing import Iterable, Mapping
 
 from ..measure.peaks import Peaks
 from ..trace.types import STATE_PREFIX, Trace, TraceNode
@@ -43,6 +44,8 @@ def _bytes_of(spec: tuple[tuple[int, ...], str]) -> int:
 def node_flops(node: TraceNode) -> float:
     """Estimated flops from op and recorded shapes. A matmul is 2*M*N*K; a
     norm a few passes over N; elementwise one per output element."""
+    if node.kernel_definition is not None:
+        return 0.0  # unknown arithmetic is omitted from the model lower bound, never invented
     out_elems = sum(_numel(s) for s, _ in node.out_specs)
     op = node.op
     if op in ("mx.matmul", "array.__matmul__", "mx.addmm", "mx.quantized_matmul",
@@ -71,23 +74,19 @@ def node_flops(node: TraceNode) -> float:
 
 def stretch_roofline(
     trace: Trace, stretch: Stretch, peaks: Peaks, t_orig_ms: float,
-    floor_ms: float | None = None,
+    floor_ms: float | None = None, rates: Mapping[str, float] | None = None,
 ) -> Roofline:
+    """rates: the arithmetic ceiling per dtype measured in the region's own
+    pricing window; the job-start peaks stand in for any dtype it lacks."""
     nodes = trace.nodes[stretch.start_seq:stretch.end_seq + 1]
     spec_of = trace.span_specs(stretch.start_seq, stretch.end_seq)
 
     boundary_bytes = sum(_bytes_of(spec_of[aid]) for aid in stretch.input_ids)
     boundary_bytes += sum(_bytes_of(spec_of[aid]) for aid in stretch.output_ids)
-    flops = sum(node_flops(n) for n in nodes)
     launches = 1  # the ideal kernel for a region is one launch, whatever the library fires
 
-    compute_dtype = _dominant_dtype(nodes)
-    peak_flops = peaks.flops_gflops.get(compute_dtype)
-    if peak_flops is None:
-        peak_flops = max(peaks.flops_gflops.values()) if peaks.flops_gflops else 1e3
-
     t_mem = boundary_bytes / (peaks.bandwidth_gbps * 1e9) * 1e3
-    t_compute = flops / (peak_flops * 1e9) * 1e3
+    t_compute = compute_time_ms(nodes, peaks, rates)
     t_launch = launches * peaks.launch_us / 1e3
     if floor_ms is None:
         t_roof = max(t_mem, t_compute, t_launch)
@@ -116,6 +115,8 @@ def step_floor(trace: Trace, peaks: Peaks, step_ms: float) -> dict:
     outside: dict[int, int] = {}
     flops, launches = 0.0, 0
     for node in trace.nodes:
+        if node.seq in trace.dead:
+            continue
         for aid, spec in zip(node.in_arrays, node.in_specs):
             if aid not in produced:
                 outside.setdefault(aid, _bytes_of(spec))
@@ -132,19 +133,49 @@ def step_floor(trace: Trace, peaks: Peaks, step_ms: float) -> dict:
         flops += node_flops(node)
     specs = trace.span_specs(0, len(trace.nodes) - 1)
     total = sum(outside.values()) + sum(_bytes_of(specs[a]) for a in trace.step_outputs if a in specs)
-    dtype = _dominant_dtype(trace.nodes)
-    peak = peaks.flops_gflops.get(dtype) or (max(peaks.flops_gflops.values()) if peaks.flops_gflops else 1e3)
     t_mem = total / (peaks.bandwidth_gbps * 1e9) * 1e3
-    t_compute = flops / (peak * 1e9) * 1e3
+    t_compute = compute_time_ms((n for n in trace.nodes if n.seq not in trace.dead), peaks)
     floor = max(t_mem, t_compute)
     return {"bytes_mb": total / 1e6, "gflop": flops / 1e9, "launches": launches,
             "t_mem_ms": t_mem, "t_compute_ms": t_compute, "floor_ms": floor,
             "step_ms": step_ms, "room": (1.0 - floor / step_ms) if step_ms > 0 else None}
 
 
-def _dominant_dtype(nodes: Iterable[TraceNode]) -> str:
+def observed_peaks(peaks: Peaks, nodes: Iterable[TraceNode], measured_ms: float,
+                   bytes_moved: float = 0.0) -> Peaks:
+    """A peak is a ceiling. The chip measured doing these ops, or moving
+    these bytes, in less time than the peaks allow proves the peaks low by
+    that factor, so they rise to it; the probe at job start is one reading
+    from another minute and sat 10 to 25% under the library's own rate on
+    FLUX and RecurrentGemma. Returns the same object when nothing was proved."""
+    if measured_ms <= 0:
+        return peaks
+    compute = compute_time_ms(list(nodes), peaks) / measured_ms
+    memory = bytes_moved / (peaks.bandwidth_gbps * 1e9) * 1e3 / measured_ms
+    if compute <= 1.0 and memory <= 1.0:
+        return peaks
+    return replace(peaks,
+                   flops_gflops={d: v * max(compute, 1.0) for d, v in peaks.flops_gflops.items()},
+                   bandwidth_gbps=peaks.bandwidth_gbps * max(memory, 1.0))
+
+
+def compute_dtype(node: TraceNode) -> str:
+    """The dtype an op's arithmetic is priced at: its first floating output."""
+    return next((d for _, d in node.out_specs if d in ("float16", "bfloat16", "float32")), "float32")
+
+
+def compute_time_ms(nodes: Iterable[TraceNode], peaks: Peaks,
+                    rates: Mapping[str, float] | None = None) -> float:
+    """Price each op at its own dtype's throughput, including mixed models:
+    the rate measured beside the region when there is one, else the peak.
+
+    This is a scheduling estimate: GEMM throughput does not model every op's
+    instruction mix. A small fp32 prelude must not price a bf16 transformer.
+    """
+    fallback = max(peaks.flops_gflops.values(), default=1e3)
+    milliseconds = 0.0
     for node in nodes:
-        for _, dtype in node.out_specs:
-            if dtype in ("float16", "bfloat16", "float32"):
-                return dtype
-    return "float32"
+        dtype = compute_dtype(node)
+        peak = (rates or {}).get(dtype) or peaks.flops_gflops.get(dtype, fallback)
+        milliseconds += node_flops(node) / (peak * 1e6)
+    return milliseconds

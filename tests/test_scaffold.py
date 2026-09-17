@@ -351,6 +351,38 @@ def test_mixed_dtypes_use_concrete_casts():
     check(spec, model, [a, b], trace, s, bitwise=False, rtol=1e-2, atol=1e-2)
 
 
+@pytest.mark.parametrize("norm", ["rms", "layer"])
+def test_fp32_norm_with_bfloat16_affine(norm):
+    class MixedNorm(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.w = mx.random.normal((128,), key=mx.random.key(80)).astype(mx.bfloat16)
+        def __call__(self, x):
+            if norm == "rms":
+                return mx.fast.rms_norm(x, self.w, 1e-6)
+            return mx.fast.layer_norm(x, self.w, None, 1e-6)
+    model = MixedNorm()
+    x, trace = traced(model, (4, 128), 81)
+    span = cut(trace, 0, len(trace.nodes) - 1)
+    spec = lower_naive(trace, span)
+    assert spec.output_dtypes[0] == "float32"
+    check(spec, model, [x], trace, span, bitwise=False)
+
+
+@pytest.mark.parametrize("index", [(None, Ellipsis, None),
+                                   (slice(None), None, 0),
+                                   (None, slice(None), None, slice(None))])
+def test_newaxis_getitem_preserves_values(index):
+    class NewAxis(nn.Module):
+        def __call__(self, x):
+            return x[index] * 2.0
+    model = NewAxis()
+    x, trace = traced(model, (4, 16), 82)
+    span = cut(trace, 0, len(trace.nodes) - 1)
+    spec = lower_naive(trace, span)
+    check(spec, model, [x], trace, span, bitwise=True)
+
+
 # -- determinism --------------------------------------------------------------
 
 

@@ -6,11 +6,12 @@ record what was actually used.
 
 from __future__ import annotations
 
+import math
 import subprocess
 import sys
 import tempfile
 import textwrap
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Mapping
@@ -26,12 +27,8 @@ BASELINES = ("compiled", "plain")
 DEFAULT_JOB_SEED = 0x4D455441  # fixed by the harness, recorded, never supplied
 BOUNDARY_INPUT_SETS = 3
 
-# Assoc-preserving tolerances per dtype (rtol, atol); manifest may override with one pair.
-DEFAULT_TOLERANCES: Mapping[str, tuple[float, float]] = MappingProxyType({
-    "float32": (1e-5, 1e-6),
-    "float16": (1e-2, 2e-2),
-    "bfloat16": (2e-2, 4e-2),
-})
+# Floating-evaluation changes use these defaults unless the manifest overrides them.
+from autotuner_runtime.numeric import DEFAULT_TOLERANCES, validate_tolerances
 
 _DTYPE_NAMES: Mapping[str, mx.Dtype] = MappingProxyType({
     name: getattr(mx, attr)
@@ -78,13 +75,28 @@ class InputSpec:
 
 @dataclass(frozen=True)
 class Workload:
-    """The real input shapes to optimize for. Name is a report label only."""
+    """The real input shapes to optimize for. Name is a report label only.
+
+    A context is how many tokens of conversation are already in place when
+    the call runs: the job runs the call as a step over the model's own KV
+    cache, filled once and restored after every call. A decode step is
+    `shape: [1, 1]` plus `context: 512`. context: 0 supplies an empty cache;
+    omitting context leaves the model's ordinary forward call unchanged.
+    """
 
     inputs: tuple[InputSpec, ...]
     name: str
+    context: int | None = None
 
     def named_dims(self) -> frozenset[str]:
         return frozenset().union(*(i.named_dims() for i in self.inputs)) if self.inputs else frozenset()
+
+
+@dataclass(frozen=True)
+class FinalBenchmark:
+    steps: int = 10
+    pairs: int = 4
+    warmup_steps: int = 3  # minimum; the clock ramp can require more
 
 
 @dataclass(frozen=True)
@@ -99,6 +111,8 @@ class Manifest:
     seed: int
     defaulted: tuple[str, ...]
     baseline: str = "compiled"     # "compiled" | "plain": what a win is measured against
+    final_benchmark: FinalBenchmark = field(default_factory=FinalBenchmark)
+    use_library_inference: bool | None = None  # None resolves once from model/workload support
 
     def named_dims(self) -> frozenset[str]:
         return frozenset().union(*(w.named_dims() for w in self.workloads))
@@ -149,7 +163,7 @@ def _parse_workload(raw: Any, index: int) -> Workload:
     where = f"workloads[{index}]"
     if not isinstance(raw, dict) or "inputs" not in raw:
         raise ManifestError(f"{where}: a workload needs an inputs list, got {raw!r}")
-    unknown = set(raw) - {"inputs", "name"}
+    unknown = set(raw) - {"inputs", "name", "context"}
     if unknown:
         raise ManifestError(f"{where}: unknown workload keys {sorted(unknown)}")
     raw_inputs = raw["inputs"]
@@ -158,8 +172,16 @@ def _parse_workload(raw: Any, index: int) -> Workload:
     name = raw.get("name", f"workload{index}")
     if not isinstance(name, str) or not name:
         raise ManifestError(f"{where}: name must be a non-empty string")
+    if "@" in name:
+        raise ManifestError(f"{where}: name cannot contain @, which is reserved for generated shape labels")
     inputs = tuple(_parse_input(r, f"{where}.inputs[{i}]") for i, r in enumerate(raw_inputs))
-    return Workload(inputs=inputs, name=name)
+    context = raw.get("context")
+    if context is not None:
+        if isinstance(context, bool) or not isinstance(context, int) or context < 0:
+            raise ManifestError(f"{where}: context must be a whole number of tokens, got {context!r}")
+        if len(inputs) != 1 or inputs[0].dtype not in INT_DTYPES:
+            raise ManifestError(f"{where}: a workload with a context has one input, the token ids")
+    return Workload(inputs=inputs, name=name, context=context)
 
 
 def _parse_positive_int(raw: Any, where: str) -> int:
@@ -180,7 +202,8 @@ def load(path: str | Path) -> Manifest:
     if not isinstance(raw, dict):
         raise ManifestError(f"manifest must be a mapping, got {type(raw).__name__}")
 
-    known = {"model", "workloads", "sweep", "primary", "tolerances", "budget", "baseline"}
+    known = {"model", "workloads", "sweep", "primary", "tolerances", "budget",
+             "baseline", "final_benchmark", "use_library_inference"}
     unknown = set(raw) - known
     if unknown:
         raise ManifestError(
@@ -202,9 +225,18 @@ def load(path: str | Path) -> Manifest:
     names = [w.name for w in workloads]
     if len(set(names)) != len(names):
         raise ManifestError(f"workload names must be unique, got {names}")
+    if len(workloads) > 1 and any(w.context is not None for w in workloads):
+        raise ManifestError("a workload with a context must be the manifest's only workload: "
+                            "the model is loaded once, around one cache")
 
     named = frozenset().union(*(w.named_dims() for w in workloads))
     defaulted: list[str] = []
+    use_library_inference = raw.get("use_library_inference")
+    if "use_library_inference" in raw:
+        if not isinstance(use_library_inference, bool):
+            raise ManifestError("use_library_inference must be true or false")
+    else:
+        defaulted.append("use_library_inference")
 
     raw_sweep = raw.get("sweep", {})
     if not isinstance(raw_sweep, dict):
@@ -242,12 +274,18 @@ def load(path: str | Path) -> Manifest:
         t = raw["tolerances"]
         if not isinstance(t, dict) or set(t) != {"rtol", "atol"}:
             raise ManifestError("tolerances must be {rtol, atol}")
+        if any(isinstance(v, bool) for v in t.values()):
+            raise ManifestError("tolerances must be numbers, not booleans")
         try:
             tolerances = (float(t["rtol"]), float(t["atol"]))
         except (TypeError, ValueError):
             raise ManifestError(f"tolerances must be numbers, got {t!r}")
-        if tolerances[0] < 0 or tolerances[1] < 0:
-            raise ManifestError("tolerances must be non-negative")
+        if any(not math.isfinite(v) or v < 0 for v in tolerances):
+            raise ManifestError("tolerances must be finite and non-negative")
+        try:
+            validate_tolerances(tolerances)
+        except ValueError as error:
+            raise ManifestError(str(error)) from error
     else:
         defaulted.append("tolerances")
 
@@ -259,6 +297,19 @@ def load(path: str | Path) -> Manifest:
         raise ManifestError(f"baseline must be one of {list(BASELINES)}, got {baseline!r}")
     if "baseline" not in raw:
         defaulted.append("baseline")
+
+    raw_final = raw.get("final_benchmark", {})
+    if not isinstance(raw_final, dict) or set(raw_final) - {"steps", "pairs", "warmup_steps"}:
+        raise ManifestError("final_benchmark must be {steps?, pairs?, warmup_steps?}")
+    final_values = {}
+    for key in ("steps", "pairs", "warmup_steps"):
+        if key in raw_final:
+            final_values[key] = _parse_positive_int(raw_final[key], f"final_benchmark.{key}")
+        else:
+            defaulted.append(f"final_benchmark.{key}")
+    final_benchmark = FinalBenchmark(**final_values)
+    if final_benchmark.pairs < 4 or final_benchmark.pairs % 2:
+        raise ManifestError("final_benchmark.pairs must be even and >= 4 to balance run order")
 
     raw_budget = raw.get("budget", {})
     if not isinstance(raw_budget, dict) or set(raw_budget) - {"per_region", "total"}:
@@ -285,6 +336,8 @@ def load(path: str | Path) -> Manifest:
         budget_total=total,
         seed=DEFAULT_JOB_SEED,
         baseline=baseline,
+        final_benchmark=final_benchmark,
+        use_library_inference=use_library_inference,
         defaulted=tuple(defaulted),
     )
 

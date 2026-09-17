@@ -18,12 +18,13 @@ Read the spec end to end before working on the loop, the ladder, regions, bind, 
 ## Vocabulary
 
 - **manifest**: the job contract. Model path defining `build()`, workloads, sweep policy, tolerances, budget. Dtypes and quantization are not in it because they are not knobs.
-- **workload**: the real input shapes to optimize for. A dim named in a shape (an "L") is sweepable; integer dims are model constants and never move.
+- **workload**: the real input shapes to optimize for. A dim named in a shape (an "L") is sweepable; integer dims are model constants and never move. A workload with a `context` runs as one step over the model's own KV cache already holding that many tokens; the harness fills and rewinds the cache, the model file stays plain.
 - **trace**: the recorded op-call stream, per workload. Pass 1 records lazily with the patch surface installed; pass 2 is the step clock with the recorder fully removed. A compiled section and a call on an object holding model state (a KV cache's update) each record as one opaque call.
 - **region**: a run of consecutive recorded calls one kernel could replace, plus its boundary inputs/outputs and live values. All copies of the same op sequence across the model are one region.
 - **roofline**: a region's physical speed limit from boundary bytes (never intermediates), flops, and launch count. The bytes-and-launch part is measured by a probe (one launch streaming the boundary) clocked beside the region in the same window; the flops part is arithmetic. Whichever term binds is recorded as `bound`: memory, compute, or launch.
 - **scaffold**: the correct starting kernel the harness builds (stitched from MLX's shipped MSL where possible, naive lowering otherwise). Must pass the ladder before the judge may edit it; slow is normal.
 - **hypothesis**: one small proposed kernel edit. The judge plans a queue in English and writes Metal only for the front ready item, one at a time.
+- **direction / opener / widening round**: a direction is one line the harness ships (a structure, what it trades, which bounds it pays under); an opener is a whole kernel written against the scaffold from one direction; the widening round is a region's first attempts, each an opener under a different kind, before the judge edits its best kernel.
 - **the ladder**: the nine gates in order (static checks, compile, poison, watchdog, smoke, all workloads, shape sweep, determinism + numerics, region ship clock). First failure stops.
 - **head / shipped**: the region's two bookmarks. Head is the best correct kernel being edited, even if slower. Shipped is the best correct-and-faster one; only shipped versions install.
 - **bind**: generating a wrapper module that replays the region's scope with the cut replaced by the kernel, and swapping it in for the module on the live model. Gated by identity certification (the same replay with no kernel change must be invisible), verified by a literal retrace, then e2e; a miss swaps the original back.
@@ -31,12 +32,24 @@ Read the spec end to end before working on the loop, the ladder, regions, bind, 
 
 ## Hard laws
 
+- `use_library_inference` resolves once before tracing. Supported MLX-LM jobs
+  measure native generation, completing `final_benchmark.steps` tokens per
+  trial. Explicit false keeps forward measurement; explicit unsupported true
+  fails early. The same task decides nominations, confirmations, final wins
+  and artifact benchmarks. Do not compile the Python inference controller or
+  multiply generation length by the final sequence length a second time.
+- Graph insertion is preferred where its identity is correct and Python state
+  is safely represented. Rewrite during compilation, never on every warm call.
+  Verify substitutions directly on the graph, including every live output.
+  Unsafe scopes retain certified replay delivery with a logged reason. Export
+  the same implementation and native binary that were checked and timed.
+
 - Dtypes and quantization stay frozen. Faster-but-wrong is discarded. Correct-but-slower never ships.
 - The judge sees metadata only: never tensors, weights, activations, or tolerance values. It never overrides a failed check and never grades its own work. The harness owns every kernel call site, so `init_value`, `math_mode`, and streams are not the judge's to set.
 - The baseline is what every win is measured against: the model under harness-applied `mx.compile` by default, or the plain model exactly as `build()` hands it when the manifest says `baseline: plain`. Both step clocks and the choice go in the report. The spec's end state, choosing the faster of the two by measurement, is not built yet. Tracing and every correctness check always use the plain model.
 - No CPU fallback for GPU-dependent logic. If the environment cannot measure, raise.
-- Every kernel evaluation runs out of process (Metal reads `MTL_SHADER_VALIDATION` at process launch; killing the process is how a wedged GPU recovers).
-- The measurement laws in plan section 6 are invariants, not conventions: pair and interleave every comparison, duty-cycle pacing, warm until stable, medians for comparisons and running max for peaks, no absolute-time vetoes, defeat laziness in every timed loop, make every timed loop read its bytes from memory and run its passes one after another (a cache-defeating working set, passes chained so Metal cannot run them side by side), and measure a limit that decides beside the thing it limits (the floor probe, never a peak from another minute).
+- Candidate evaluations run out of process because Metal reads `MTL_SHADER_VALIDATION` at process launch. Workers still share the desktop GPU. The parent limits each GPU evaluation to five seconds, including first-use JIT, separately from cooling and the overall worker budget. A timeout stops the whole job without another GPU probe. Killing the child does not guarantee cancellation of its GPU work.
+- The measurement laws in plan section 6 are invariants, not conventions: pair and interleave every comparison, duty-cycle pacing, warm until stable, medians for comparisons and running max for peaks, no absolute-time performance vetoes, defeat laziness in every timed loop, make every timed loop read its bytes from memory and run its passes one after another (a cache-defeating working set, passes chained so Metal cannot run them side by side), and measure a limit that decides beside the thing it limits (the floor probe, never a peak from another minute). The execution deadline above protects responsiveness; it does not decide whether a kernel is faster.
 
 ## Architecture
 
@@ -57,7 +70,8 @@ uv sync
 uv run pytest                          # full suite
 uv run pytest tests/test_foo.py -k bar # one test
 uv run autotune run manifest.yaml                     # the CLI (API-key judge)
-uv run autotune run manifest.yaml --judge claude-cli  # judge on the local Claude Code login
+uv run autotune run manifest.yaml --judge claude-cli  # an agent CLI as judge (also codex, gemini)
+uv run autotune run manifest.yaml --judge-cmd "..."   # any other headless agent CLI
 uv run autotune run manifest.yaml --judge agent       # a live agent answers judge_io/ (AGENT_JUDGE.md)
 ```
 

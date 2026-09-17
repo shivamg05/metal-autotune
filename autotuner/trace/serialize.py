@@ -67,6 +67,7 @@ def node_to_dict(node: TraceNode) -> dict:
         "module_address": node.module_address,
         "position_in_module": node.position_in_module,
         "module_stack": list(node.module_stack),
+        "kernel_definition": node.kernel_definition,
     }
 
 
@@ -82,6 +83,7 @@ def node_from_dict(d: dict) -> TraceNode:
         module_address=d["module_address"],
         position_in_module=d["position_in_module"],
         module_stack=tuple(d["module_stack"]),
+        kernel_definition=d.get("kernel_definition"),
     )
 
 

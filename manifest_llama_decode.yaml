@@ -1,9 +1,0 @@
-model: models/llama8b_decode.py
-workloads:
-  - name: decode
-    inputs:
-      - shape: [1, 1]
-        dtype: int32
-        low: 0
-        high: 128000
-budget: {per_region: 8, total: 40}

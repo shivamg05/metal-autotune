@@ -1,7 +1,8 @@
 """The subprocess sandbox. The harness's job is rejecting bad kernels, so
-these tests are bad kernels: a hang, a compile error, an out-of-bounds read,
+these tests are bad kernels: a compile error, an out-of-bounds read,
 a partial write, and a too-slow kernel, each asserting WHICH structured
-verdict comes back and that the parent process is never harmed. Every spec
+verdict comes back. Hung-worker supervision uses CPU-only tests because a
+subprocess does not isolate the desktop GPU. Every spec
 is the real ladder spec over one recorded region, a + b."""
 
 import dataclasses
@@ -22,15 +23,6 @@ ADD = "uint i = thread_position_in_grid.x;\nout0[i] = in0[i] + in1[i];"
 
 # body line 2 is the broken one
 COMPILE_ERR = "uint i = thread_position_in_grid.x;\nthis is not metal;\nout0[i] = in0[i] + in1[i];"
-
-# volatile device accesses so the compiler cannot remove the infinite loop
-# (a side-effect-free one is eliminated and returns instantly, measured)
-HANG = """
-uint i = thread_position_in_grid.x;
-device volatile float* av = (device volatile float*)in0;
-device volatile float* ov = (device volatile float*)out0;
-while (av[0] > -1.0e30f) { ov[i] = ov[i] + 1.0f; }
-"""
 
 # reads far past in0's 4KB buffer: zerofilled under validation, wrong either way
 OOB = "uint i = thread_position_in_grid.x;\nout0[i] = in0[i + 65536];"
@@ -130,20 +122,6 @@ def test_compile_error_reports_structured_diagnostics(region):
     assert v.detail["line_offset"] is not None and v.detail["line_offset"] > 400
     errors = [d for d in v.detail["diagnostics"] if d["severity"] == "error"]
     assert errors and errors[0]["body_line"] == 2
-
-
-def test_hanging_kernel_maps_to_subprocess_and_parent_survives(region):
-    """An infinite loop blocks mx.eval forever; the parent wall timeout is the
-    hang half of the watchdog, and killing the child is routine recovery."""
-    v = run_job(spec(region, HANG, "sbx_hang"), "score", timeout_s=4)
-    assert not v.passed and v.failed_gate == "subprocess"
-    assert "timeout" in v.detail["reason"]
-    # the parent's own GPU context still works
-    x = mx.ones((64, 64)) @ mx.ones((64, 64))
-    mx.eval(x)
-    assert x[0, 0].item() == 64.0
-    # and the next evaluation in a fresh child passes
-    assert run_job(spec(region, ADD, "sbx_after_hang"), "validate", timeout_s=60).passed
 
 
 def test_oob_read_fails_numerics_with_validation_evidence(region):

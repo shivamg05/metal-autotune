@@ -55,14 +55,14 @@ def test_parent_may_be_named_by_role_hypothesis_or_kernel_id():
     all three spellings must find the same kernel."""
     run = RegionRun(region=Region(fingerprint="abcdef0123456789", ops=("mx.exp",)))
     h1 = KernelSpec(**{**{k: getattr(PARENT, k) for k in PARENT.__dataclass_fields__},
-                       "kernel_id": "rabcdef_h1", "name": "at_rabcdef_h1"})
+                       "kernel_id": "rabcdef0123456789_h1", "name": "at_rabcdef0123456789_h1"})
     run.scaffold = run.head = PARENT
     run.kernels = {PARENT.kernel_id: PARENT, h1.kernel_id: h1}
     assert resolve_parent(run, "scaffold") is PARENT
     assert resolve_parent(run, "head") is PARENT
     assert resolve_parent(run, "shipped") is None
     assert resolve_parent(run, "h1") is h1
-    assert resolve_parent(run, "rabcdef_h1") is h1
+    assert resolve_parent(run, "rabcdef0123456789_h1") is h1
     assert resolve_parent(run, "h9") is None
 
 

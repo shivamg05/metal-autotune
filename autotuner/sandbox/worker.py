@@ -10,13 +10,17 @@ load/store" lines validation writes land on this process's stderr, and the
 parent scans them after exit.
 """
 
+import os
 import sys
 
-from autotuner.ladder.child import evaluate_ladder
 from autotuner.sandbox.protocol import LadderSpec
+from autotuner.sandbox.watchdog import configure
 
 
 def main() -> None:
+    configure(int(os.environ["AUTOTUNER_WATCHDOG_FD"]))
+    from autotuner.ladder.child import evaluate_ladder
+
     verdict = evaluate_ladder(LadderSpec.from_json(sys.stdin.read()))
     print(verdict.to_json(), flush=True)
 

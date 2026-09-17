@@ -27,6 +27,10 @@ def reachable(root: object) -> Iterator[tuple[str, object]]:
         if isinstance(obj, mx.array):
             yield path, obj
             return
+        # Definitions are not runtime model state. Following a cached callable
+        # into an imported module can otherwise walk the entire interpreter.
+        if isinstance(obj, type) or inspect.ismodule(obj):
+            return
         oid = id(obj)
         if oid in seen or getattr(obj, "_trace_internal", False):
             return
@@ -84,6 +88,9 @@ def state_holders(root: object) -> list[tuple[str, object]]:
                 or not hasattr(obj, "__dict__")):
             continue
         prefix = f"{path}." if path else ""
-        if any(a.startswith(prefix) for a in arrays):
+        # Empty caches contain no arrays yet, but their first writes still
+        # need to be recorded. Recognize the cache protocol, not model names.
+        if (any(a.startswith(prefix) for a in arrays)
+                or hasattr(type(obj), "state") or callable(getattr(obj, "is_trimmable", None))):
             holders.append((path, obj))
     return holders

@@ -15,12 +15,14 @@ any other call to the wrapped module unchanged.
 
 from __future__ import annotations
 
+import ast
 from dataclasses import dataclass, field
 from typing import Mapping
 
 import mlx.core as mx
 
-from ..trace.recorder import ArrayRef, OPAQUE_OP, ObjectRef, compiled_path, dtype_name, state_method
+from ..trace.recorder import (ArrayRef, OPAQUE_OP, UNNAMED_KERNEL_OP, ObjectRef, compiled_path,
+                              dtype_name, kernel_path, state_method)
 from ..trace.types import ScopeCall, Trace, TraceNode
 from autotuner_runtime.kernels import KernelSpec
 
@@ -57,18 +59,20 @@ replaced by kernel calls; do not edit."""
 
 import mlx.core as mx
 from autotuner_runtime import kernels as _kernels
-from autotuner_runtime.swap import ReplayWrapper, flatten_arrays
+from autotuner_runtime.captured_kernels import captured as _captured
+from autotuner_runtime.swap import ReplayWrapper, flatten_arrays, resolve_value as _resolve_value
+from autotuner_runtime.swap import state_signature as _state_signature
 '''
 
 _DUNDER_FMT = {
-    "__add__": "({0} + {1})", "__radd__": "({1} + {0})", "__iadd__": "({0} + {1})",
-    "__sub__": "({0} - {1})", "__rsub__": "({1} - {0})", "__isub__": "({0} - {1})",
-    "__mul__": "({0} * {1})", "__rmul__": "({1} * {0})", "__imul__": "({0} * {1})",
-    "__truediv__": "({0} / {1})", "__rtruediv__": "({1} / {0})", "__itruediv__": "({0} / {1})",
+    "__add__": "({0} + {1})", "__radd__": "({1} + {0})",
+    "__sub__": "({0} - {1})", "__rsub__": "({1} - {0})",
+    "__mul__": "({0} * {1})", "__rmul__": "({1} * {0})",
+    "__truediv__": "({0} / {1})", "__rtruediv__": "({1} / {0})",
     "__floordiv__": "({0} // {1})", "__rfloordiv__": "({1} // {0})",
     "__mod__": "({0} % {1})", "__rmod__": "({1} % {0})",
     "__pow__": "({0} ** {1})", "__rpow__": "({1} ** {0})",
-    "__matmul__": "({0} @ {1})", "__imatmul__": "({0} @ {1})",
+    "__matmul__": "({0} @ {1})",
     "__and__": "({0} & {1})", "__or__": "({0} | {1})", "__xor__": "({0} ^ {1})",
     "__lshift__": "({0} << {1})", "__rshift__": "({0} >> {1})",
     "__neg__": "(-{0})", "__abs__": "abs({0})", "__invert__": "(~{0})",
@@ -81,6 +85,85 @@ _DUNDER_FMT = {
 def scope_tree_path(address: str) -> str:
     """'layers.3@0' -> 'layers.3'; the root '@0' -> ''."""
     return address.rsplit("@", 1)[0]
+
+
+def compose_scope_variants(
+    traces: Mapping[str, Trace],
+    installed: Mapping[str, Mapping[tuple[str, str], list[Splice]]],
+    additions: Mapping[str, list[tuple[str, ScopeCall, Splice]]],
+) -> dict[str, dict[tuple[str, str], list[Splice]]]:
+    """Plan disjoint wrappers that retain every previously installed cut.
+
+    A parent replay bypasses its children's Python calls. Move their cuts
+    into that replay before replacing them, and route new child cuts into an
+    already installed parent. All remapping uses the enclosing *call* in the
+    original trace, so repeated calls and different workloads keep their own
+    array identities. This function changes neither the model nor its records.
+    """
+    def beneath(path, root):
+        return path == root or path.startswith(root + ".")
+
+    paths = set(installed) | set(additions)
+    roots = [path for path in sorted(paths)
+             if not any(other != path and beneath(path, other) for other in paths)]
+    scope_lookup = {name: {sc.address: sc for sc in trace.scope_calls}
+                    for name, trace in traces.items()}
+    updates = {}
+    for root in roots:
+        if not any(beneath(path, root) for path in additions):
+            continue
+        variants = {}
+
+        def merge(workload, scope, splice, *, replace):
+            address = next((address for address in scope.stack
+                            if scope_tree_path(address) == root), None)
+            if address is None:
+                raise NotReplayable(
+                    f"scope {scope.address!r} has no enclosing call at {root!r}")
+            key = (workload, address)
+            cuts = variants.setdefault(key, [])
+            span = (splice.start_seq, splice.end_seq)
+            matching = [old for old in cuts if (old.start_seq, old.end_seq) == span]
+            if matching and not replace and any(old != splice for old in matching):
+                raise NotReplayable(f"conflicting installed cuts at {workload}:{span}")
+            cuts[:] = [old for old in cuts if (old.start_seq, old.end_seq) != span]
+            cuts.append(splice)
+
+        for path, prior in installed.items():
+            if beneath(path, root):
+                for (workload, address), cuts in prior.items():
+                    for splice in cuts:
+                        merge(workload, scope_lookup[workload][address], splice, replace=False)
+        for path, new in additions.items():
+            if beneath(path, root):
+                for workload, scope, splice in new:
+                    merge(workload, scope, splice, replace=True)
+        for (workload, address), cuts in variants.items():
+            cuts.sort(key=lambda splice: splice.start_seq)
+            _validate_splices(scope_nodes(traces[workload], scope_lookup[workload][address]),
+                              cuts, address)
+        updates[root] = variants
+    return updates
+
+
+def covers_scope(nodes: list[TraceNode], spans) -> bool:
+    """True when the cuts are the scope's whole calculation: nothing is left
+    for a wrapper to rebuild or compile around the kernel calls."""
+    return bool(spans) and {n.seq for n in nodes} == {
+        seq for start, end in spans for seq in range(start, end + 1)}
+
+
+def _validate_splices(nodes: list[TraceNode], splices: list[Splice], address: str) -> None:
+    """Never silently omit a cut outside the replay or hidden by another cut."""
+    previous_end = -1
+    for splice in sorted(splices, key=lambda cut: cut.start_seq):
+        if (not nodes or splice.start_seq > splice.end_seq
+                or splice.start_seq < nodes[0].seq or splice.end_seq > nodes[-1].seq):
+            raise NotReplayable(
+                f"cut {splice.start_seq}:{splice.end_seq} is outside scope {address!r}")
+        if splice.start_seq <= previous_end:
+            raise NotReplayable(f"overlapping cuts in scope {address!r}")
+        previous_end = splice.end_seq
 
 
 def scope_nodes(trace: Trace, scope: ScopeCall) -> list[TraceNode]:
@@ -125,9 +208,16 @@ class _Emitter:
         self.lines: list[str] = []
         self.span_map: list = []
         self.bound: set[int] = set()
+        self.weights: list[str] = []  # accessors resolved once at install, read as _w[i]
+        self.names: dict[int, str] = {}
 
     def name(self, aid: int) -> str:
-        return f"v{aid}"
+        # numbered in order of first use, so every copy of a region emits the
+        # same body and the artifact can ship one class for all of them
+        name = self.names.get(aid)
+        if name is None:
+            name = self.names[aid] = f"v{len(self.names)}"
+        return name
 
     def value_expr(self, obj: object) -> str:
         """A template entry: ArrayRef -> variable, else literal, recursing into
@@ -164,7 +254,12 @@ class _Emitter:
         path = self.trace.weight_paths.get(aid)
         if path is None:
             raise NotReplayable(f"weight {aid} has no recorded model path")
-        self.lines.append(f"{self.name(aid)} = {self._through_wrapped(path, f'weight at {path!r}')}")
+        # a weight never moves, so resolve its accessor once at install and read
+        # it by index, rather than walk the module tree on every call
+        accessor = self._through_wrapped(path, f"weight at {path!r}")
+        if accessor not in self.weights:
+            self.weights.append(accessor)
+        self.lines.append(f"{self.name(aid)} = _w[{self.weights.index(accessor)}]")
         self.bound.add(aid)
 
     def _through_wrapped(self, path: str, what: str) -> str:
@@ -180,15 +275,7 @@ class _Emitter:
             rel = path[len(prefix):].lstrip(".")
         else:
             rel = path
-        accessor = "self.wrapped"
-        for part in rel.split(".") if rel else []:
-            if part.isidentifier():
-                accessor += f".{part}"
-            elif part.isdigit():
-                accessor += f"[{part}]"
-            else:
-                accessor += f"[{part!r}]"
-        return accessor
+        return f"_resolve_value(self.wrapped, {rel!r})"
 
     def _receiver(self, node: TraceNode) -> str:
         """The expression that reaches a state call's object at call time: a
@@ -218,6 +305,10 @@ class _Emitter:
             raise NotReplayable(
                 f"scope {self.scope.address!r} contains a compiled call the harness cannot name"
             )
+        if node.op == UNNAMED_KERNEL_OP and node.kernel_definition is None:
+            raise NotReplayable(
+                f"scope {self.scope.address!r} contains a custom kernel the harness cannot name"
+            )
         self._current_node = node
         for aid in node.in_arrays:
             self.require(aid, node)
@@ -229,9 +320,15 @@ class _Emitter:
             # the model's own state object, called as the model calls it
             call = f"{self._receiver(node)}.{state_method(node.op)}({self.call_args(args_t, kwargs_t)})"
             self._assign(node, call, structured=True)
-        elif compiled_path(node.op):
-            # the model's own compiled section, called as the model calls it
-            call = f"_kernels.imported({compiled_path(node.op)!r})({self.call_args(args_t, kwargs_t)})"
+        elif node.kernel_definition is not None:
+            from autotuner_runtime.captured_kernels import definition_key
+            key = definition_key(node.kernel_definition)
+            call = f"_captured({key!r})({self.call_args(args_t, kwargs_t)})"
+            self._assign(node, call, structured=True)
+        elif compiled_path(node.op) or kernel_path(node.op):
+            # the model's own compiled section or custom kernel, called as the model calls it
+            path = compiled_path(node.op) or kernel_path(node.op)
+            call = f"_kernels.imported({path!r})({self.call_args(args_t, kwargs_t)})"
             self._assign(node, call, structured=True)
         elif node.op.startswith("mx."):
             self._assign(node, f"{node.op}({self.call_args(args_t, kwargs_t)})")
@@ -319,35 +416,27 @@ def _object_refs(template: object, base: str):
             yield from _object_refs(v, f"{base}[{k!r}]")
 
 
-def _shape_guard(trace: Trace, scope: ScopeCall, nodes: list[TraceNode]) -> list[str]:
-    """Lines that return the wrapped module's own result whenever an
-    entering array's shape differs from the recorded one."""
-    specs = trace.span_specs(nodes[0].seq, nodes[-1].seq)
-    checks = []
-    for i, entry in enumerate(scope.args_template):
-        if isinstance(entry, ArrayRef) and scope.arg_ids[entry.index] in specs:
-            checks.append(f"a{i}.shape != {_literal(tuple(specs[scope.arg_ids[entry.index]][0]))}")
-    for k, v in scope.kwargs_template.items():
-        if isinstance(v, ArrayRef) and scope.arg_ids[v.index] in specs:
-            checks.append(f"{k}.shape != {_literal(tuple(specs[scope.arg_ids[v.index]][0]))}")
+def _replay_guard(trace: Trace, scope: ScopeCall) -> list[str]:
+    """Only replay the shapes, dtypes, and scalar choices that were recorded."""
+    checks = _variant_checks(trace, scope)
     if not checks:
         return []
     positional = [f"a{i}" for i in range(len(scope.args_template))]
     keywords = [f"{k}={k}" for k in scope.kwargs_template]
-    return [f"if {' or '.join(checks)}:",
+    return [f"if not ({' and '.join(checks)}):",
             f"    return self.wrapped({', '.join(positional + keywords)})"]
 
 
-def emit_wrapper(
+def _emit_replay(
     trace: Trace,
     scope: ScopeCall,
     splices: list[Splice],
-    class_name: str,
-) -> EmittedWrapper:
-    """One wrapper class for one scope. splices empty -> the identity form."""
+) -> tuple[_Emitter, list[str], str]:
+    """Build one replay body; callers decide how to guard and route it."""
     nodes = scope_nodes(trace, scope)
     if not nodes:
         raise NotReplayable(f"scope {scope.address!r} recorded no ops")
+    _validate_splices(nodes, splices, scope.address)
     em = _Emitter(trace, scope)
 
     # positional arguments arrive as the model passed them, so they take no
@@ -368,10 +457,6 @@ def emit_wrapper(
             sig_parts.append(f"{k}=None")
         else:
             sig_parts.append(f"{k}={_literal(v)}")
-
-    guard = _shape_guard(trace, scope, nodes)
-    if guard:
-        em.lines = guard + em.lines
 
     by_start = {s.start_seq: s for s in splices}
     i = 0
@@ -405,17 +490,44 @@ def emit_wrapper(
         return _literal(obj)
 
     ret = ret_expr(scope.out_template)
+    return em, sig_parts, ret
+
+
+def emit_wrapper(
+    trace: Trace,
+    scope: ScopeCall,
+    splices: list[Splice],
+    class_name: str,
+) -> EmittedWrapper:
+    """One wrapper class for one scope. splices empty -> the identity form."""
+    em, sig_parts, ret = _emit_replay(trace, scope, splices)
+    guard = _replay_guard(trace, scope)
+    em.lines = guard + em.lines
+
+    # weights are resolved once in __init__ and read by index in __call__, so
+    # the model tree is walked at install, not per token. object.__setattr__
+    # keeps the tuple out of the parameter tree; the model's weights must not be
+    # replaced after install, which the harness and apply() never do.
+    init = ""
+    if em.weights:
+        em.lines.insert(len(guard), "_w = self._weights")
+        resolved = ",\n            ".join(em.weights)
+        init = (
+            "    def __init__(self, wrapped, specs=None):\n"
+            "        super().__init__(wrapped, specs)\n"
+            "        object.__setattr__(self, '_weights', (\n"
+            f"            {resolved},\n"
+            "        ))\n\n"
+        )
 
     body = "\n        ".join(em.lines) if em.lines else "pass"
     scope_path = scope_tree_path(scope.address)
     source = f'''
 
 class {class_name}(ReplayWrapper):
-    SCOPE = {scope_path!r}
-    SPAN_MAP = {em.span_map!r}
     KERNEL_IDS = {[s.kernel.kernel_id for s in splices]!r}
 
-    def __call__(self, {", ".join(sig_parts) if sig_parts else ""}):
+{init}    def __call__(self, {", ".join(sig_parts) if sig_parts else ""}):
         {body}
         return {ret}
 '''
@@ -426,3 +538,143 @@ class {class_name}(ReplayWrapper):
         span_map=em.span_map,
         kernel_ids=[s.kernel.kernel_id for s in splices],
     )
+
+
+def _variant_checks(trace: Trace, scope: ScopeCall) -> tuple[str, ...]:
+    """A recorded replay is valid for these entering shapes, dtypes, and
+    scalar arguments, including a cache position when state calls occur."""
+    nodes = scope_nodes(trace, scope)
+    specs = trace.span_specs(nodes[0].seq, nodes[-1].seq)
+    checks = []
+    arguments = [(f"a{i}", entry) for i, entry in enumerate(scope.args_template)]
+    arguments += sorted(scope.kwargs_template.items())
+    for name, entry in arguments:
+        if isinstance(entry, ArrayRef):
+            aid = scope.arg_ids[entry.index]
+            if aid not in specs:
+                raise NotReplayable(f"scope argument {name} has no recorded shape or dtype")
+            shape, dtype = specs[aid]
+            checks.extend([f"{name} is not None", f"{name}.shape == {_literal(tuple(shape))}",
+                           f"{name}.dtype == mx.{dtype}"])
+        elif entry is None:
+            checks.append(f"{name} is None")  # == would ask an array to compare itself with None
+        elif not any(_object_refs(entry, name)):
+            checks.append(f"{name} == {_literal(entry)}")
+    # Python scalar reads are recorded as literals, with no provenance. A
+    # matching number does not prove it came from cache.offset. Keep those
+    # literals and restrict stateful replay to its recorded entry position.
+    # Stateless child scopes need no position guard and remain reusable.
+    em = _Emitter(trace, scope)
+    seen = set()
+    for node in nodes:
+        if not state_method(node.op):
+            continue
+        receiver = node.scalar_args.get("receiver") or {}
+        identity = receiver.get("id")
+        if identity in seen:
+            continue  # later updates describe a position inside this call
+        seen.add(identity)
+        offset = receiver.get("offset_before")
+        if isinstance(offset, int) and not isinstance(offset, bool):
+            expr = em._receiver(node)
+            checks.append(f"getattr({expr}, 'offset', None) == {offset!r}")
+        elif receiver.get("state_signature") is not None:
+            expr = em._receiver(node)
+            checks.append(f"_state_signature({expr}) == {_literal(receiver['state_signature'])}")
+    return tuple(checks)
+
+
+def _replay_identity(em: _Emitter, ret: str) -> tuple:
+    """Ignore trace-local variable numbers when comparing duplicate routes.
+    Rename Python names through the AST so string literals remain untouched."""
+    names = {}
+
+    class Rename(ast.NodeTransformer):
+        def visit_Name(self, node):
+            if node.id.startswith("v") and node.id[1:].isdigit():
+                node.id = names.setdefault(node.id, f"v{len(names)}")
+            return node
+
+    tree = ast.parse("\n".join(em.lines + [f"return {ret}"]))
+    return tuple(em.weights), ast.dump(Rename().visit(tree))
+
+
+def emit_wrapper_variants(
+    variants: list[tuple[Trace, ScopeCall, list[Splice]]],
+    class_name: str,
+) -> EmittedWrapper:
+    """One generated class serving every recorded shape at a module path.
+
+    Each (trace, scope, splices) describes one call variant; sequence and array
+    ids belong only to that trace. The generated __call__ selects an inline
+    replay with shape/dtype tests, then returns. Unrecorded calls go straight
+    to the original module. A single variant keeps emit_wrapper's fast path.
+    """
+    if not variants:
+        raise NotReplayable("a wrapper needs at least one recorded call variant")
+    if len(variants) == 1:
+        return emit_wrapper(*variants[0], class_name)
+
+    path = scope_tree_path(variants[0][1].address)
+    signature = None
+    routes = {}
+    bodies = []
+    initializers = []
+    span_maps = []
+    kernel_ids = []
+    for trace, scope, splices in variants:
+        if scope_tree_path(scope.address) != path:
+            raise NotReplayable("wrapper variants must belong to the same module path")
+        em, sig_parts, ret = _emit_replay(trace, scope, splices)
+        # Keep the original positional signature, allowing keyword insertion
+        # order to differ between recordings but not their names or defaults.
+        current = (len(scope.args_template), tuple(sorted(sig_parts)))
+        if signature is not None and current != signature:
+            raise NotReplayable("wrapper variants have incompatible argument signatures")
+        signature = current
+        checks = _variant_checks(trace, scope)
+        identity = _replay_identity(em, ret)
+        if checks in routes:
+            if routes[checks] != identity:
+                raise NotReplayable(
+                    "the same argument shapes and dtypes select different recorded replays")
+            continue
+        routes[checks] = identity
+        index = len(bodies)
+        if em.weights:
+            initializers.append(
+                f"        object.__setattr__(self, '_weights_{index}', "
+                f"({', '.join(em.weights)},))")
+            em.lines.insert(0, f"_w = self._weights_{index}")
+        condition = " and ".join(checks) or "True"
+        lines = [f"        if {condition}:"]
+        lines += ["            " + line for line in em.lines + [f"return {ret}"]]
+        bodies.append("\n".join(lines))
+        span_maps.append(em.span_map)
+        kernel_ids.extend(s.kernel.kernel_id for s in splices
+                          if s.kernel.kernel_id not in kernel_ids)
+
+    # The first signature supplies defaults. Every other signature was checked
+    # above, so passing an uncovered call through preserves its arguments.
+    scope = variants[0][1]
+    _, sig_parts, _ = _emit_replay(*variants[0])
+    call_args = [f"a{i}" for i in range(len(scope.args_template))]
+    call_args += [f"{k}={k}" for k in scope.kwargs_template]
+    body = "\n".join(bodies + [f"        return self.wrapped({', '.join(call_args)})"])
+    init = ""
+    if initializers:
+        init = ("    def __init__(self, wrapped, specs=None):\n"
+                "        super().__init__(wrapped, specs)\n" + "\n".join(initializers) + "\n\n")
+    # the scope path and span map travel in the swap table, not the class, so
+    # one class can serve every module path with this exact body
+    span_map = [entry for entries in span_maps for entry in entries]
+    source = f'''
+
+class {class_name}(ReplayWrapper):
+    KERNEL_IDS = {kernel_ids!r}
+
+{init}    def __call__(self, {", ".join(sig_parts)}):
+{body}
+'''
+    return EmittedWrapper(class_name=class_name, scope_path=path, source=source,
+                          span_map=span_map, kernel_ids=kernel_ids)

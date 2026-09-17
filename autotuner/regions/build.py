@@ -58,11 +58,11 @@ def is_view(node: TraceNode) -> bool:
 
 def _is_barrier(node: TraceNode, trace: Trace) -> bool:
     """A node no stretch may contain: a slice write (edits memory something
-    else may hold), an opaque compiled call, or the producer of a value the
+    else may hold), an opaque call without captured source, or the producer of a value the
     model's own python kept (the wrapper can never reach that reference)."""
-    if node.op == "array.__setitem__":
+    if node.op == "array.__setitem__" or node.seq in trace.dead:
         return True
-    if is_opaque(node.op):
+    if is_opaque(node.op) and node.kernel_definition is None:
         return True
     for out in node.out_arrays:
         if trace.liveness[out].kind is Retention.PYTHON_RETAINED:
@@ -99,7 +99,7 @@ def _boundary(trace: Trace, workload: str, start: int, end: int) -> Stretch:
         for aid in node.out_arrays:
             live = trace.liveness[aid]
             consumed_outside = any(s > end for s in live.consumed_by)
-            if aid in step_outs or consumed_outside:
+            if aid in step_outs or aid in trace.evaluated or consumed_outside:
                 if aid not in outputs:
                     outputs.append(aid)
 
@@ -143,8 +143,11 @@ def build_stretches(trace: Trace, workload: str) -> list[Stretch]:
         # a call that reads only weights (a Linear transposing its matrix)
         # starts a chain too, so the projection is a candidate on its own
         if i == 0 or barrier[i - 1] or node.module_address != trace.nodes[i - 1].module_address \
+                or node.kernel_definition is not None \
                 or all(a in weight_like for a in node.in_arrays):
             anchors.add(i)
+        if node.kernel_definition is not None and i > 0 and not barrier[i - 1]:
+            anchors.add(i - 1)
 
     stretches: list[Stretch] = []
     seen_spans: set[tuple[int, int]] = set()
@@ -156,6 +159,12 @@ def build_stretches(trace: Trace, workload: str) -> list[Stretch]:
             stretches.append(_boundary(trace, workload, start, end))
 
     for i, node in enumerate(trace.nodes):
+        if node.kernel_definition is not None and node.seq not in trace.dead and not any(
+                trace.liveness[a].kind is Retention.PYTHON_RETAINED for a in node.out_arrays):
+            span = _boundary(trace, workload, i, i)
+            from dataclasses import replace
+            stretches.append(replace(span, output_ids=node.out_arrays))
+            seen_spans.add((i, i))
         if barrier[i] or is_view(node):
             continue
         if any(a in weight_like and a not in trace.weights for a in node.in_arrays):

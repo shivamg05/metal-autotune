@@ -20,8 +20,9 @@ MOVES = (
     "fallback_predicate for every shape the specialization does not cover",
     "split a long reduction across SIMD groups and combine partials in "
     "threadgroup memory; this reorders the arithmetic, so tag it changing",
-    "fewer launches matter only when bound is launch; when bound is memory, bytes "
-    "moved is the whole story and the roofline says how far there is to go",
+    "use bound and the roofline to choose a hypothesis, then trust paired measurements: "
+    "a memory-bound kernel can still lose to poor occupancy, strided loads, synchronization, "
+    "or launch overhead even when it moves the minimum number of bytes",
     "fill the chip: launch at least as many threadgroups as chip.gpu_cores, and several "
     "per core so one group's memory latency hides behind another's work; a single "
     "threadgroup is one core's worth of bandwidth however many threads it holds",
@@ -89,23 +90,29 @@ SEED_EXAMPLES = [
                 "s_max": 1.31, "head_ms": 0.35, "shipped_ms": None,
             },
             "head": "scaffold",
+            "widening": {"openers": 3, "opened": [], "left": 3},
             "note": "the scaffold normalizes the row into a scratch buffer, then a "
-                    "second stage reads it back for every column of the weight",
+                    "second stage reads it back for every column of the weight; the "
+                    "three openers each map the work onto threads a different way",
         },
         "reply": {"queue": [
-            {"id": "h1", "kind": "one-pass", "assoc_tag": "preserving", "family_id": "stream_w",
-             "hypothesis": "normalize the row once into threadgroup memory, then every thread "
-                           "streams its columns of the weight with 16-byte loads, so each weight "
-                           "byte is read exactly once and nothing goes back to device memory"},
+            {"id": "h1", "kind": "one-pass", "assoc_tag": "preserving",
+             "hypothesis": "one thread per output column: normalize the row once into threadgroup "
+                           "memory, then every thread streams its columns of the weight with "
+                           "16-byte loads, so each weight byte is read exactly once and nothing "
+                           "goes back to device memory"},
+            {"id": "h2", "kind": "simdgroup-per-row", "assoc_tag": "preserving",
+             "hypothesis": "one SIMD group per output column, its 32 lanes striding K with the "
+                           "normalized row in registers and one simd_sum at the end; no barrier"},
+            {"id": "h3", "kind": "split-k", "assoc_tag": "changing",
+             "hypothesis": "each SIMD group of a threadgroup owns a K slice of every dot product and "
+                           "the partials tree-reduce in threadgroup memory; the accumulation order changes"},
             {"id": "h1_fix", "kind": "fix", "assoc_tag": "preserving",
              "hypothesis": "repair whatever h1 fails on", "depends_on": "h1", "condition": "failed"},
-            {"id": "h2", "kind": "split-K across simdgroups", "assoc_tag": "changing",
-             "family_id": "stream_w", "depends_on": "h1", "condition": "correct",
-             "hypothesis": "each SIMD group owns a K slice of every dot product and the partials "
-                           "tree-reduce in threadgroup memory; the accumulation order changes"},
-            {"id": "h3", "kind": "launch", "assoc_tag": "preserving", "family_id": "stream_w",
-             "depends_on": "h1", "condition": "shipped",
-             "hypothesis": "eight output columns per thread instead of four, halving the grid"},
+            {"id": "h4", "kind": "launch", "assoc_tag": "preserving",
+             "depends_on": "h1", "condition": "correct",
+             "hypothesis": "on the fastest opener, eight output columns per thread instead of "
+                           "four, halving the grid"},
         ]},
     },
 ]
@@ -195,8 +202,8 @@ NEXT_EXAMPLES = [
                 "threadgroup": ["256", "1", "1"],
                 "output_shapes": [["in0.shape[0]", "in2.shape[1]"]],
             },
-            "lesson": "on this chip a 1024-row fp16 projection at batch 1 is at the wire once every "
-                      "weight byte is read once; past that only launch count moves it",
+            "lesson": "the last two stream_w schedules lost to the installed kernel; test a "
+                      "different way to divide K before spending more attempts on columns per thread",
         },
     },
 ]
@@ -206,7 +213,9 @@ def render_examples(call: str) -> str:
     """The examples for one call kind ("seed" or "next") as prompt text."""
     examples = SEED_EXAMPLES if call == "seed" else NEXT_EXAMPLES
     parts = ["Worked examples. Each shows an abridged region state, then a reply the "
-             "harness accepts. Kinds are the judge's own words."]
+             "response schema accepts. Adapt the idea to the actual ops, dtypes, and sizes; "
+             "the correctness ladder still decides whether a kernel is valid. "
+             "Kinds are the judge's own words."]
     for i, ex in enumerate(examples, 1):
         parts.append(f"Example {i} ({ex['title']}):\nstate: {json.dumps(ex['state'])}\n"
                      f"reply: {json.dumps(ex['reply'])}")

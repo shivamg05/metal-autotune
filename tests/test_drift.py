@@ -82,57 +82,52 @@ def test_an_unchanged_model_reports_no_speedup_when_the_headline_is_paired():
 
 
 def test_pricing_a_region_on_a_slow_chip_does_not_inflate_its_headroom():
-    """s_max divides a region's cost by a roofline built from peaks measured at
-    job start. The cost used to be an absolute region clock taken whenever that
-    region's turn came round, so a region priced while the chip was throttled
-    looked that many times further from its roofline than it is.
-
-    Price the same region twice, on a healthy chip and on one running at a
-    third speed, and check both numbers the loop could feed the roofline: the
-    absolute clock triples, the measured share does not.
+    """Exercise the actual shared clock with known costs and a controlled
+    speed change. Multiplying two separate live GPU runs by synthetic factors
+    also imports their unrelated hardware noise, so it cannot isolate this
+    property. Live replay and capture are covered in test_regions.
     """
-    from autotuner.regions.build import build_stretches
-    from autotuner.regions.price import capture_boundaries, price_region
-    from autotuner.regions.fingerprint import group_copies
-    from tests.conftest import require_healthy_gpu, require_quiet_load
-    from tests.test_regions import traced, tracer
+    from autotuner.measure.clocks import sample_group
+    from autotuner.regions.price import _group_price
     from tests.drift import steady
 
-    # real replay on the real GPU under a simulated slowdown; a machine that is
-    # already throttled or loaded cannot supply the healthy half of the pair
-    require_healthy_gpu()
-    require_quiet_load()
-    model, x, trace = traced("repeated_layers", (4096, 16))
-    region_of = lambda: max(
-        (r for r in group_copies({"w": trace}, {"w": build_stretches(trace, "w")})
-         if r.copies == 4),
-        key=lambda r: len(r.ops),
-    )
-    rep = region_of().members[0]
-    arrays = capture_boundaries(tracer(), model, [x], trace,
-                                set(rep.input_ids) | set(rep.output_ids))
-    weights = {a: arrays[a] for a in rep.input_ids if a in trace.weights}
-    inputs = {a: arrays[a] for a in rep.input_ids if a not in trace.weights}
+    arms = {"step": costed(0.100), "r:library": costed(0.024),
+            "r:link": costed(0.004), "r:probe": costed(0.010)}
 
-    def price_at(chip_speed):
-        region = region_of()
-        price_region(region, DriftingSession(steady(chip_speed)), {"w": trace},
-                     {("w", rep.start_seq): [inputs]}, {"w": weights},
-                     {"w": lambda: model(x)})
-        return region
+    def price_at(slowdown):
+        rows = sample_group(DriftingSession(steady(slowdown)), arms, pairs=8)
+        return _group_price(rows, "r", iters=10, linked=True)
 
     healthy, slow = price_at(1.0), price_at(3.0)
 
-    # the absolute clock tracks the chip, which is why feeding it to the
-    # roofline reported headroom that was really just a slow moment
-    assert slow.t_rep_ms["w"] / healthy.t_rep_ms["w"] == pytest.approx(3.0, rel=0.3)
-    # the share does not, which is why the roofline is fed from it instead
-    assert slow.p_rep["w"] == pytest.approx(healthy.p_rep["w"], rel=0.25)
-    # and a share is a share: four copies of a region inside the model cannot
-    # together cost more than the step that contains them. The 8B decode run
-    # reported 1.756 for one region, and 586 ms of regions against a 52 ms step.
-    for region in (healthy, slow):
-        assert 0 < region.p["w"] <= 1.0, region.p
+    assert healthy.ms == pytest.approx(2.0)
+    assert slow.ms / healthy.ms == pytest.approx(3.0)
+    assert healthy.share == pytest.approx(0.02)
+    assert slow.share == pytest.approx(healthy.share)
+    assert slow.ms / slow.floor_ms == pytest.approx(healthy.ms / healthy.floor_ms)
+
+
+def test_abba_centers_a_linear_drift_before_deciding_an_unchanged_model_won():
+    result = compare(DriftingSession(ramp(1.0, 4.0, over=32)),
+                     costed(0.028), costed(0.028), pairs=16)
+
+    assert result.n == 8  # eight independent ABBA blocks
+    assert result.median_ratio == pytest.approx(1.0, abs=1e-12)
+    assert result.median_delta_ms == pytest.approx(0.0, abs=1e-12)
+    assert result.sigma_ms < 1e-12
+    assert not result.wins_by(1e-9)
+    assert not result.loses_by(1e-9)
+
+
+@pytest.mark.parametrize("ratio", [0.97, 1.03])
+def test_abba_resolves_a_three_percent_change_during_linear_drift(ratio):
+    result = compare(DriftingSession(ramp(1.0, 4.0, over=32)),
+                     costed(0.028), costed(0.028 * ratio), pairs=16)
+
+    assert result.n == 8
+    assert result.median_ratio == pytest.approx(ratio, abs=1e-12)
+    assert result.wins_by(0.0) == (ratio < 1.0)
+    assert result.loses_by(0.0) == (ratio > 1.0)
 
 
 def test_stability_is_high_when_pairs_agree_and_low_when_they_do_not():
@@ -141,8 +136,10 @@ def test_stability_is_high_when_pairs_agree_and_low_when_they_do_not():
     machine the absolutes are supposed to move and the ratios are not."""
     steady = compare(DriftingSession(ramp(1.0, 4.0, over=60)),
                      costed(BASELINE_S), costed(CANDIDATE_S), pairs=32)
-    # every second call changes speed, so pairs straddle a flip and disagree
-    churn = compare(DriftingSession(flip(low=1.0, high=3.0, every=1)),
+    # The inner slots run slowly. Alternating ABBA/BAAB gives that disadvantage
+    # to different arms, so the block ratios disagree and must show low stability.
+    alternating_advantage = lambda call: (1.0, 3.0, 3.0, 1.0)[call % 4]
+    churn = compare(DriftingSession(alternating_advantage),
                     costed(BASELINE_S), costed(CANDIDATE_S), pairs=32)
 
     assert steady.stability > 0.9

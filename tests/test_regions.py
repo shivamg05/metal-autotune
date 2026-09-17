@@ -15,6 +15,7 @@ from autotuner.measure.peaks import Peaks
 from autotuner.measure.session import Session, time_once
 from autotuner.regions import price as price_mod
 from autotuner.regions.build import build_stretches, is_view
+from autotuner.trace.recorder import is_opaque
 from autotuner.regions.fingerprint import fingerprint, group_copies
 from autotuner.regions.price import (
     CaptureMismatch,
@@ -28,6 +29,7 @@ from autotuner.regions.roofline import node_flops, stretch_roofline
 from autotuner.regions.sweep import SweepDivergence, locate_span
 from autotuner.regions.types import Region, Roofline, Stretch
 from autotuner.trace import Tracer
+from autotuner.trace.replay import replay
 from tests.conftest import current_tracer, tracer_for_module
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -86,6 +88,16 @@ def test_cache_write_splits_chains():
     for s in stretches:
         assert not (s.start_seq <= k_seq <= s.end_seq)
     assert len(stretches) > 0
+
+
+def test_captured_custom_kernel_joins_fusions():
+    """Captured source permits both the individual target and neighboring fusions."""
+    _, _, trace = traced("kernel_submodule", (4, 8))
+    k_seq = next(n.seq for n in trace.nodes if is_opaque(n.op))
+    stretches = build_stretches(trace, "w")
+    assert {(k_seq, k_seq), (k_seq - 1, k_seq), (k_seq, k_seq + 1),
+            (k_seq - 1, k_seq + 1)} <= spans(stretches)
+    assert {(k_seq - 1, k_seq - 1), (k_seq + 1, k_seq + 1)} <= spans(stretches)
 
 
 def test_slice_write_ends_regions():
@@ -170,10 +182,25 @@ def test_capture_and_share_price_stability():
     weights = {a: arrays[a] for a in chain.input_ids if a in trace.weights}
     inputs = {a: arrays[a] for a in chain.input_ids if a not in trace.weights}
     step = lambda: model(x)
-    p1 = region_share(session, trace, chain, [inputs], weights, step, pairs=8)
-    p2 = region_share(session, trace, chain, [inputs], weights, step, pairs=8)
+    # Production removes interception before every comparison. Keeping it
+    # here measures Python recording overhead only on the model arm.
+    tr.uninstall()
+    try:
+        p1 = region_share(session, trace, chain, [inputs], weights, step, pairs=8)
+        p2 = region_share(session, trace, chain, [inputs], weights, step, pairs=8)
+    finally:
+        tr.install()
     assert p1.share > 0 and p2.share > 0
     assert p1.floor_ms > 0 and p2.floor_ms > 0  # the probe was clocked beside the region
+    # the arithmetic ceiling too: a plain fp32 matmul in the same window, at a rate no
+    # Apple GPU sits under, and it is what prices the region's compute term
+    assert set(p1.gflops) == {"float32"} and p1.gflops["float32"] > 500.0
+    from autotuner.regions.roofline import compute_time_ms, node_flops, stretch_roofline
+    nodes = trace.nodes[chain.start_seq:chain.end_seq + 1]
+    peaks = Peaks(bandwidth_gbps=100.0, flops_gflops={"float32": 1.0}, launch_us=4.0)
+    roof = stretch_roofline(trace, chain, peaks, t_orig_ms=p1.ms, floor_ms=p1.floor_ms, rates=p1.gflops)
+    assert roof.t_compute_ms == pytest.approx(sum(node_flops(n) for n in nodes) / (p1.gflops["float32"] * 1e6))
+    assert roof.t_compute_ms == pytest.approx(compute_time_ms(nodes, peaks, p1.gflops))
     assert abs(p1.share - p2.share) / max(p1.share, p2.share) < 0.5  # same clock within generous noise
 
 
@@ -203,21 +230,24 @@ def test_region_loop_is_sized_from_an_amortizing_estimate():
             return 1e-3  # 1 ms per timed call, whatever it contained
 
     _replays = {"n": 0}
-    real_replay = price_mod.replay
+    real_prepare = price_mod.prepare_replay
 
-    def counting_replay(*a, **kw):
-        _replays["n"] += 1
-        return real_replay(*a, **kw)
+    def counting_prepare(*a, **kw):
+        run = real_prepare(*a, **kw)
+        def counted(bindings):
+            _replays["n"] += 1
+            return run(bindings)
+        return counted
 
-    price_mod.replay = counting_replay
+    price_mod.prepare_replay = counting_prepare
     try:
         session = CountingSession()
         _looped_replay(session, trace, chain, [inputs], weights, 20.0)
     finally:
-        price_mod.replay = real_replay
+        price_mod.prepare_replay = real_prepare
 
-    # a short loop thrown away, then a short and a long one, nothing else
-    assert session.passes == (1 + 1 + 4) * CLOCK_EST_ITERS
+    # tiny loops check for expensive regions before the amortizing estimate
+    assert session.passes == 6 + 5 * CLOCK_EST_ITERS
 
 
 def test_compiled_replay_arm_matches_the_plain_arm():
@@ -258,14 +288,14 @@ def test_region_loop_agrees_with_a_long_amortizing_loop():
     session.warm_until_stable(loop_fn)
     samples = []
     for _ in range(5):
-        session.fresh_chunk((loop_fn,))
+        session.fresh_chunk(loop_fn)
         samples.append(session.timed(loop_fn))
     session.settle()
     priced_ms = sorted(samples)[2] / iters * 1e3
 
     nodes = trace.nodes[span.start_seq:span.end_seq + 1]
     out_ids = list(span.output_ids) or [nodes[-1].out_arrays[0]]
-    one_pass = lambda b: list(price_mod.replay(nodes, {**weights, **b}, out_ids).values())
+    one_pass = lambda b: list(replay(nodes, {**weights, **b}, out_ids).values())
     n = 400
     long_loop = chained_loop(one_pass, sets, n, link_id)  # the same chained discipline, ten times longer
     time_once(long_loop)  # warm
@@ -359,12 +389,12 @@ def test_rank_and_floor_and_overlap():
     a = region("a", 0.30, roof_cmp)
     b = region("b", 0.30, roof_mem)
     c = region("c", 0.01, roof_mem)   # under floor
-    d = region("d", 0.30, roof_flat)  # no headroom
+    d = region("d", 0.30, roof_flat)  # little headroom: kept, ranked last
     kept = apply_floor([a, b, c, d])
-    assert {r.fingerprint for r in kept} == {"a", "b"}
-    assert "under floor" in c.rejected and "no headroom" in d.rejected
+    assert {r.fingerprint for r in kept} == {"a", "b", "d"}
+    assert "under floor" in c.rejected and d.rejected is None
     ranked = rank(kept)
-    assert [r.fingerprint for r in ranked] == ["b", "a"]  # memory beats compute on ties
+    assert [r.fingerprint for r in ranked] == ["b", "a", "d"]  # memory beats compute on ties
 
     # a shipped cut owns every candidate copy that touches it: one inside it,
     # one reaching past it, one straddling its edge; only a disjoint copy is free
@@ -533,3 +563,45 @@ def test_uncovered_ops_are_named_before_pricing():
     assert uncovered_op(["mx.fast.rms_norm", "array.__matmul__", "mx.sigmoid"]) is None
     assert uncovered_op(["mx.quantized_matmul", "mx.fast.scaled_dot_product_attention"]) \
         == "mx.fast.scaled_dot_product_attention"
+
+
+def test_a_peak_rises_to_what_the_chip_was_seen_doing():
+    """The job-start probe read bf16 at 2.5 TFLOP/s on the 2026-09-16 FLUX run
+    while the library's own matmuls ran at 3.3, so the step floor sat above
+    the step (room -9%) and every large matmul region scored no headroom. A
+    measurement faster than the compute term proves the ceiling low; the
+    peaks rise by that factor, and room can no longer be negative."""
+    from autotuner.regions.roofline import compute_time_ms, observed_peaks, step_floor
+
+    _, _, trace = traced("norm_three_proj", (4, 32))
+    peaks = Peaks(bandwidth_gbps=100.0, flops_gflops={"float32": 3000.0, "float16": 3500.0}, launch_us=4.0)
+    estimate = compute_time_ms(trace.nodes, peaks)
+    assert observed_peaks(peaks, trace.nodes, 2 * estimate) is peaks   # slower than the ceiling proves nothing
+    raised = observed_peaks(peaks, trace.nodes, estimate / 2)
+    assert raised.flops_gflops == pytest.approx({"float32": 6000.0, "float16": 7000.0})
+    assert raised.bandwidth_gbps == peaks.bandwidth_gbps and raised.launch_us == peaks.launch_us
+    # the step as a whole: bytes moved faster than the bandwidth allows raise it too
+    before = step_floor(trace, peaks, estimate / 2)
+    assert before["room"] < 0.0
+    raised = observed_peaks(peaks, trace.nodes, estimate / 2, before["bytes_mb"] * 1e6)
+    assert raised.bandwidth_gbps > peaks.bandwidth_gbps
+    assert step_floor(trace, raised, estimate / 2)["room"] == pytest.approx(0.0, abs=1e-9)
+
+
+def test_the_compute_probe_is_a_plain_matmul_with_its_flops():
+    from autotuner.measure.probe import COMPUTE_PROBE_N, compute_probe
+
+    fn, flops = compute_probe("float16", n=256)
+    out = fn()
+    assert out.shape == (256, 256) and out.dtype == mx.float16 and flops == 2.0 * 256 ** 3
+    assert COMPUTE_PROBE_N == 4096
+
+
+def test_a_measured_rate_prices_the_compute_term_and_the_peak_fills_the_gaps():
+    from autotuner.regions.roofline import compute_time_ms, node_flops
+
+    _, _, trace = traced("norm_three_proj", (4, 32))
+    peaks = Peaks(bandwidth_gbps=100.0, flops_gflops={"float32": 3000.0}, launch_us=4.0)
+    flops = sum(node_flops(n) for n in trace.nodes)
+    assert compute_time_ms(trace.nodes, peaks, {"float32": 6000.0}) == pytest.approx(flops / 6000e6)
+    assert compute_time_ms(trace.nodes, peaks, {"float16": 6000.0}) == pytest.approx(flops / 3000e6)

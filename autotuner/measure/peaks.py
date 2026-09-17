@@ -18,7 +18,7 @@ import mlx.core as mx
 from .session import Session
 
 BANDWIDTH_ELEMENTS = 64 * 1024 * 1024  # fp32: two 256MB buffers in flight
-MATMUL_N = 2048
+MATMUL_N = 4096  # 2048 reads about 5% under the chip's best rate, 1024 a quarter of it
 LAUNCH_CHAIN = 256
 FALLBACK_LAUNCH_US = 4.0
 
@@ -53,10 +53,11 @@ BUSY_GPU_PERCENT = 50.0
 
 
 def gpu_utilization(text: str | None = None) -> float | None:
-    """How busy macOS says the GPU is right now, in percent, before this
-    process has issued any work of its own; None when it cannot be read. A
-    background process holding the GPU shows here and nowhere else: it is
-    invisible to the load average and to every peak probe's pairing."""
+    """The IORegistry utilization counter, or None if unavailable.
+
+    This is an observation, not a measure of remaining compute or bandwidth.
+    High readings can coexist with healthy measured throughput.
+    """
     if text is None:
         try:
             text = subprocess.run(["ioreg", "-r", "-c", "IOAccelerator", "-d", "4"],
@@ -101,7 +102,7 @@ def measure_bandwidth(session: Session, samples: int = 6) -> float:
     session.warm_until_stable(fn)
     peak = 0.0
     for _ in range(samples):
-        session.fresh_chunk((fn,))
+        session.fresh_chunk(fn)
         t = session.timed(fn)
         peak = max(peak, bytes_moved / t / 1e9)
     session.settle()
@@ -118,7 +119,7 @@ def measure_flops(session: Session, dtype: mx.Dtype, samples: int = 6, n: int = 
     session.warm_until_stable(fn)
     peak = 0.0
     for _ in range(samples):
-        session.fresh_chunk((fn,))
+        session.fresh_chunk(fn)
         t = session.timed(fn)
         peak = max(peak, flops / t / 1e9)
     session.settle()
@@ -142,7 +143,7 @@ def measure_launch_us(session: Session, chain: int = LAUNCH_CHAIN, samples: int 
     session.warm_until_stable(fn)
     times = []
     for _ in range(samples):
-        session.fresh_chunk((fn,))
+        session.fresh_chunk(fn)
         times.append(session.timed(fn))
     session.settle()
     per_launch = statistics.median(times) / chain * 1e6

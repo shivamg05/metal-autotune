@@ -11,9 +11,10 @@ from __future__ import annotations
 import mlx.core as mx
 
 # Callables that are not ops: control, transforms, IO, device plumbing. The
-# tracer must never wrap these; some are special-cased (eval, compile).
+# tracer must never wrap these; some are special-cased (eval, compile,
+# metal_kernel).
 SKIP_FUNCTIONS = frozenset({
-    "eval", "async_eval", "synchronize", "compile", "disable_compile",
+    "eval", "async_eval", "synchronize", "compile", "disable_compile", "metal_kernel",
     "enable_compile", "grad", "value_and_grad", "vmap", "custom_function",
     "custom_vjp", "checkpoint", "stop_gradient_fn", "export_function",
     "import_function", "exporter", "eval_shapeless",

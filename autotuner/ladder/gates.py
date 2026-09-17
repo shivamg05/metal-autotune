@@ -15,16 +15,18 @@ region time, 3 sigma of the interleaved samples) and the absolute floor).
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from autotuner.ladder.static_checks import RegionContract, check
-from autotuner.sandbox.protocol import EvalSetSpec, LadderSpec, run_job
+from autotuner.measure.session import Session
+from autotuner.sandbox.protocol import EvalSetSpec, LadderSpec, require_responsive, run_job
 from autotuner_runtime.kernels import KernelSpec
+from autotuner_runtime.numeric import validate_tolerances
 
 @dataclass
 class EvalSet:
     """One eval set: k saved input files and k library-reference files
-    (safetensors keyed "a<array_id>"). The first set is the first workload and
+    (safetensors keyed "a<array_id>"). The first set is the nominated timing case and
     must carry t_library_ms; correctness_only sets are sweep instances, and
     nodes_json carries the span at that size when the shapes differ."""
 
@@ -38,12 +40,10 @@ class EvalSet:
 
 @dataclass
 class LadderJob:
-    """One kernel's trip up the ladder. tolerances are harness-held and cross
-    only the harness-to-harness sandbox boundary. The wobble floor for the
-    preserving compare is computed in-child (two library replays of the span,
-    max_abs_diff); changing_floor None means the child computes the k-set
-    spread floor. min_win_ms is the absolute term of the ship
-    margin with the region's copies already folded in by the caller."""
+    """Harness-held numeric policy: exact preserving outputs; manifest tolerance
+    for changed floating evaluation. None selects defaults per output dtype.
+    kappa/changing_floor are legacy wire fields and no longer affect acceptance.
+    """
 
     kernel: KernelSpec
     contract: RegionContract
@@ -52,7 +52,7 @@ class LadderJob:
     input_ids: tuple[int, ...]        # kernel input order = these ids' order
     output_ids: tuple[int, ...]
     eval_sets: list[EvalSet]
-    tolerances: tuple[float, float]   # (rtol, atol)
+    tolerances: tuple[float, float] | None  # None: per-output dtype defaults
     kappa: float = 1.25
     changing_floor: float | None = None
     min_win_ms: float = 0.03
@@ -63,6 +63,7 @@ class LadderJob:
     seed: int = 0
     weight_inputs: tuple[bool, ...] = ()  # per input id: a model weight, never perturbed
     compute_floor_ms: float = 0.0     # the roofline's flops term; the child's probe covers bytes and launch
+    timing_incumbent: KernelSpec | None = None  # accepted kernel for this exact cut; never a correctness reference
 
 
 @dataclass(frozen=True)
@@ -78,7 +79,11 @@ class LadderResult:
     floor_ms: float | None = None     # the floor probe clocked beside the library in the same child
 
 
-def run_ladder(job: LadderJob) -> LadderResult:
+def run_ladder(job: LadderJob, *, session: Session | None = None) -> LadderResult:
+    """An owning session permits worker cooling to overlap parent CPU work.
+
+    Standalone callers retain the blocking behavior: no GPU debt escapes.
+    """
     _validate(job)
 
     failures = check(job.kernel, job.contract)
@@ -90,7 +95,22 @@ def run_ladder(job: LadderJob) -> LadderResult:
         )
     gates = ["static"]
 
-    v = run_job(_spec(job, "validate"), "validate", job.timeout_s)
+    def phase(mode):
+        spec = _spec(job, mode)
+        if session is not None:
+            spec = replace(spec, defer_cooling=True)
+            session.wait_ready()
+        verdict = run_job(spec, mode, job.timeout_s)
+        # Accept the deadline even for an ordinary failed correctness gate.
+        # A dead worker has no completed handoff and remains a fatal error.
+        if session is not None and verdict.failed_gate != "subprocess":
+            if "cooling_ready_at" not in verdict.timing:
+                raise RuntimeError("worker returned without its required cooling deadline")
+            session.adopt_cooling(verdict.timing.pop("cooling_ready_at"))
+        return verdict
+
+    v = phase("validate")
+    require_responsive(v)
     if not v.passed:
         return LadderResult("failed", v.failed_gate, dict(v.detail),
                             None, None, None, None, gates + list(v.gates_passed))
@@ -101,17 +121,20 @@ def run_ladder(job: LadderJob) -> LadderResult:
                             None, None, None, None, gates + ["compile"])
     gates += list(v.gates_passed)
     detail = dict(v.detail)
+    detail["pacing"] = {"validate": {k: v.timing[k] for k in ("pacing_work_s", "pacing_idle_s") if k in v.timing}}
 
     if not job.run_clock:
         return LadderResult("correct_slower", None, detail, None, None, None, None, gates)
 
-    s = run_job(_spec(job, "score"), "score", job.timeout_s)
+    s = phase("score")
+    require_responsive(s)
     if not s.passed:
         d = dict(s.detail)
         d["phase"] = "score"
         return LadderResult("failed", s.failed_gate, d, None, None, None, None, gates)
     gates.append("clock")
     detail.update(s.detail)
+    detail["pacing"]["score"] = {k: s.timing[k] for k in ("pacing_work_s", "pacing_idle_s") if k in s.timing}
     t = s.timing
     outcome = "tentative_ship" if s.detail.get("ship") else "correct_slower"
     return LadderResult(outcome, None, detail, t.get("region_ms"), t.get("library_ms"),
@@ -123,15 +146,17 @@ def _validate(job: LadderJob) -> None:
         raise ValueError(f"assoc_tag must be 'preserving' or 'changing', got {job.assoc_tag!r}")
     if not job.eval_sets:
         raise ValueError("a ladder job needs at least one eval set")
+    if not job.output_ids:
+        raise ValueError("the region has no live outputs: nothing it computes is ever used")
     first = job.eval_sets[0]
     if first.correctness_only:
-        raise ValueError("the first eval set is the first workload, not a sweep instance")
+        raise ValueError("the first eval set must be a performance workload, not a sweep instance")
     if first.t_library_ms is None:
         raise ValueError("the first eval set must carry t_library_ms")
     if len(first.inputs_paths) != len(first.reference_paths):
         raise ValueError("inputs_paths and reference_paths must pair up")
-    if len(job.tolerances) != 2:
-        raise ValueError("tolerances is (rtol, atol)")
+    if job.tolerances is not None:
+        validate_tolerances(job.tolerances)
 
 
 def _spec(job: LadderJob, phase: str) -> LadderSpec:
@@ -152,7 +177,8 @@ def _spec(job: LadderJob, phase: str) -> LadderSpec:
             )
             for e in job.eval_sets
         ),
-        tolerances={"rtol": job.tolerances[0], "atol": job.tolerances[1]},
+        tolerances=({"rtol": job.tolerances[0], "atol": job.tolerances[1]}
+                    if job.tolerances is not None else {}),
         kappa=job.kappa,
         changing_floor=job.changing_floor,
         min_win_ms=job.min_win_ms,
@@ -162,4 +188,5 @@ def _spec(job: LadderJob, phase: str) -> LadderSpec:
         seed=job.seed,
         weight_inputs=tuple(job.weight_inputs),
         compute_floor_ms=job.compute_floor_ms,
+        timing_incumbent=json.loads(job.timing_incumbent.to_json()) if job.timing_incumbent else None,
     )

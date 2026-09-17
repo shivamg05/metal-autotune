@@ -8,7 +8,8 @@ import pytest
 from autotuner.measure.clocks import compare, step_clock
 from autotuner.measure.controls import aa_null, synthetic_workload
 from autotuner.measure.peaks import measure_bandwidth, measure_flops, measure_launch_us
-from autotuner.measure.session import Session, time_once
+from autotuner.measure.session import (WARM_CAP, WARM_PATIENCE, Session,
+                                       time_once)
 
 
 @pytest.fixture(scope="module")
@@ -59,7 +60,7 @@ def test_session_settle_pays_debt():
     assert len(slept) == 1  # debt already paid
 
 
-def test_fresh_chunk_paces_and_ramp_warms_past_threshold():
+def test_fresh_chunk_paces_and_ramps_until_flat():
     slept = []
     s = Session(sleep=slept.append, max_chunk_work_s=0.0)
     fn = synthetic_workload(depth=2)
@@ -70,9 +71,10 @@ def test_fresh_chunk_paces_and_ramp_warms_past_threshold():
         return fn()
 
     s.timed(counted)
-    s.fresh_chunk((counted,))
+    s.fresh_chunk(counted)
     assert len(slept) == 1  # debt past a zero threshold pays immediately
-    assert calls["n"] == 3  # 1 timed + 2 unmeasured ramp-warm samples
+    # the ramp is self-sizing: at least patience samples, never past the cap
+    assert 1 + WARM_PATIENCE <= calls["n"] <= 1 + WARM_CAP
 
 
 def test_fresh_chunk_noop_below_threshold():
@@ -80,15 +82,15 @@ def test_fresh_chunk_noop_below_threshold():
     s = Session(sleep=slept.append, max_chunk_work_s=1e9)
     fn = synthetic_workload(depth=2)
     s.timed(fn)
-    s.fresh_chunk((fn,))
+    s.fresh_chunk(fn)
     assert slept == []
 
 
 def test_warm_until_stable_converges(session):
     times = session.warm_until_stable(synthetic_workload(depth=4))
-    assert 2 <= len(times) <= 30
-    converged = abs(times[-1] - times[-2]) <= max(0.01 * times[-2], 100e-6)
-    assert converged or len(times) == 30
+    assert WARM_PATIENCE <= len(times) <= WARM_CAP
+    # it stops because the reading stopped falling, so the tail is not a new low
+    assert min(times[-WARM_PATIENCE:]) >= min(times) or len(times) == WARM_CAP
 
 
 def test_step_clock_reports_median(session):
@@ -122,7 +124,10 @@ def test_injected_slowdown_is_detected(session):
     result = compare(session, base, injected, pairs=16)
     assert result.loses_by(margin_ms=0.0), (
         f"planted 3% slowdown not detected: delta={result.median_delta_ms:.4f}ms "
-        f"sigma={result.sigma_ms:.4f}ms base={result.median_baseline_ms:.2f}ms"
+        f"sigma={result.sigma_ms:.4f}ms base={result.median_baseline_ms:.2f}ms "
+        f"ratio={result.median_ratio:.5f} blocks={result.n}; "
+        f"baseline_ms={[round(t, 4) for t in result.baseline_ms]}; "
+        f"candidate_ms={[round(t, 4) for t in result.candidate_ms]}"
     )
     slow_pct = -result.median_delta_ms / result.median_baseline_ms * 100
     assert 0.5 < slow_pct < 8.0, f"implausible slowdown size {slow_pct:.2f}%"
@@ -160,23 +165,26 @@ def test_implausible_peaks_are_named():
     assert implausible(no_fp32) is None
 
 
-def test_fresh_chunk_ramp_warm_stops_once_enough_work_ran():
-    """After an idle the clocks ramp back up within a few tens of ms of work;
-    a sample longer than that warms them by itself, so a slow model step must
-    not pay two unmeasured full steps per timed one."""
-    import time as _time
+def test_ramp_keeps_going_while_the_reading_still_falls():
+    """The old rule stopped once two readings agreed, which a ramping GPU does
+    while both are still far above steady. Feed a ramp that plateaus twice:
+    the ramp must see through the first plateau and stop on the real floor."""
+    from autotuner.measure.session import _until_flat
 
-    s = Session(sleep=lambda x: None, max_chunk_work_s=0.0)
-    calls = {"n": 0}
+    # the shape spikes/ramp_after_idle.py measured after a 0.75s idle: a long
+    # plateau, then a step down, then the floor
+    curve = [21.0, 19.1, 18.8, 18.8, 18.3, 9.4, 8.1, 8.2, 8.8, 8.1, 8.8] + [7.8] * 30
+    readings = iter(curve)
+    seen = []
 
-    def slow():
-        calls["n"] += 1
-        _time.sleep(0.06)
-        return mx.zeros(1)
+    def fake_timed(_fn):
+        t = next(readings)
+        seen.append(t)
+        return t
 
-    s.timed(slow)
-    s.fresh_chunk((slow,))
-    assert calls["n"] == 2  # one timed sample, one ramp sample
+    _until_flat(fake_timed, None, rtol=0.01, abs_s=0.0, cap=60, patience=WARM_PATIENCE)
+    assert seen[-1] == 7.8, "stopped on the 18.8 plateau instead of the real floor"
+    assert 9.4 in seen, "never saw past the first plateau"
 
 
 def test_best_of_peaks_keeps_the_higher_reading():
@@ -317,3 +325,4 @@ def test_mlx_matvec_sits_near_the_stream_floor():
     floor = compare(session, probe_loop, lib_loop, pairs=8)
     floor_ms = floor_from(floor, net.median_baseline_ms, iters, library_ms)
     assert 0.9 <= library_ms / floor_ms <= 1.5
+

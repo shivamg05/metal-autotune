@@ -1,28 +1,14 @@
-"""The floor probe: one launch that streams a region's boundary bytes.
+"""A generic ranking probe: one launch streams a region's boundary arrays.
 
-A region's physical limit used to be arithmetic: boundary bytes over the
-chip's peak bandwidth, flops over the flops peak, one launch, whichever is
-largest. Two things made that number wrong at the sizes a decode step is
-made of. The bandwidth peak comes from a 512 MB pass, which a 2 MB weight
-never reaches: a dependent kernel pays its launch and its stream in series,
-not the larger of the two. And the region's own clock came from another
-minute of the job, on a machine whose speed moves 15% within a run.
+Cost varies with bytes, array sizes, launch overhead and cache/device conditions.
+The probe is paired with the region in the same measurement window to reduce
+clock drift. It estimates removable data movement, not a guaranteed minimum:
+its own implementation has overhead and it does not perform the region's math.
+It applies equally to library operations and captured custom kernels.
 
-The probe measures the limit instead: one kernel launch that reads every
-input byte and writes every output byte as fast as this chip streams, timed
-in the same chained, paired loop as the region. The region's time over the
-probe's is the headroom, and the machine's speed cancels because both were
-measured in the same seconds. MLX's own matvec runs within 0 to 17% of this
-probe on the 2 MB to 6 MB weights of a small decoder (spike 12).
-
-Each thread reads 64 contiguous bytes per step with four loads in flight,
-adjacent threads adjacent bytes; outputs are written the same way. Bytes past
-the last whole 16-byte chunk of an array are skipped, at most 15 per array,
-and an input under 8 elements is not read at all: mx.fast.metal_kernel binds
-those in Metal's constant address space, which the vector loads cannot
-alias (pinned in tests). Every array a probe sees is freshly materialized
-(captured or synthesized), so its buffer starts at offset zero, which the
-vector loads need.
+Vector loads omit tails shorter than 16 bytes and inputs under 8 elements,
+which MLX binds in Metal's constant address space. Captured or synthesized
+arrays are materialized at buffer offset zero for vector access.
 """
 
 from __future__ import annotations
@@ -39,6 +25,7 @@ PROBE_THREADGROUP = 256
 PROBE_MIN_THREADS = 2048
 PROBE_MAX_THREADS = 65536
 _BYTES_PER_THREAD = 128   # two 64-byte steps per thread fills the chip from 2 MB up (spike 12)
+COMPUTE_PROBE_N = 4096    # a plain matmul this square reaches the chip's best rate; 2048 reads 5% under it, 1024 a quarter
 
 
 def dtype_of(name: str) -> mx.Dtype:
@@ -102,10 +89,21 @@ def probe_threads(total_bytes: int) -> int:
     return min(PROBE_MAX_THREADS, max(PROBE_MIN_THREADS, groups * PROBE_THREADGROUP))
 
 
+def compute_probe(dtype_name: str, n: int = COMPUTE_PROBE_N) -> tuple[Callable[[], mx.array], float]:
+    """The arithmetic ceiling's probe: a plain n-square matmul at this dtype,
+    the fastest the chip does math, timed beside the regions it bounds.
+    Returns the pass and its flops."""
+    dtype = dtype_of(dtype_name)
+    a = mx.random.normal((n, n)).astype(dtype)
+    b = mx.random.normal((n, n)).astype(dtype)
+    mx.eval(a, b)
+    return (lambda: a @ b), 2.0 * n ** 3
+
+
 def stream_probe(in_specs: Sequence[Spec], out_specs: Sequence[Spec]
                  ) -> Callable[[Sequence[mx.array]], list[mx.array]]:
     """A one-launch pass over arrays of in_specs, in order, that returns
-    arrays of out_specs. Its values mean nothing; its time is the floor."""
+    arrays of out_specs. Its values mean nothing; its time is a ranking estimate."""
     in_bytes = [spec_bytes(s) for s in in_specs]
     out_bytes = [spec_bytes(s) for s in out_specs]
     threads = probe_threads(sum(in_bytes) + sum(out_bytes))

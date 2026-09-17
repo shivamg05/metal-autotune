@@ -48,6 +48,16 @@ def _materialize_input(spec: InputSpec, shape: tuple[int, ...], key: mx.array) -
     raise ValueError(f"cannot synthesize dtype {spec.dtype!r}")
 
 
+def context_tokens(workload: Workload, dims: Mapping[str, int], seed: int) -> mx.array:
+    """The tokens already in the conversation for a workload with a context:
+    its token input with the sequence (last) dim set to the context."""
+    spec = workload.inputs[0]
+    shape = bind_shape(spec.shape, dims)[:-1] + (workload.context,)
+    tokens = _materialize_input(spec, shape, mx.random.key(seed))
+    mx.eval(tokens)
+    return tokens
+
+
 def materialize(workload: Workload, dims: Mapping[str, int], seed: int) -> list[mx.array]:
     """One tensor per positional argument of the model, deterministically from seed."""
     keys = mx.random.split(mx.random.key(seed), len(workload.inputs))

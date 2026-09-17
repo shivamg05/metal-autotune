@@ -1,33 +1,18 @@
-"""E2e promotion checks: the orig-vs-orig floor, patched vs
-original on that floor, and the step-time veto.
+"""Whole-model correctness against the untouched model and the step-time veto.
 
-Both arms live in one process with weights shared by array identity, so memory does not double.
-The baseline arm is a fresh untouched build(); the patched arm is a fresh
-build() with the generated wrappers swapped in. No hooks exist in either arm.
-
-The floor detail the spec leaves loose: a deterministic library gives an
-exactly-zero orig-vs-orig difference, so the allowance is floored by a small
-multiple of the output dtype's epsilon at the observed value scale, as the
-assoc-changing floor is. Both knobs are recorded.
+Preserving edits are bit-identical. Changed floating-point evaluation follows
+fixed manifest tolerances, using the same implementation as exported bundles.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Callable, Sequence
+from typing import Callable, Mapping, Sequence
 
 import mlx.core as mx
 
 from .measure.clocks import PairedComparison, compare
 from .measure.session import Session
-from .trace.walk import flatten_arrays
-
-FLOOR_MULTIPLE = 4.0
-EPS_MULTIPLE = 32.0
-STEP_VETO_PCT = 0.005
-
-_EPS = {"float16": 9.77e-4, "bfloat16": 7.81e-3, "float32": 1.19e-7}
-
 
 @dataclass
 class WorkloadCheck:
@@ -37,6 +22,11 @@ class WorkloadCheck:
     allowance: float
     cosine: float
     passed: bool
+    reason: str = ""
+    floor_cosine: float = 1.0
+    cosine_allowance: float = 0.0
+    rule: str = "exact"
+    failure: dict | None = None
 
 
 @dataclass
@@ -44,67 +34,37 @@ class E2EResult:
     checks: list[WorkloadCheck] = field(default_factory=list)
     veto: PairedComparison | None = None
     veto_passed: bool = True
+    workload_vetos: dict[str, PairedComparison] = field(default_factory=dict)
+    target_workload: str | None = None
 
     @property
     def passed(self) -> bool:
         return self.veto_passed and all(c.passed for c in self.checks)
 
 
-def _flatten(tree: object) -> list[mx.array]:
-    out = flatten_arrays(tree)
-    mx.eval(out)
-    return out
-
-
-def _max_abs(a: list[mx.array], b: list[mx.array]) -> float:
-    worst = 0.0
-    for x, y in zip(a, b):
-        worst = max(worst, mx.abs(x.astype(mx.float32) - y.astype(mx.float32)).max().item())
-    return worst
-
-
-def _cosine(a: list[mx.array], b: list[mx.array]) -> float:
-    worst = 1.0
-    for x, y in zip(a, b):
-        xf = x.astype(mx.float32).reshape(-1)
-        yf = y.astype(mx.float32).reshape(-1)
-        denom = (mx.linalg.norm(xf) * mx.linalg.norm(yf)).item()
-        if denom == 0.0:
-            continue
-        worst = min(worst, ((xf @ yf).item() / denom))
-    return worst
-
-
-def _eps_term(outputs: list[mx.array]) -> float:
-    term = 0.0
-    for x in outputs:
-        eps = _EPS.get(str(x.dtype).removeprefix("mlx.core."), 1.19e-7)
-        scale = mx.abs(x.astype(mx.float32)).max().item() or 1.0
-        term = max(term, EPS_MULTIPLE * eps * scale)
-    return term
-
-
 def preserving_check(
     baseline_run: Callable[[], object],
     patched_run: Callable[[], object],
     name: str,
+    *, exact: bool = True,
+    tolerances: tuple[float, float] | None = None,
 ) -> WorkloadCheck:
-    """Assoc-preserving: patched vs original must sit on the orig-vs-orig
-    floor. A large miss means the bind installed the wrong cut."""
-    ref1 = _flatten(baseline_run())
-    ref2 = _flatten(baseline_run())
-    floor = _max_abs(ref1, ref2)
-    got = _flatten(patched_run())
-    max_abs = _max_abs(ref1, got)
-    allowance = max(FLOOR_MULTIPLE * floor, _eps_term(ref1))
-    return WorkloadCheck(
-        name=name,
-        floor_max_abs=floor,
-        max_abs=max_abs,
-        allowance=allowance,
-        cosine=_cosine(ref1, got),
-        passed=max_abs <= allowance,
-    )
+    """Use the same output policy as the independently loaded artifact.
+
+    Baseline is always the untouched model. Tolerances are fixed by the job,
+    never enlarged by accumulated edits or observed baseline wobble.
+    """
+    from .artifact.validate import check_outputs
+    result = check_outputs(baseline_run, patched_run, name,
+                           exact=exact, tolerances=tolerances)
+    fields = WorkloadCheck.__dataclass_fields__
+    return WorkloadCheck(**{key: value for key, value in result.items() if key in fields})
+
+
+def changing_check(baseline_run, patched_run, name: str, *, tolerances=None) -> WorkloadCheck:
+    """Changed floating-point evaluation must stay within manifest tolerances."""
+    return preserving_check(baseline_run, patched_run, name,
+                            exact=False, tolerances=tolerances)
 
 
 def step_veto(
@@ -112,12 +72,14 @@ def step_veto(
     baseline_run: Callable[[], object],
     patched_run: Callable[[], object],
     pairs: int = 16,
+    defer_cooling: bool = False,
 ) -> tuple[PairedComparison, bool]:
-    """The patched step must not be significantly slower: a non-regression
-    veto under the interleaved paired discipline, not a detection gate."""
-    result = compare(session, baseline_run, patched_run, pairs=pairs)
-    margin_ms = STEP_VETO_PCT * result.median_baseline_ms
-    return result, not result.loses_by(margin_ms)
+    """The patched step must not be slower with confidence: a non-regression
+    veto under the interleaved paired discipline. The decision to keep an
+    install is the caller's, and it asks for a resolved win, not merely no
+    loss; there is no fixed percentage anywhere in either rule."""
+    result = compare(session, baseline_run, patched_run, pairs=pairs, defer_cooling=defer_cooling)
+    return result, not result.loses_by(0.0)
 
 
 def run_e2e(
@@ -126,23 +88,60 @@ def run_e2e(
     patched_model: Callable,
     workloads: Sequence[tuple[str, list[mx.array]]],
     veto_pairs: int = 16,
-    timed: tuple[Callable[[], object], Callable[[], object]] | None = None,
+    timed: tuple[Callable[[], object], Callable[[], object]]
+        | Mapping[str, tuple[Callable[[], object], Callable[[], object]]] | None = None,
+    exact: bool = True,
+    tolerances: tuple[float, float] | None = None,
+    defer_cooling: bool = False,
+    target_workload: str | None = None,
 ) -> E2EResult:
-    """Outputs are always checked on the plain models. The veto times the
-    first workload through `timed` (baseline step, patched step) when given,
-    which is how a compiled baseline is raced against a compiled patched model."""
-    result = E2EResult()
+    """Check outputs on plain models and compare every declared workload.
+
+    A timing mapping supplies compiled arms and explicitly selects the shapes
+    to time; other shapes receive correctness checks only (e.g. sweep shapes).
+    A legacy tuple supplies the first workload's arms. A nominated target is
+    timed first; if it does not win, skip the remaining timings. Correctness
+    still covers every input, and callers must require complete timings before
+    accepting an install.
+    """
+    if not workloads:
+        raise ValueError("end-to-end validation requires at least one workload")
+    names = {name for name, _ in workloads}
+    if isinstance(timed, Mapping) and (not timed or set(timed) - names):
+        raise ValueError("timed workloads must be a nonempty subset of checked workloads")
+    timed_names = set(timed) if isinstance(timed, Mapping) else names
+    if target_workload is not None and target_workload not in timed_names:
+        raise ValueError("target workload must be one of the timed workloads")
+    result = E2EResult(target_workload=target_workload)
+    from autotuner_runtime.state import correctness_call
     for name, tensors in workloads:
-        result.checks.append(preserving_check(
-            lambda: baseline_model(*tensors),
-            lambda: patched_model(*tensors),
-            name,
-        ))
-    first = workloads[0][1]
-    baseline_step, patched_step = timed or (
-        lambda: baseline_model(*first), lambda: patched_model(*first))
-    result.veto, result.veto_passed = step_veto(
-        session, baseline_step, patched_step, pairs=veto_pairs)
+        baseline_run = lambda t=tensors: correctness_call(baseline_model, t)
+        patched_run = lambda t=tensors: correctness_call(patched_model, t)
+        check = lambda: preserving_check(baseline_run, patched_run, name,
+                                          exact=exact, tolerances=tolerances)
+        result.checks.append(session.off_clock(check, defer_cooling=defer_cooling))
+    if not all(check.passed for check in result.checks):
+        result.veto_passed = False
+        return result
+    ordered = list(enumerate(workloads))
+    if target_workload is not None:
+        ordered.sort(key=lambda item: item[1][0] != target_workload)
+    for i, (name, tensors) in ordered:
+        if isinstance(timed, Mapping):
+            if name not in timed:
+                continue
+            arms = timed[name]
+        elif i == 0 and timed is not None:
+            arms = timed
+        else:
+            arms = (lambda t=tensors: baseline_model(*t), lambda t=tensors: patched_model(*t))
+        comparison, passed = step_veto(session, *arms, pairs=veto_pairs, defer_cooling=defer_cooling)
+        result.workload_vetos[name] = comparison
+        result.veto_passed &= passed
+        if result.veto is None:
+            result.veto = comparison
+        if name == target_workload and not comparison.wins_by(0.0):
+            break
     return result
 
 
@@ -155,6 +154,15 @@ def share_weights(donor, receiver) -> int:
         return 0
     params = donor.parameters()
     receiver.update(params)
+    from autotuner_runtime.state import ContextStep, _copy_cache
+    from autotuner_runtime.inference import LibraryInference
+    if isinstance(donor, ContextStep) and isinstance(receiver, ContextStep):
+        # The saved prefix was computed with the donor's weights too.
+        receiver._cache = _copy_cache(donor._cache)
+    if isinstance(donor, LibraryInference) and isinstance(receiver, LibraryInference):
+        # Prefix state must correspond to the shared weights, not the second
+        # build's independently initialized parameters.
+        receiver._start = _copy_cache(donor._start)
     shared = 0
     flat_d = _flatten_params(params)
     flat_r = _flatten_params(receiver.parameters())

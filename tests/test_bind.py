@@ -215,7 +215,7 @@ def test_wrapper_hands_unrecorded_shapes_to_the_original_module():
         input_ids=tuple(add_node.in_arrays), output_ids=tuple(add_node.out_arrays),
     )
     emitted = emit_wrapper(trace, scope_call_at(trace, "layers.1@0"), [splice], "GuardedLayer1")
-    assert "if a0.shape != (4, 16):" in emitted.source
+    assert "a0.shape == (4, 16)" in emitted.source
     cls = build_wrapper_class(emitted)
     occupant = install(model, "layers.1", cls(model.layers[1], {ADD_KERNEL.kernel_id: ADD_KERNEL}))
     try:
@@ -232,7 +232,7 @@ def test_wrapper_hands_unrecorded_shapes_to_the_original_module():
 def test_screen_rejects_unreplayable_scopes():
     cases = {
         "cache_retention": ((4, 16), "python-retained"),
-        "opaque_submodule": ((4, 8), "cannot name"),
+        "opaque_submodule": ((4, 8), "compiled call the harness cannot name"),
         "data_branch": ((4, 8), "evaluates mid-call"),
     }
     for name, (shape, needle) in cases.items():
@@ -255,6 +255,28 @@ def test_scope_around_a_named_compiled_call_replays_bitwise():
     assert screen_scope(trace, part_stack) is None
     emitted = emit_wrapper(trace, scope_call_at(trace, "part@0"), [], "IdPart")
     assert "_kernels.imported('fixture_b_compiled_submodule.fast_tanh')" in emitted.source
+    cls = build_wrapper_class(emitted)
+
+    def install_cb(wrapper):
+        occupant = install(model, "part", wrapper)
+        return lambda: uninstall(model, "part", occupant)
+
+    result = certify_identity(build_wrapper=lambda: cls(model.part, {}), install=install_cb,
+                              runs=[lambda: model(x)])
+    assert result.ok, result.reason
+
+
+def test_scope_around_a_named_custom_kernel_replays_bitwise():
+    """The model's own custom kernel is one opaque call, but a scope that
+    contains it still hosts a wrapper: the wrapper rebuilds the captured
+    definition and uses the recorded launch, exactly as the model does."""
+    model = load_fixture("kernel_submodule")
+    x = mx.random.normal((4, 8), key=mx.random.key(8))
+    trace, _ = tracer().trace(model, [x])
+    part_stack = next(sc.stack for sc in trace.scope_calls if sc.address == "part@0")
+    assert screen_scope(trace, part_stack) is None
+    emitted = emit_wrapper(trace, scope_call_at(trace, "part@0"), [], "IdPart")
+    assert "_captured(" in emitted.source
     cls = build_wrapper_class(emitted)
 
     def install_cb(wrapper):

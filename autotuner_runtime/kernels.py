@@ -5,15 +5,15 @@ from serialized form: source body, header, IO names, launch expressions in the
 grammar, template dtypes, output shape expressions. The harness owns this call
 site: init_value, math_mode, and streams are set here, never by the judge.
 
-call() is also what the record-mode tracer patches, so a custom dispatch shows
-up as one node in retraces.
+call() is also what the record-mode tracer patches, so a whole custom
+replacement shows up as one node in retraces, including all its stages.
 """
 
 from __future__ import annotations
 
 import importlib
 import json
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import NamedTuple
 
@@ -47,9 +47,14 @@ class KernelSpec:
     fallback_predicate: str | None = None                # true -> use the library path
     ensure_row_contiguous: bool = True
     atomic_outputs: bool = False
+    native_call: dict | None = None  # frozen original ABI, scalar inputs and signature
+    input_signature: list | None = None  # harness-owned exact shape/dtype specialization
+    reference_sequence: dict | None = None  # original mixed sequence; a starter, never an optimized artifact
+    stages: tuple[KernelStage, ...] = ()  # explicit array dataflow; empty keeps the single-dispatch path
 
     def to_json(self) -> str:
         d = {k: getattr(self, k) for k in self.__dataclass_fields__}
+        d["stages"] = [asdict(stage) for stage in self.stages]
         return json.dumps(d, indent=1)
 
     @staticmethod
@@ -59,7 +64,17 @@ class KernelSpec:
             d[k] = tuple(d[k])
         d["output_shapes"] = tuple(tuple(s) for s in d["output_shapes"])
         d["template"] = tuple(tuple(t) for t in d["template"])
+        d["stages"] = tuple(KernelStage(tuple(s["inputs"]), tuple(s["outputs"]),
+                                        KernelSpec.from_json(json.dumps(s["kernel"])))
+                            for s in d.get("stages", ()))
         return KernelSpec(**d)
+
+
+@dataclass(frozen=True)
+class KernelStage:
+    inputs: tuple[str, ...]  # outer inN or a previously produced tmpN/outN
+    outputs: tuple[str, ...] # new tmpN/outN names; never overwrite an array
+    kernel: KernelSpec      # local ABI: in0.. and out0.., including launch expressions
 
 
 def load_spec(metal_path: str | Path) -> KernelSpec:
@@ -67,6 +82,9 @@ def load_spec(metal_path: str | Path) -> KernelSpec:
     metal_path = Path(metal_path)
     launch = json.loads(metal_path.with_suffix("").with_suffix(".launch.json").read_text())
     launch["source"] = metal_path.read_text()
+    for i, stage in enumerate(launch.get("stages", ())):
+        if "source" not in stage["kernel"]:
+            stage["kernel"]["source"] = (metal_path.with_suffix(".stages") / f"{i}.metal").read_text()
     return KernelSpec.from_json(json.dumps(launch))
 
 
@@ -93,15 +111,27 @@ class LoadedKernel:
 
     def __init__(self, spec: KernelSpec):
         self.spec = spec
-        self._kernel = mx.fast.metal_kernel(
+        self._stages = None
+        if spec.stages:
+            from .stages import wiring
+            indices, self._stage_outputs = wiring(spec)
+            self._stages = [(LoadedKernel(stage.kernel), inputs)
+                            for stage, inputs in zip(spec.stages, indices)]
+        native = spec.native_call
+        factory = dict(native["factory"]) if native else {}
+        self._sequence = None
+        if spec.reference_sequence is not None:
+            from .original_sequence import prepare_sequence
+            self._sequence = prepare_sequence(spec.reference_sequence)
+        self._kernel = None if self._sequence or self._stages else mx.fast.metal_kernel(
             name=spec.name,
-            input_names=list(spec.input_names),
-            output_names=list(spec.output_names),
+            input_names=factory.get("input_names", list(spec.input_names)),
+            output_names=factory.get("output_names", list(spec.output_names)),
             source=spec.source,
             header=spec.header,
             ensure_row_contiguous=spec.ensure_row_contiguous,
             atomic_outputs=spec.atomic_outputs,
-            compile_options={"math_mode": MATH_MODE},
+            compile_options=factory.get("compile_options") if native else {"math_mode": MATH_MODE},
         )
         self._grid = tuple(Expr(e) for e in spec.grid)
         self._tg = tuple(Expr(e) for e in spec.threadgroup)
@@ -115,7 +145,11 @@ class LoadedKernel:
         launch = self._launches.get(key)
         if launch is None:
             shapes = [shape for shape, _ in key]
-            if self._fallback is not None and self._fallback.evaluate(shapes):
+            native = self.spec.native_call
+            signature = [[list(a.shape), str(a.dtype).removeprefix("mlx.core.")] for a in inputs]
+            if ((self.spec.input_signature is not None and signature != self.spec.input_signature)
+                    or (native is not None and signature != native["signature"])
+                    or (self._fallback is not None and self._fallback.evaluate(shapes))):
                 launch = Launch(fallback=True)
             else:
                 template = []
@@ -126,6 +160,9 @@ class LoadedKernel:
                         template.append((name, inputs[int(dt[2:])].dtype))
                     else:
                         template.append((name, _DTYPES[dt]))
+                if native is not None:
+                    template = [(name, _DTYPES[v["dtype"]] if isinstance(v, dict) else v)
+                                for name, v in native["template"]]
                 launch = Launch(
                     fallback=False,
                     output_shapes=[tuple(e.evaluate(shapes) for e in s) for s in self._out_shapes],
@@ -133,6 +170,11 @@ class LoadedKernel:
                     threadgroup=tuple(e.evaluate(shapes) for e in self._tg),
                     template=template,
                 )
+                if self._stages is not None:
+                    from .stages import shapes as stage_shapes
+                    _, outputs = stage_shapes(self.spec, shapes, [dtype for _, dtype in key])
+                    if outputs != list(zip(launch.output_shapes, self.spec.output_dtypes)):
+                        raise ValueError("stage results do not match the candidate's output shapes/dtypes")
             if len(self._launches) >= LAUNCH_CACHE_MAX:
                 self._launches.clear()
             self._launches[key] = launch
@@ -147,6 +189,19 @@ class LoadedKernel:
         if launch.fallback:
             raise ValueError(f"kernel {self.spec.kernel_id}: these shapes are the fallback's; "
                              "the original ops take them")
+        if self._sequence is not None:
+            return self._sequence(inputs)
+        if self._stages is not None:
+            buffers = list(inputs)
+            for kernel, indices in self._stages:
+                buffers.extend(kernel([buffers[i] for i in indices], init_value=init_value))
+            return [buffers[i] for i in self._stage_outputs]
+        if self.spec.native_call is not None:
+            native = self.spec.native_call
+            inputs = [inputs[b["array"]] if "array" in b else b["scalar"]
+                      for b in native["bindings"]]
+            if native["init_value"] is not None:
+                init_value = native["init_value"]
         return self._kernel(
             inputs=inputs,
             output_shapes=launch.output_shapes,
@@ -184,8 +239,8 @@ def fallback_fires(spec: KernelSpec, inputs: list[mx.array]) -> bool:
 
 def call(spec: KernelSpec, inputs: list[mx.array], init_value: float | None = None,
          launch: Launch | None = None) -> list[mx.array]:
-    """The one kernel call site. Record mode patches this function, so the
-    custom dispatch appears as a node in retraces."""
+    """The replacement call site. Record mode patches this function, so the
+    whole candidate appears as one node, even when it has several dispatches."""
     return _loaded(spec)(inputs, init_value=init_value, launch=launch)
 
 

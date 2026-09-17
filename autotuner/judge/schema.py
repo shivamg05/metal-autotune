@@ -12,9 +12,8 @@ import re
 from dataclasses import dataclass
 
 from autotuner_runtime.grammar import Expr, GrammarError
-from autotuner_runtime.kernels import _DTYPES
+from autotuner_runtime.kernels import _DTYPES, KernelSpec, KernelStage
 
-# the spec's menu; every hypothesis kind is one of these
 # common kinds, offered as suggestions; a kind is any short label the judge chooses
 SUGGESTED_KINDS = ("on-chip", "specialize", "retile", "re-layout", "algorithm", "launch", "fix")
 ASSOC_TAGS = ("preserving", "changing")
@@ -24,9 +23,10 @@ OUTCOMES = ("failed", "correct_slower", "tentative_ship", "shipped", "rolled_bac
 
 _DTYPE_NAMES = frozenset(_DTYPES)  # one source of truth with the kernel call site
 _IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
-_KIND = re.compile(r"[A-Za-z0-9][A-Za-z0-9 _\-/+.]{0,39}\Z")  # a short label, the judge's own words
 _IN_REF = re.compile(r"in\d+\Z")
 _SCRATCH = re.compile(r"tmp\d+\Z")
+ITEM_ID_MAX_CHARS = 64  # ids become kernel filenames, with harness prefixes and suffixes
+RESERVED_ITEM_IDS = frozenset({"scaffold", "scafix", "original", "head", "shipped"})
 
 
 class MalformedResponse(ValueError):
@@ -56,7 +56,8 @@ class QueueItem:
 @dataclass(frozen=True)
 class KernelProposal:
     """One Metal edit of a named parent, for the front ready item. The harness
-    owns the call site: no name, dtypes, init_value, math_mode, or streams."""
+    owns names, boundary dtypes, init_value, math_mode, and streams.
+    Stages declare their own intermediate shapes and dtypes."""
 
     source: str                                # kernel BODY
     parent_kernel_id: str                      # which code this change edits
@@ -68,6 +69,8 @@ class KernelProposal:
     fallback_predicate: str | None = None       # true -> use the library path
     scratch: tuple[tuple[str, str, tuple[str, ...]], ...] = ()  # (tmpN, dtype, shape exprs)
     item_id: str | None = None                  # the queue item this kernel is for
+    stages: tuple[KernelStage, ...] = ()
+    target_workload: str | None = None          # workload whose speed this edit aims to improve
 
 
 @dataclass(frozen=True)
@@ -125,17 +128,15 @@ def validate_response(obj: object) -> SeedResponse | NextResponse:
     )
 
 
-LESSON_MAX_CHARS = 400
-
-
 def _lesson(obj: dict) -> str | None:
     lesson = obj.get("lesson")
     if lesson is None:
         return None
-    if not isinstance(lesson, str) or not lesson.strip() or len(lesson) > LESSON_MAX_CHARS:
-        raise MalformedResponse(
-            f"lesson must be a non-empty string of at most {LESSON_MAX_CHARS} characters")
-    return lesson.strip()
+    if not isinstance(lesson, str):
+        raise MalformedResponse("lesson must be a string when present")
+    # Prose cannot change execution. Bound its later prompt excerpt, rather
+    # than discard an otherwise valid proposal because its note is long.
+    return lesson.strip() or None
 
 
 def _seed_queue(obj: object) -> tuple[QueueItem, ...]:
@@ -164,14 +165,15 @@ def _item(obj: object) -> QueueItem:
     if unknown:
         raise MalformedResponse(f"queue item has unknown keys {sorted(unknown)}")
     item_id = _str(obj, "id", "queue item")
-    if not _IDENT.match(item_id):
+    if not _IDENT.match(item_id) or len(item_id) > ITEM_ID_MAX_CHARS:
         raise MalformedResponse(
-            f"item id {item_id!r} must be letters, digits, and underscores: ids become kernel names")
-    kind = _str(obj, "kind", f"item {item_id!r}")
-    if not _KIND.match(kind):
-        raise MalformedResponse(
-            f"item {item_id!r}: kind {kind!r} must be a short label of up to 40 characters: "
-            f"letters, digits, spaces, and _-/+.")
+            f"item id {item_id!r} must be letters, digits, and underscores, at most "
+            f"{ITEM_ID_MAX_CHARS} characters: ids become kernel names")
+    if item_id in RESERVED_ITEM_IDS:
+        raise MalformedResponse(f"item id {item_id!r} is reserved for harness kernels or parent aliases")
+    kind = " ".join(_str(obj, "kind", f"item {item_id!r}").split())
+    if not kind:
+        raise MalformedResponse(f"item {item_id!r}: kind must be a non-empty label")
     assoc = _str(obj, "assoc_tag", f"item {item_id!r}")
     if assoc not in ASSOC_TAGS:
         raise MalformedResponse(f"item {item_id!r}: assoc_tag {assoc!r} must be one of {list(ASSOC_TAGS)}")
@@ -190,7 +192,8 @@ def _item(obj: object) -> QueueItem:
 
 
 _PROPOSAL_KEYS = {"source", "parent_kernel_id", "grid", "threadgroup", "output_shapes",
-                  "header", "template", "fallback_predicate", "scratch", "item_id"}
+                  "header", "template", "fallback_predicate", "scratch", "item_id", "stages",
+                  "target_workload"}
 
 
 def _proposal(obj: object) -> KernelProposal:
@@ -200,10 +203,17 @@ def _proposal(obj: object) -> KernelProposal:
     if unknown:
         # init_value, math_mode, streams, and the kernel name land here by design
         raise MalformedResponse(f"kernel has unknown keys {sorted(unknown)}; they are not the judge's to set")
-    source = _str(obj, "source", "kernel")
+    stages = ()
+    if "stages" in obj:
+        if set(obj) & {"source", "grid", "threadgroup", "template", "scratch"}:
+            raise MalformedResponse("stages replace top-level source/grid/threadgroup/template/scratch")
+        if not isinstance(obj["stages"], list) or not obj["stages"]:
+            raise MalformedResponse("stages must be a non-empty list of dispatches")
+        stages = tuple(_stage(stage, i) for i, stage in enumerate(obj["stages"]))
+    source = "// Ordered stages; see the stage sources.\n" if stages else _str(obj, "source", "kernel")
     parent = _str(obj, "parent_kernel_id", "kernel")
-    grid = _exprs3(obj, "grid")
-    threadgroup = _exprs3(obj, "threadgroup")
+    grid = ("1", "1", "1") if stages else _exprs3(obj, "grid")
+    threadgroup = ("1", "1", "1") if stages else _exprs3(obj, "threadgroup")
     shapes = obj.get("output_shapes")
     if not isinstance(shapes, list) or not shapes:
         raise MalformedResponse("kernel output_shapes must be a non-empty list, one expr list per output")
@@ -220,11 +230,41 @@ def _proposal(obj: object) -> KernelProposal:
         if not isinstance(fallback, str):
             raise MalformedResponse("fallback_predicate must be a string expression")
         _expr(fallback, "fallback_predicate")
+    target = _opt_str(obj, "target_workload", "kernel")
+    if target is not None and not target.strip():
+        raise MalformedResponse("kernel: 'target_workload' must be a non-empty workload name")
     return KernelProposal(source=source, parent_kernel_id=parent, grid=grid,
                           threadgroup=threadgroup, output_shapes=out_shapes,
                           header=header, template=template, fallback_predicate=fallback,
                           scratch=_scratch(obj.get("scratch", [])),
-                          item_id=_opt_str(obj, "item_id", "kernel"))
+                          item_id=_opt_str(obj, "item_id", "kernel"), stages=stages,
+                          target_workload=target)
+
+
+def _stage(obj, index):
+    keys = {"inputs", "outputs", "source", "header", "grid", "threadgroup",
+            "output_shapes", "output_dtypes", "template"}
+    if not isinstance(obj, dict) or set(obj) - keys:
+        raise MalformedResponse(f"stage {index}: fields are {sorted(keys)}")
+    for key, pattern in (("inputs", r"(?:in|tmp|out)\d+"), ("outputs", r"(?:tmp|out)\d+")):
+        values = obj.get(key)
+        if not isinstance(values, list) or any(not isinstance(v, str) or not re.fullmatch(pattern, v) for v in values):
+            raise MalformedResponse(f"stage {index}: {key} must be a list of buffer names")
+    dtypes = obj.get("output_dtypes")
+    if not isinstance(dtypes, list) or any(not isinstance(dt, str) or dt not in _DTYPE_NAMES for dt in dtypes):
+        raise MalformedResponse(f"stage {index}: output_dtypes must be known dtype names")
+    # Reuse the existing source, shape, template and launch grammar validation.
+    single = _proposal({k: v for k, v in obj.items() if k not in {"inputs", "outputs", "output_dtypes"}}
+                       | {"parent_kernel_id": "stage"})
+    if len(obj["outputs"]) != len(single.output_shapes) or len(dtypes) != len(obj["outputs"]):
+        raise MalformedResponse(f"stage {index}: every output needs a shape and dtype")
+    return KernelStage(tuple(obj["inputs"]), tuple(obj["outputs"]), KernelSpec(
+        kernel_id=f"stage_{index}", name=f"stage_{index}",
+        input_names=tuple(f"in{i}" for i in range(len(obj["inputs"]))),
+        output_names=tuple(f"out{i}" for i in range(len(obj["outputs"]))),
+        source=single.source, header=single.header, grid=single.grid,
+        threadgroup=single.threadgroup, output_shapes=single.output_shapes,
+        output_dtypes=tuple(dtypes), template=single.template))
 
 
 def _scratch(obj: object) -> tuple[tuple[str, str, tuple[str, ...]], ...]:

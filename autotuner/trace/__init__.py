@@ -30,12 +30,16 @@ class Tracer:
         """One recorded pass: lazy, no eval, completeness-checked. Returns the
         frozen trace and the model's (lazy) outputs."""
         paths = self.patcher.wrap_model(model)
-        self.recorder.arm(model, list(inputs), paths)
+        self.recorder.snapshot_seqs = set()  # a trace wants shapes and ids, never values
         try:
-            outs = self.recorder.step(model, tuple(inputs))
+            self.recorder.arm(model, list(inputs), paths)
+            try:
+                outs = self.recorder.step(model, tuple(inputs))
+            finally:
+                self.recorder.disarm()
+            return self.recorder.freeze_pass(), outs
         finally:
-            self.recorder.disarm()
-        return self.recorder.freeze_pass(), outs
+            self.recorder.snapshot_seqs = None
 
     def uninstall(self) -> None:
         self.patcher.uninstall()

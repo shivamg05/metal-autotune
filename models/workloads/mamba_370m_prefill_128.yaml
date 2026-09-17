@@ -1,0 +1,19 @@
+model: ../mamba_370m.py
+baseline: plain
+workloads:
+  - name: prefill
+    context: 0
+    inputs:
+      - shape: [1, 128]
+        dtype: int32
+        low: 0
+        high: 50280
+budget:
+  per_region: 8
+  total: 24
+final_benchmark:
+  # One complete prompt per sample. Additional cached calls would instead
+  # measure continuation chunks, a different workload from initial prefill.
+  steps: 1
+  pairs: 8
+  warmup_steps: 3

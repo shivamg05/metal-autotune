@@ -212,10 +212,12 @@ Roofline peaks for this chip: 92.8 GB/s bandwidth, 3305/3313/2850 GFLOP/s fp16/b
 
 Verified by experiment while building M5-M8 (each has a test in the named file):
 
-- An infinite-loop Metal kernel with volatile device accesses hangs mx.eval
-  indefinitely with no OS-side error; a side-effect-free infinite loop is compiled
-  away entirely. The parent wall timeout is therefore the only hang defense, and the
-  GPU recovers cleanly after SIGKILL (tests/test_sandbox.py).
+- A past test found that an infinite-loop Metal kernel with volatile device
+  accesses stalled `mx.eval`, while a side-effect-free loop was compiled away.
+  That small test recovered after SIGKILL; it did not establish that killing a
+  worker always recovers the shared GPU. The 2026-09-05 WindowServer incident
+  below invalidates that general recovery claim. The regular test suite now
+  checks supervision with stalled CPU workers, without hanging the GPU.
 - Compile-error line offsets can be measured per kernel by prepending an
   `#error` probe line; the report lands at offset+1 without changing the generated
   signature (autotuner/sandbox/worker.py).
@@ -407,6 +409,14 @@ of work-2026-09-02-1054-est.
   health-gated).
 - **FACT reductions-stream-slower.** `mx.sum(w, axis=1)` unchained reads 58 to 68 GB/s
   over the same matrices, slower than the matvec; MLX's own reduce is not a floor.
+- **FACT kernel-object-opaque.** The object `mx.fast.metal_kernel` returns is a nanobind
+  function with no Python attributes: no source, name, or input names to read back and
+  nothing to hook. The tracer therefore records a model's own custom kernel by handing
+  the model a stand-in from the factory, and a Python int among a call's `inputs` binds
+  as a scalar the body uses directly (mlx_lm passes its token count that way). Pinned by
+  `tests/test_platform_metal_kernel.py::test_kernel_object_exposes_nothing_but_its_call`
+  and the `kernel_submodule` fixture; verified 2026-09-10 on tiny random Qwen3.5,
+  BitNet, and Mamba2 models, whose traces were incomplete before.
 - **FACT constant-under-8.** `mx.fast.metal_kernel` binds an input with fewer than 8
   elements, whatever its dtype, in Metal's `constant` address space (8 or more:
   `device`); a `device` pointer cast to it fails to compile. The probe reads no input
@@ -460,3 +470,349 @@ call, the harness's own chained, cache-cold, paired clock.
   an array without a primitive". A missed detection is therefore silent for one
   clock, which is why the compiled clock is followed by a plain call that must
   return the same bits (loop._assert_survived_compile).
+
+## spike_15_compile_state_free: compiling the state-free runs between cache writes (2026-09-03)
+
+`spikes/spike_15_compile_state_free.py` on the Qwen3 0.6B 4-bit decode step, mlx 0.32.2.
+One model, one cache; the arms differ only in whether each layer's `.mlp` points at a
+compiled forward or the original, and the swap happens between timed blocks.
+
+- **FACT state-free-runs-compile.** `mx.compile` refuses the whole step (see
+  spike_14) but accepts a run of consecutive ops that sits between two cache
+  writes. Compiling all 28 MLP runs, one per layer, returns bit-identical logits
+  (max abs diff 0.00e+00), keeps working across repeated calls, and leaves the
+  cache holding no tracer, so a plain call after still works. What is tested is
+  a run that excludes every cache write; whether a run's size or its distance
+  from a write matters is not tested, so this is no license to cut anywhere.
+  Pinned by `tests/test_platform_env_and_compile.py::test_compile_accepts_a_state_free_submodule_of_a_stateful_step`.
+- **FACT compiling-the-mlp-buys-nothing.** Paired ABBA against the same model
+  uncompiled, 12 pairs on a settled chip (95 GB/s before, 92 after), the ratio is
+  0.993 (1.007x) with 10 of 12 pairs inside 0.985 to 1.005. This is what
+  `decode-step-cpu` predicts: the step is GPU-bound, so removing Python dispatch
+  cannot pay, and the MLP's three matmuls per layer are the ops compile cannot
+  fuse anyway. Fusing to save dispatch is a dead direction at this model size;
+  a win has to remove GPU work.
+
+## stitch_affine_qmm_t: the library's prefill quantized-matmul dispatch (2026-09-04)
+
+mlx 0.32.2's `mx.quantized_matmul(transpose=True)` dispatch, read from the wheel's
+`quantized.cpp` / `quantized.h` and reproduced in `stitch_affine_qmm_t` and
+`build_scaffold`. Pinned by `tests/test_stitch.py::test_qmm_t_prefill_bitwise`
+and its refusal tests: they compare the stitched kernel to the library bitwise,
+so any mlx change to the tiles or thresholds fails there loudly.
+
+- **FACT qmv-qmm_t-boundary.** The library runs a qmv vector kernel while the x
+  row count M is below `get_qmv_batch_limit(K, N)` and its qmm_t matrix kernel at
+  or above it. The limit is architecture-dependent (13 or 15 on this M4,
+  `applegpu_g16g`); the full table is copied in `stitch._qmv_batch_limit`. A qmv
+  stitch is bitwise only at M == 1; from 2 up to the limit it agrees with the
+  library only within a few fp16 ulps (fails the bf16 gate), so only M == 1 and
+  M >= limit have a bitwise scaffold. An unreadable arch string refuses the
+  stitch rather than route on a guessed limit.
+- **FACT qmm_t-tiles.** `affine_qmm_t` runs 32x32x32 tiles (BM=BK=BN=32), 2x2
+  simdgroups (WM=WN=2), threadgroup (32,2,2) = 128 threads, grid
+  (ceil(N/32), ceil(M/32), 1) with tid.x the N tile and tid.y the M tile, and
+  threadgroup blocks `Xs[BM*BK_padded]` / `Ws[BN*BK_padded]` with
+  `BK_padded = BK + 16/sizeof(T)`. Calling `qmm_t_impl` with exactly these is
+  bitwise against the library across M, K, N, dtype, group_size, bits, rank 2/3.
+- **FACT qmm_splitk-when-B1.** For transpose and a single matrix (B == 1, the
+  usual case) the library takes qmm_splitk, which runs plain qmm_t when its
+  split_k <= 1 and otherwise splits K into split_k parts plus a reduction.
+  `split_k = min(max(1, 512 / (ceil(N/32)*ceil(M/32))), K / max(group_size,32))`,
+  then reduced while `K % (split_k * align)`. The stitch reproduces only the
+  split_k <= 1 case; every FLUX matmul lands there (large N makes the tile count
+  >= 512). split_k > 1 (small M*N) is refused and the naive lowering takes it.
+
+## Shared GPU containment after the WindowServer crash (2026-09-05)
+
+The crash report records WindowServer missing its watchdog check-in for 40
+seconds at 00:47:48. The accompanying process sample records the candidate
+worker's main thread and an IOGPU completion thread last running about 53
+seconds earlier. The last Codex
+repair, `rc5d292_scafix`, assigns a projection containing 43.49 billion scalar
+product iterations to one 128-thread group. These observations strongly
+implicate the candidate evaluation; the reports do not identify the exact
+driver failure. Thermal pressure was nominal in the crash snapshot, which
+does not establish the machine's earlier thermal history.
+
+The old worker allowed minutes for evaluation. Its relative slowness check ran only
+after candidate launches returned, so neither protected the first stalled
+launch before the desktop watchdog expired. Workers share the desktop GPU;
+process termination cannot be treated as guaranteed GPU cancellation.
+
+The parent now supervises each GPU evaluation with a five-second deadline,
+including first-use JIT. Cooling is outside that deadline but remains within
+the overall worker budget. A timeout stops the entire job without another GPU
+probe. Seven tests in `tests/test_worker_watchdog.py` passed using CPU workers
+to simulate stalls, cooling, crashes, and heavy stdout. This verifies process
+supervision, not cancellation of a hung GPU kernel. The former infinite-loop
+Metal test is no longer part of the suite.
+
+Exact report paths, candidate files, and the limits of this diagnosis are in
+`work-2026-09-04-refinement/crash-review.md`.
+
+### 2026-09-05: FLUX architecture candidate accepted and exported
+
+The saved Codex proposal `rbebaa4_reuse_weights_m64` increases the shipped
+quantized matmul's M tile from 32 to 64, keeping its dtype and K accumulation
+order. Fresh ladder checks measured 36.72 ms versus 40.35 ms for the region.
+Installing it at all 20 copies passed identity, retrace, and whole-model
+correctness checks. Ten paired ABBA blocks against the compiled original gave
+a median candidate/baseline ratio of 0.96645, a 56.20 ms paired latency saving,
+and 4.21 ms uncertainty. This exceeds the existing whole-model acceptance margin.
+
+`work-2026-09-04-refinement/flux-saved-artifact` loaded and reproduced the
+patched model's outputs in a fresh process. Evidence is in
+`flux-saved-check/run.jsonl` and `flux-saved-check/report.json` under the same
+work directory. This used the supplied FLUX architecture with fixed random
+weights, not a trained checkpoint. The original bounded CLI run hit its
+15-minute cap; the direct saved-candidate check completed in 702.89 seconds
+without new judge calls or repeating discovery and calibration.
+
+
+## The region clock is blind to the overlap the model gives the library (2026-09-08)
+
+- FACT clock-vs-model-gap: on the Llama 3 8B 4-bit decode step (region 8f4bc7,
+  the 64 gate/up matmuls, 29 MB each, memory-bound, library at 91% of
+  roofline) the ship clock credits kernel r8f4bc7_h37 with +16 to +27 us/pass
+  (run +27.2; reproductions +26.0 ± 5.5, +16.3 ± 8.1) while the whole model
+  reads +1 to +6 ± 8 us per site (run +0.08 ± 0.47 ms over 64 sites; tool
+  install +0.15 ± 0.56; the same compiled kernel hand-installed +0.42 ± 0.81).
+  Not the tool's wrapper (identity replay at 64 sites -1.0 us/site, null), not
+  custom dispatch (a 64-launch chain reads the custom kernel 24 us/launch
+  faster, twice, tight).
+- FACT overlap-is-the-mechanism: gate and up are independent matmuls on one
+  input and MLX runs them concurrently. Over the 64 real cold weights, 32
+  independent pairs beat 64 dependent launches by 18.7 ± 1.7 us per pair for
+  the library and 11.0 ± 5.8 (unresolved) for the kernel; library pairs vs
+  kernel pairs read the kernel +13.5 ± 7.3 us/launch. The chained region
+  clock times one dependent launch at a time, never sees the library's
+  overlap, and so credits the kernel about twice its in-context edge.
+- FACT warmth-refuted: inside one paired comparison, a shared 29 MB weight vs
+  a private buffer per set (5 sets, and 16 sets = 470 MB rotating) costs the
+  library +1.6 ± 3.4 / +2.4 ± 5.1 us/pass and the kernel +1.1 ± 14 / -4.3 ± 8.8:
+  a weight that size is cold either way. A change giving weights their own
+  buffer per set was built, measured, and reverted. (A run that seemed to
+  show a halving was drift between separate comparisons: the cold-start
+  regime below.)
+- The residual ~+6..13 us/site, ~0.4-0.85 ms per token, ~1% of the step, sits
+  at the whole-model clock's 3-sigma at 20 pairs (~0.5 ms), so "not faster"
+  there means unconfirmable, not slower. The 2026-09-03 "fixed install cost
+  the kernel cannot outrun" on 4-bit Qwen has the same signature. Scratchpad:
+  attribute.py, coldchain2.py, ladderclock.py, mechanism.py.
+
+## A paired comparison that starts after a settle reads the cold regime (2026-09-08)
+
+- OBSERVATION cold-start-compare: on the Qwen3 0.6B 4-bit decode step (context
+  512) the same A/A `compare()` read 5.67 ms when it was the session's first
+  comparison and 15.9 ms when it began right after the previous comparison's
+  `settle()`, both arms alike, stable across 16 pairs; `warm_until_stable`
+  reaches a flat reading in the cold regime rather than climbing out of it.
+  Unpaced back-to-back loops read 5.7 ms in every configuration, including
+  alternating two model objects with separate KV caches (5.68), so neither the
+  second object nor the identity wrappers cost anything. Within every pair the
+  delta is null (A/A +0.01 ± 3σ 0.14 at 5.7 ms; +0.22 ± 0.63 at 15.9 ms), so
+  ratios and ship decisions are unaffected; only the absolute step level flips
+  (2.8x here). Extends FACT pacing-clock-ramp and the 2026-09-06 hot-start entry.
+  Scratchpad: overhead.py, isolate.py.
+
+## A hot start runs slow for the whole run; the sequence clock's null (2026-09-06)
+
+Two sequence benchmarks of the 2026-09-06 FLUX artifact (10 and 20 consecutive
+compiled forwards per run, 4 alternated pairs, cooling between runs) read
+1,848 and 1,858 ms per step for the untouched model from their first warm-up
+sample to their last run, against the job's paced single-step clock of
+1,186 ms. A third run of the same protocol in a fresh process read 1,220 ms
+per step throughout, and 20 back-to-back forwards timed one by one stayed
+between 1,207 and 1,232 ms with no drift.
+
+- **FACT no-drift-in-a-run.** Twenty consecutive 1.2 s forwards do not slow
+  the chip, and a 73 s idle followed by a warm-until-flat brings it straight
+  back to 1,235 ms. Neither sustained work within a run nor the pacing idles
+  produce the slow state.
+- **OBSERVATION hot-start-stays-slow.** Both slow runs began within a minute
+  of other heavy GPU work (a full test suite; another benchmark) and stayed at
+  1.5x slow for their whole 20 minutes despite 60 to 120 s idles between
+  bursts; the fast run began after roughly ten quiet minutes. That matches
+  the operator guide's warning that a hot start slows everything for a long
+  time. Chassis temperature was not measured, so this is the likely cause,
+  not a proven one. A paired comparison taken in that state is still fair
+  between its arms, but its absolute times describe a throttled chip.
+- **FACT sequence-null-floor.** Original against original under the sequence
+  protocol, 10 steps by 4 pairs: 12,198 vs 12,193 ms, a consistent 5 ms
+  (0.04%) in the candidate arm's favor whichever order ran first, and a
+  3-sigma margin of 0.9 ms, so the rule "faster by more than 3 sigma" calls
+  this null a win. The clock's floor at four pairs is about 0.05% of the run;
+  a decision at whole-model scale needs the measured null beside it, or
+  more pairs, before it may call sub-0.1% differences resolved.
+
+- **FACT wrapper-tax-zero, gain-holds-hot.** In the quiet process, sixty
+  identity wrappers (the artifact's replay wrappers with no kernel) cost
+  0.7 ms with 1.7 ms uncertainty on a 1,235 ms paced step and 24 ms with
+  112 ms uncertainty on a 12,237 ms ten-step run: nothing resolvable either
+  way. The kernels alone gain 110 ms on a 1,218 ms paced step (1.10x) and
+  1,171 ms on a 12,223 ms ten-step run (1.106x, sigma 16 ms). The 1.072x the
+  hot-start runs reported was the throttled chip shrinking the relative
+  gain, not the wrappers and not the clock.
+
+Scripts: the session's scratchpad `wrapper_cost.py` (heat curve, paced tax and
+gain) and `wrapper_cost_seq.py` (sequence null, tax, gain), through the
+harness Session and `autotuner_runtime.sequence.compare_sequences`.
+
+## Captured native Metal definitions (2026-09-11)
+
+The tracer now stores the factory definition (source, header, input/output names,
+layout flags and compiler options) separately from each invocation (tensor inputs,
+Python scalars, templates, launch dimensions and output allocation settings).
+Replay reconstructs from the definition; it does not import the original kernel's
+Python variable. Prepared replay resolves the callable before timing, and exported
+wrappers use the bundled runtime's definition cache.
+
+Instance-held kernels and closures work, including when a later tracer session
+records a model retained from an earlier session. Install before model imports and
+kernel construction remains required: MLX does not expose definitions of raw
+kernels created beforehand. Such missing operations must fail completeness checks.
+
+Captured kernels remain opaque region barriers and are not judge-editable. Source
+capture does not prove FP32 arithmetic. Both reference paths reject unaudited
+custom math; the low-memory whole-model audit also checks array provenance without
+retaining intermediate tensors. The sequence harness uses traceable same-shape
+views to isolate cache handles and returned arrays.
+
+Validation: `tests/test_captured_kernels.py` checks serialized definition/launch
+replay, sequential tracers, standalone generated wrappers in a fresh process,
+changed-definition/launch rejection, installation failure cleanup, and invisible
+FP16 arithmetic rejected by the FP32 audit. Direct MLX-LM gated-delta tests covered
+16 combinations of fp16/bf16, two sequence lengths, scalar/vector gates and masks;
+both outputs matched bitwise in interpreted and prepared fresh-process replay.
+These are correctness checks, not a full Qwen optimization run or a speed claim.
+
+
+## Searching captured native kernels (2026-09-11)
+
+Captured calls can be individual search targets and members of mixed fusion regions.
+Mixed-region starters replay the captured original sequence; candidate replacements
+use the complete region boundary.
+The original source/header is the seed; a frozen native-call contract preserves
+argument names, tensor/scalar ordering, integer/bool/dtype templates, output
+allocations, initialization, compiler settings and layout settings. The judge may
+edit source/header and launch geometry. Native templates and scratch additions are
+currently rejected as failed attempts. Unsupported factory/stream/scalar forms
+are rejected during scaffold preparation. Normal delivery-scope and retained-state
+restrictions still apply; calls with no supported module scope cannot ship.
+
+Copies are grouped by source/settings and the exact recorded call signature.
+Other signatures fall back to the original. Native targets are ranked using
+the boundary-data probe estimate; their arithmetic cost remains unknown. Unknown FLOPs are
+omitted from the model's lower-bound estimate, not modeled as elementwise work.
+
+Both library and captured-kernel edits now share one numeric policy: preserving
+edits match the original bit for bit; changing edits use fixed manifest rtol/atol
+against the original. Whole-model, sequence and fresh-process artifact validation
+use the same policy based on all accepted edits. FP32 reference coverage is not a
+prerequisite for new searches.
+
+`tests/test_native_search.py` exercises discovery, the scripted judge, the real
+GPU validation ladder, incorrect state rejection, repeated state evolution,
+fallback, install/retrace, final checks and fresh-process export. The export test
+controls only the speed verdict; it is not performance evidence.
+
+## Graph insertion beside compiled helpers and in-place writes (2026-09-15)
+
+Measured on mlx 0.32.2 while wiring graph delivery (`bind/graph.py`,
+`autotuner_runtime/graph.py`) into the loop; pinned in
+`tests/test_platform_env_and_compile.py`.
+
+- **FACT compiled-helper-does-not-hide-neighbors.** A scope that calls a
+  helper mlx already compiled (`nn.silu`, mlx_lm's `swiglu`, both
+  `@partial(mx.compile, shapeless=True)`) can itself be compiled with the graph
+  rewriter run first: the matmul next to the helper is still a visible node,
+  the rewriter replaces it (1 hit), the outer compile traces once per shape and
+  reuses the rewritten graph, and the result is bitwise the eager one. The
+  graph screen's refusal of "an already compiled calculation" was inherited
+  from replay (which cannot re-invoke an unnamed compiled callable) and is
+  gone. Consequence: mlx-lm MLP scopes (compiled swiglu) and Mamba's mixer
+  (compiled silu) now take graph delivery; `test_graph_model_matrix` covers
+  llama, qwen3.5, mamba and a FLUX-shaped denoiser.
+- **FACT compiled-write-to-input-stays-inside.** `x[0] = 9` inside a plain
+  function changes the caller's `x`; inside `mx.compile` it does not (the
+  caller's array reads back unchanged, the return value is the same). `+=`
+  and `[...] =` on an array the scope produced itself give identical results
+  eager and compiled. So the graph screen refuses a scope that writes into an
+  array it did not produce (an input, a weight, a cache field reached without
+  its method) and allows writes to its own intermediates, which is what
+  Mamba's `new_state += ...` is.
+- **FACT raise-in-trace-strands-captured-state.** `mx.compile(fun, inputs=state)`
+  fills `state` with tracers before tracing and swaps the real arrays back only
+  after `fun` returns; if `fun` raises, the module keeps the tracers and any
+  later use fails with "Attempting to eval an array without a primitive". So a
+  graph wrapper's traced function catches every problem (a rewrite that found
+  the wrong number of cuts, Python state moving inside the call), records it
+  on the wrapper and returns, and the wrapper decides the fallback after MLX
+  has restored the module. Also measured here, on a synthetic 8-linear block
+  in isolation: a compiled call with the module as `inputs=` state costs ~6 us
+  of host time where the eager ops cost ~17 us and `parameters()` alone ~6 us,
+  so weights read as compile state are live and cheaper than any Python walk.
+- **FACT graph-identity-cost.** On real Qwen3 0.6B 4-bit, an identity graph
+  wrapper on every MLP scope (28 of them) costs the decode step +0.2% and the
+  128-token prefill +1.4% (the latter barely resolved at 16 pairs, 3 sigma
+  0.84 ms on 64 ms); on every attention scope +0.7% and on every whole layer
+  +0.4% at prefill (unresolved, 3 sigma 0.8 to 1.4 ms, so "noise" here means
+  under about 1 to 2%). Host build time still rises by 7 to 22 us per wrapper
+  call, which the GPU-bound step hides; a host-bound step would show it. The
+  replay identity is within noise everywhere and cheaper than the original
+  on the prefill layer scope. Decode attention and layer scopes carry the KV
+  cache and are refused by the graph screen, so those were replay only.
+  Before the warm-path rewrite the same graph installs read +10%, +7%, +9%
+  and +18%, all resolved. `work-graph-runtime-validation/identity_cost.py`.
+  Re-measured on the final runtime of 2026-09-15 (`identity-*-final`, 28
+  scopes each, 16 pairs): decode layer -0.2%, decode MLP +1.6%, decode
+  attention -1.4% (now compiled at its recorded cache position, bitwise),
+  prefill layer +0.3%, prefill attention +0.5%, all unresolved; prefill MLP
+  +1.3% barely resolved; replay within noise everywhere. Unchanged.
+
+## Compilation is most of a graph install's win; a trace freezes its Python ints (2026-09-15)
+
+Measured on mlx 0.32.2 with `work-graph-runtime-validation/ttft_decomposition.py`
+(Mamba-370M, mlx-lm generation of a 32-token prompt plus one token, each arm
+paired against the untouched model, 8 pairs; three runs, cited by directory)
+and `host_cost.py`; pinned in `tests/test_platform_env_and_compile.py` and
+`tests/test_graph_install.py`.
+
+- **FACT compile-alone-is-the-win.** `ttft-decomposition/results.json`
+  (the runtime before today's rewrite): the 48 mixer scopes compiled by an
+  identity graph wrapper with no kernel, 89.7 to 69.0 ms (-23.1%, resolved);
+  the shipped kernel h3 inside the same compiled scopes -23.3%; the same
+  kernel through replay (no compilation) -11.0%; identity paired directly
+  against kernel -0.2% (3 sigma 1.45 ms). `ttft-decomposition-v2/results.json`
+  (the rewritten runtime): identity -25.1%, h3 -25.6%, identity against
+  kernel -0.0% (3 sigma 0.33 ms). `ttft-decomposition-v3`: the whole
+  backbone compiled and empty -25.6%. Eager Mamba launches every elementwise
+  op of every scan step, the kernel fuses them, and mx.compile fuses them
+  just as well. So a region clock or a whole-model comparison that runs the
+  library as plain ops credits mx.compile's fusion to the kernel; the loop
+  now runs every clock's library arm as the deployed scope will run it
+  (compiled for graph delivery), measures a kernel against its scope compiled
+  with the cuts it carried before, and clocks compile alone as its own report
+  line (`scope_compile`, `final.delivery`).
+- **FACT compiled-call-host-cost.** `host_cost.py` (`host-cost.json`): on the
+  real mixer scope (9 weights), one warm graph-wrapper call costs 80 us of
+  host time, a bare call of its compiled function 74 us (MLX flattens the
+  module handed as `inputs=` state, keys on shapes, unflattens outputs), so
+  the wrapper's signature, cache lookup and state write-back are about 6 us;
+  the plain module spends 195 us building the same graph in Python. Paired on
+  the whole task, a bare compiled call against the wrapper read the wrapper
+  +2.4% (`ttft-decomposition-v2`, 1.6 ms over 144 calls, resolved); the
+  earlier two-path runtime read +3.4% (`ttft-decomposition`). The compiled
+  call's own price is MLX's and applies to any compilation.
+- **FACT compiled-trace-freezes-python-ints.** A compiled function bakes in
+  every Python int it read while tracing (a rope offset, a slice bound from a
+  cache position) and never runs the Python again: called three times with the
+  same shapes it returns the first position's answer three times, and the
+  cache's position stays at 1 where the plain step reaches 3. So a compiled
+  scope is correct only at the positions it was traced at. The graph wrapper
+  keys on the holder's attributes and hands any other position to the
+  original module, exactly as a replay variant is guarded to its recorded
+  position (`bind/emit.py`, `_variant_checks`): neither delivery serves a
+  position it did not record, and a job that records position N optimizes
+  position N.

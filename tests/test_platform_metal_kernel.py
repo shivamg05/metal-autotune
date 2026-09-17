@@ -24,6 +24,15 @@ def run(k, inputs, shapes, dtypes, grid, tg, **kwargs):
     return outs
 
 
+def test_kernel_object_exposes_nothing_but_its_call():
+    """Design argument: the tracer records a model's own custom kernel by
+    handing the model a stand-in from the mx.fast.metal_kernel factory,
+    because the object the factory returns has no source, name, or input
+    names to read back and no attribute to hook."""
+    k = kernel("pin_surface", COPY_SRC)
+    assert [a for a in dir(k) if not a.startswith("__")] == []
+
+
 def test_construction_and_call_signature_keyword_only():
     """The harness owns every kernel call site: generated wrappers and the
     sandbox worker hardcode exactly this construction and keyword-only call

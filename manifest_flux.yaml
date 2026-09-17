@@ -1,0 +1,12 @@
+model: models/flux2_4b.py   # FLUX.2 Klein4B denoiser, ~3.9B, quantized 4-bit in memory; the model file says why
+workloads:
+  - name: denoise
+    inputs:
+      - shape: [1, 256, 128]     # image latent tokens (count x in_channels)
+        dtype: bfloat16
+      - shape: [1, 256, 7680]    # text tokens (prompt length x joint_attention_dim)
+        dtype: bfloat16
+      - shape: [1]               # timestep
+        dtype: float32
+baseline: compiled       # the denoiser step is stateless, so the compiled model is available and the honest bar
+budget: {per_region: 12, total: 60}   # FLUX attempts are heavy; raise once the ship-check cost is addressed

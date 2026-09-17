@@ -1,3 +1,10 @@
+> Current numeric and fusion policy (2026-09-11): DESIGN_SPEC.html supersedes the
+> historical FP32-golden plan below. Preserving edits require bitwise equality;
+> changing floating-point evaluation uses fixed manifest rtol/atol against the
+> untouched original, including whole-model, state and artifact checks. Captured
+> custom kernels are eligible mixed fusion targets and use boundary probes for
+> ranking. FP32 utilities remain for legacy artifacts and tests, not new searches.
+
 # Implementation Plan: Autonomous MLX Kernel Optimization
 
 This plan turns `DESIGN_SPEC.html` into a working tool. Read the spec end to end first.
@@ -21,7 +28,7 @@ Everything here assumes a fresh repository containing only the spec and this pla
 
 An MLX model runs on a Mac. Every math op it calls is a Metal GPU kernel. We record the
 exact op-call stream the model runs on declared workloads, cut that stream into regions
-(runs of consecutive op calls that one kernel could replace), and price each region by
+(runs of consecutive op calls that one custom implementation could replace), and price each region by
 what fusing and specializing it could physically save. Then a loop opens the best region:
 the harness builds a correct starting kernel, an LLM (the judge) proposes one small edit
 at a time, and the harness compiles, checks correctness, and times each edit out of
@@ -174,7 +181,9 @@ safetensors via `mx.save_safetensors`). Nearly every module boundary is one of t
 crossing it.
 
 **Manifest** (YAML in, frozen dataclass out). Fields per the spec: `model` (path to a
-file defining `build()`), `workloads` (list of `{inputs: [{shape, dtype}], name?}`),
+file defining `build()`), `workloads` (list of `{inputs: [{shape, dtype}], name?, context?}`;
+a context is the number of tokens already in the model's KV cache when the call runs,
+and the harness builds, fills and rewinds that cache around the plain model),
 `sweep` (named dims to sizes), `tolerances` ({rtol, atol}), `budget` ({per_region,
 total}). Validation: `build()` must exist, take no args, and be importable in a fresh
 subprocess. Named dims are strings inside shapes; integer dims are constants and never
@@ -241,13 +250,25 @@ instance and its parent, and the swap happens on instances (Section 5.3).
 artifact/
   kernels/<id>.metal + <id>.launch.json
   patch/wrappers.py        # generated replay-wrapper classes: readable Python,
-                           # explicit kernel calls, fallback path included
-  swap_table.json          # [SwapEntry]
+                           # explicit kernel calls, fallback path included; one
+                           # class per distinct body, shared by every module
+                           # path with that body
+  swap_table.json          # [SwapEntry], each with the scope's span map
   buffers/                 # reserved, empty in v1 (future precompute)
   runtime/                 # the autotuner_runtime package, vendored
   apply.py                 # thin shim calling runtime.apply
   report.json
+  model/                   # the model's source (entry file, its local imports,
+                           # files it lists in ARTIFACT_FILES); never its weights
+  workloads/               # the traced input tensors, one safetensors per workload
+  load.py                  # load(): build() from model/ plus apply(), one call
+  validate.py              # patched vs original on the saved inputs, the job's rule
+  benchmark.py             # whole sequences of steps, alternated, the job's final method
+  bundle.json, README.md, requirements.txt
 ```
+
+(The spec names the first five parts. The rest make the folder usable and
+checkable away from this repo, added 2026-09-06 at the maintainer's request.)
 
 (This matches the spec's artifact block: kernels, wrappers, swap_table, apply(),
 report.)
@@ -302,6 +323,15 @@ stall on them. Each records why, and the risky ones have Milestone 0 spikes.
 - `mx.compile` wrapping: a model that compiles part of itself gets that part recorded as
   one opaque call (op = `compiled_fn`, inputs and outputs recorded). Opaque calls can
   never be inside a region, but they anchor completeness.
+- `mx.fast.metal_kernel` wrapping: the factory hands the model a stand-in for the kernel
+  object (the object itself exposes nothing but its call), so a model that runs its own
+  custom kernel (mlx_lm's recurrent scans, BitNet's matmul) gets each call recorded as
+  one opaque call, its launch kept as scalar args: op = `metal_kernel:<import path>` when
+  the model keeps the kernel as a module attribute, else `metal_kernel`. A wrapper replays
+  a named one by calling that path with the recorded launch, exactly as the model does;
+  an unnamed one strands its scope like an unnamed compiled call. The harness's own
+  kernels still record as `custom_kernel` only: the call site suppresses the stand-in.
+  The kernel itself is never a region and never an fp32 reference.
 - The tracer installs before the model file is imported, because a model file that did
   `from mlx.core import matmul` at import time would keep the unwrapped function.
   The CLI enforces the ordering; the tracer refuses to install if the model module is
@@ -324,7 +354,7 @@ e2e promotion, an artifact that works without the harness.
 Why the change: zero runtime overhead (no global hooks anywhere, nothing intercepted
 at inference time), the artifact becomes readable Python with explicit kernel calls
 (the way every human integrates a kernel), and the spec's retrace check "the cut
-became one custom dispatch" becomes LITERALLY checkable, because the member ops are
+became one logical custom replacement node" becomes LITERALLY checkable, because the member ops are
 actually gone from the patched stream instead of present-but-dead.
 
 Mechanics:
@@ -463,7 +493,7 @@ instance. That implements both halves of the spec's identity rule: 32 copies of 
 per-layer stretch are one region, AND the same sequence firing in two workloads at two
 shapes (the same norm in midbatch and decode) is still one region, priced by its
 combined cost, with one hypothesis history and one wrapper, whose first attempt must
-be one kernel correct everywhere and faster everywhere. Weights count by role, dtype,
+be one candidate correct everywhere and faster everywhere. Weights count by role, dtype,
 and shape, never by value: a projection against a different weight shape is a
 different kernel to write, price, and check. The fingerprint is a hash of the canonical form. Cross-sweep-size
 matching (Section 5.6) keys on module addresses instead, because copies at different
@@ -637,7 +667,7 @@ Spec-fixed:
 |---|---|
 | Watchdog | 20x library region time (raised from 10x by maintainer decision 2026-08-31: correct fused-chain starting kernels sit near 10x, and the gate exists to catch wedged kernels, not honest slowness) |
 | Ship margin | max(1% of the library region time re-measured in this verdict, 3 sigma of the interleaved samples) |
-| Region close | the region's budget or the job's is spent, nothing else (maintainer decision 2026-09-02: the plateau, streak, roofline, and family rules closed regions the judge would have kept improving, and a yield is refused while budget remains) |
+| Region close | the region's budget or the job's is spent, or a launch-bound region's head was not moved by the last two attempts and the last three kernels each sat within one sigma of the launch floor clocked beside them (maintainer decisions 2026-09-02 and 2026-09-16: the plateau, streak, roofline-estimate and family rules closed regions the judge would have kept improving, and a yield is refused while budget remains; the launch floor is measured beside the kernel, never estimated) |
 | Scaffold fix attempts | 1 |
 | Determinism runs at gate 8 | 3 |
 
@@ -646,15 +676,17 @@ Plan defaults (tunable, recorded):
 | Constant | Default | Spec language |
 |---|---|---|
 | Region floor | 2% of step (copies combined) | "about 2%" |
-| Roofline has_room | s_max >= 1.2, from the floor probe clocked beside the region at pricing | "barely beats ... is skipped" |
+| Compute ceiling probe | a 4096-square plain matmul per dtype, timed in each pricing window beside the regions it bounds (`COMPUTE_PROBE_N`; 2026-09-16: the job-start probe sat 10 to 25% under achieved rates on FLUX and RecurrentGemma, and the "0%" 52%-share matmul shipped the largest win); the job-start matmul is 4096-square too | "physical speed limit" |
+| Peaks raised by observation | flops peaks and bandwidth rise to any rate the step or a priced region is measured achieving; never lowered | "physical speed limit" |
 | Launch cost per kernel (T_launch) | measured at job start via empty-kernel chain; fallback 4 us | "a few us" |
 | Minimum absolute win | 30 us per step across copies | "a few tens of microseconds" |
 | Assoc-changing kappa | 1.25 | "around 1 to 1.5" |
 | Assoc-changing floor | spread of library-vs-golden error across the k input sets, floored by a small multiple of output-dtype epsilon at observed scale | "+ floor" |
 | Sweep defaults per named dim | 1, 13, 50, 4096 | "1, a prime, a non-multiple of 32, one large" |
 | budget.per_region | 25 hypotheses | defaulted, recorded |
+| Openers per region | 4, capped by the directions that can pay under the region's bound (`openers_per_region`) | "first attempts" (maintainer decision 2026-09-16) |
 | budget.total | 250 hypotheses | defaulted, recorded |
-| e2e step veto | patched not slower than max(0.5%, 3 sigma) under interleaved pairing | "not significantly slower" |
+| e2e step decision | patched faster than the installed model by more than 3 sigma under interleaved pairing; no fixed percentage (maintainer decision 2026-09-06: a resolved 0.3% win is a win) | "must come out faster" |
 | Boundary input sets | k=3 per workload (a floor; timing rotation grows past it per the cache-defeat rule) | (Section 5.7) |
 | Cache-defeat threshold | 128MB rotated working set for the region clock | "enough that the data cannot just sit in the GPU's cache" |
 | Warm-until-stable | two consecutive timings within 1%, cap ~30, every distinct shape warmed once | spec fixes only "first eval thrown away"; this strengthens it |
@@ -1131,7 +1163,7 @@ literal retrace verification, e2e floor and both assoc paths and the veto, rollb
 
 This is the riskiest milestone after the M0 spike; do not let it slip. Done when: a
 hand-written correct kernel for a fixture region ships through a generated wrapper;
-retrace shows the member ops gone, one custom dispatch per copy, neighbors unchanged;
+retrace shows the member ops gone, one logical custom replacement node per copy, neighbors unchanged;
 identity certification passes on replayable fixtures and correctly REJECTS the
 stateful-scope and branchy-scope fixtures, whose regions strand with named reasons;
 e2e sits on the orig-vs-orig floor with step time unchanged or better; the fixture
@@ -1305,3 +1337,21 @@ nothing else anticipates them.
 Also out of scope: multi-device, training/backward passes, any dtype or quantization
 search (frozen by law), and any per-op GPU counter work (the platform does not offer
 one; the region clock exists because of that).
+
+
+## Ordered candidate dispatches
+
+`KernelSpec.stages` optionally holds a complete candidate program. Each stage
+contains a plain `KernelSpec` with a local inN/outN ABI and explicit bindings to
+region inputs or earlier buffers. The existing single-dispatch format remains
+valid. `autotuner_runtime/stages.py` validates wiring and propagates shapes;
+`LoadedKernel` instantiates the stage kernels once and builds the MLX dependency
+graph without intermediate evaluation or synchronization.
+
+Static launch limits apply to each stage at every checked shape. Numeric and
+speed gates evaluate the whole program; intermediate buffers are poisoned during
+correctness checks and only region outputs reach the output comparator. The
+retrace sees one logical replacement node per region copy, which can contain
+several GPU dispatches. Export writes stage bodies under `<id>.stages/` and stores
+bindings and launch expressions in the candidate's `.launch.json`. The same
+runtime executes candidates in workers, installed wrappers and exported bundles.

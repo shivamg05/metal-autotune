@@ -13,6 +13,7 @@ from collections import defaultdict
 from types import MappingProxyType
 from typing import Iterable, Sequence
 
+from .optable import MUTATING_METHODS
 from .types import Liveness, Retention, Trace, TraceIncomplete, TraceNode
 
 
@@ -26,10 +27,12 @@ def freeze(
     in_pass_evaluation: bool = False,
     eval_sites: tuple = (),
     scope_calls: tuple = (),
+    evaluated: Iterable[int] = (),
 ) -> Trace:
     inputs = frozenset(inputs)
     weights = frozenset(weights)
     retained = frozenset(retained)
+    evaluated = frozenset(evaluated)
 
     produced_by: dict[int, int] = {}  # array_id -> producer seq
     for node in nodes:
@@ -78,6 +81,19 @@ def freeze(
             kind = Retention.CONSUMED
         liveness[arr] = Liveness(kind=kind, consumed_by=consumed)
 
+    # Backward from what the step needs: its outputs, what the model kept or
+    # evaluated, and every call with an effect (a state call, an in-place
+    # write). A call none of those reach never runs under lazy evaluation.
+    from .recorder import STATE_PREFIX  # the recorder imports this module
+    needed = set(step_output_set) | retained | evaluated
+    dead = []
+    for node in reversed(nodes):
+        effect = node.op.startswith(STATE_PREFIX) or node.op.removeprefix("array.") in MUTATING_METHODS
+        if effect or any(out in needed for out in node.out_arrays):
+            needed.update(node.in_arrays)
+        else:
+            dead.append(node.seq)
+
     return Trace(
         nodes=tuple(nodes),
         edges=MappingProxyType({k: tuple(sorted(set(v))) for k, v in edges.items()}),
@@ -89,4 +105,6 @@ def freeze(
         in_pass_evaluation=in_pass_evaluation,
         eval_sites=tuple(eval_sites),
         scope_calls=tuple(scope_calls),
+        evaluated=evaluated,
+        dead=frozenset(dead),
     )

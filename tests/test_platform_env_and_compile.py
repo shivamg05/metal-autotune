@@ -275,3 +275,187 @@ def test_compile_swaps_state_held_in_a_dict():
     z = step(x)
     mx.eval(z)
     assert z.tolist() == [0.0, 2.0, 0.0, 0.0]
+
+
+def test_compile_accepts_a_state_free_submodule_of_a_stateful_step():
+    """Protects: fusing inside a step whose cache blocks compiling the whole
+    thing. The write poisons the step (see the attribute test above), but a
+    submodule sitting between two writes compiles, returns the same bits, and
+    keeps working across repeated calls rather than breaking on the second
+    like the whole-step compile does (spike_15)."""
+    import types
+
+    class Mlp(nn.Module):
+        """The real shape of the run being compiled: quantized matmuls behind
+        nested modules, not a bare elementwise chain."""
+
+        def __init__(self):
+            super().__init__()
+            self.gate = nn.Linear(64, 128, bias=False)
+            self.up = nn.Linear(64, 128, bias=False)
+            self.down = nn.Linear(128, 64, bias=False)
+
+        def __call__(self, x):
+            return self.down(nn.silu(self.gate(x)) * self.up(x))
+
+    class Compiled(nn.Module):
+        def __init__(self, inner):
+            super().__init__()
+            self.inner = inner
+            object.__setattr__(self, "_fn", mx.compile(lambda a: inner(a)))
+
+        def __call__(self, a):
+            return self._fn(a)
+
+    class Step(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.mlp = Mlp()
+            self.cache = types.SimpleNamespace(buf=mx.zeros((4, 64)))
+
+        def __call__(self, x):
+            h = self.mlp(x)
+            self.cache.buf[0:1] = h[0:1]  # the write that makes the step uncompilable
+            return h + self.cache.buf.sum(axis=0)
+
+    mx.random.seed(23)
+    m = Step()
+    nn.quantize(m.mlp, group_size=64, bits=4)
+    x = mx.random.normal((4, 64))
+    mx.eval(m(x))  # settle the buffer: every call writes the same slot the same way
+    want = m(x)
+    mx.eval(want)
+
+    plain_mlp = m.mlp
+    m.mlp = Compiled(plain_mlp)
+    got_first, got_second = m(x), m(x)
+    mx.eval(got_first, got_second)
+    assert mx.array_equal(got_first, want).item()
+    assert mx.array_equal(got_second, want).item()
+
+    # The write stayed outside the compiled region, so the cache never held a
+    # tracer: swapping the plain module back still works, which is what fails
+    # after a whole-step compile.
+    m.mlp = plain_mlp
+    after = m(x)
+    mx.eval(after)
+    assert mx.array_equal(after, want).item()
+
+
+# -- graph insertion beside compiled helpers and in-place writes (2026-09-15) --
+
+
+def test_compiled_in_place_write_to_an_input_stays_inside():
+    """Protects bind.graph.graph_scope_reason's mutation rule: under mx.compile
+    an in-place write to an array the caller still holds never reaches the
+    caller, while the eager module changes it, so such a scope cannot be
+    compiled without changing behavior. A write to the scope's own
+    intermediate is ordinary dataflow either way."""
+    def writes_input(x):
+        x[0] = 9
+        return x * 2
+
+    x = mx.ones(3)
+    eager = writes_input(x)
+    mx.eval(x, eager)
+    assert x.tolist() == [9.0, 1.0, 1.0]
+    x = mx.ones(3)
+    compiled = mx.compile(writes_input)(x)
+    mx.eval(x, compiled)
+    assert x.tolist() == [1.0, 1.0, 1.0]  # the caller never sees the write
+    assert compiled.tolist() == eager.tolist()
+
+    def writes_intermediate(x):
+        t = x * 3
+        t += 1
+        t[1] = 0
+        return t
+
+    x = mx.ones(3)
+    assert mx.compile(writes_intermediate)(x).tolist() == writes_intermediate(x).tolist() == [4.0, 0.0, 4.0]
+
+
+def test_compiled_scope_keeps_ops_beside_a_compiled_helper_visible():
+    """Protects graph delivery on scopes that call a compiled helper (nn.silu,
+    mlx_lm's swiglu): compiling the scope again still exposes the ops around
+    the helper to the graph rewriter, the rewrite runs once per shape, and
+    the result is bitwise the original's."""
+    from autotuner_runtime import graph_native
+    from autotuner_runtime.exact import bitwise_equal
+
+    w = mx.random.normal((64, 64)).astype(mx.float16)
+    mx.eval(w)
+
+    def block(x):
+        return nn.silu(x @ w) * 2  # nn.silu is compiled shapeless by mlx
+
+    px, pw = mx.zeros((4, 64), mx.float16), mx.zeros((64, 64), mx.float16)
+    pattern = [px @ pw]
+    rewrites = []
+
+    def transformed(x):
+        roots, hits = graph_native.rewrite([block(x)], pattern, [px, pw],
+                                           lambda matched: [mx.matmul(*matched)])
+        rewrites.append(hits)
+        return roots[0]
+
+    compiled = mx.compile(transformed)
+    x = mx.random.normal((4, 64)).astype(mx.float16)
+    for i in range(3):
+        assert bitwise_equal(compiled(x + i), block(x + i))
+    assert rewrites == [1]
+
+
+def test_raise_inside_a_trace_strands_tracers_in_captured_state():
+    """Protects autotuner_runtime.graph's rule that the traced function never
+    raises: mx.compile puts its tracers into the captured `inputs=` state
+    before tracing and swaps the real arrays back only when the trace
+    returns, so an exception leaves the module holding tracers that cannot be
+    evaluated."""
+    state = {"w": mx.ones(3)}
+
+    def bad(x):
+        raise ValueError("inside the trace")
+
+    with pytest.raises(ValueError):
+        mx.compile(bad, inputs=state)(mx.ones(3))
+    with pytest.raises(RuntimeError, match="without a primitive"):
+        mx.eval(state["w"])
+
+    state = {"w": mx.ones(3)}
+    good = mx.compile(lambda x: x + state["w"], inputs=state)
+    mx.eval(good(mx.ones(3)))
+    assert state["w"].tolist() == [1.0, 1.0, 1.0]  # a returning trace restores it
+
+
+def test_a_compiled_step_reuses_the_python_ints_it_read():
+    """Protects the graph delivery rule that a cache position belongs in the
+    call signature: a compiled trace bakes in every Python int it read (a rope
+    offset, a slice bound) and never runs the Python again, so reusing it at a
+    new position returns the first position's answer and the position itself
+    stops advancing."""
+    class Cache:
+        def __init__(self):
+            self.keys, self.offset = None, 0
+
+        def update(self, k):
+            prev = self.offset
+            if self.keys is None:
+                self.keys = mx.zeros((1, 1, 8, 4), k.dtype)
+            self.offset += k.shape[2]
+            self.keys[..., prev:self.offset, :] = k
+            return self.keys[..., :self.offset, :]
+
+    rope = nn.RoPE(4)
+
+    def step(x, cache):
+        return cache.update(rope(x, offset=cache.offset)).sum()
+
+    x = mx.random.normal((1, 1, 1, 4))
+    plain, compiled = Cache(), Cache()
+    step_compiled = mx.compile(lambda x: step(x, compiled))
+    want = [step(x, plain).item() for _ in range(3)]
+    got = [step_compiled(x).item() for _ in range(3)]
+    assert want[0] == got[0] and len(set(want)) == 3
+    assert got == [want[0]] * 3
+    assert plain.offset == 3 and compiled.offset == 1

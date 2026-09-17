@@ -18,21 +18,50 @@ import mlx.nn as nn
 def flatten_arrays(tree: object) -> list[mx.array]:
     """Every array in a nested tree of lists, tuples, and dicts, in order:
     how the recorder counts a call's outputs, and how a generated wrapper
-    unpacks a replayed call that returns a structure."""
-    out: list[mx.array] = []
+    unpacks a replayed call that returns a structure.
 
-    def walk(obj: object) -> None:
+    Walked with an explicit stack, not a recursive closure: on a state call's
+    return (a KV cache's two views) the closure form measured 57 us/layer of
+    GPU-side time that an iterative walk yielding the identical arrays does
+    not, which was the whole cost of the attention wrapper."""
+    out: list[mx.array] = []
+    stack = [tree]
+    while stack:
+        obj = stack.pop()
         if isinstance(obj, mx.array):
             out.append(obj)
         elif isinstance(obj, (list, tuple)):
-            for v in obj:
-                walk(v)
+            stack.extend(reversed(obj))
         elif isinstance(obj, dict):
-            for v in obj.values():
-                walk(v)
-
-    walk(tree)
+            stack.extend(reversed(list(obj.values())))
     return out
+
+
+def state_signature(value):
+    """Structure, scalar settings and array shapes of state, never tensor data.
+
+    Used to guard replays whose Python branches depended on a cache being
+    empty or on its layout. Array contents remain live runtime inputs.
+    """
+    seen = {}
+
+    def visit(obj):
+        if isinstance(obj, mx.array):
+            return ("array", tuple(obj.shape), str(obj.dtype))
+        if obj is None or isinstance(obj, (str, int, float, bool)):
+            return obj
+        if id(obj) in seen:
+            return ("alias", seen[id(obj)])
+        seen[id(obj)] = len(seen)
+        if isinstance(obj, dict):
+            return ("dict", tuple((k, visit(v)) for k, v in sorted(obj.items())))
+        if isinstance(obj, (tuple, list)):
+            return (type(obj).__name__, tuple(visit(v) for v in obj))
+        if hasattr(obj, "__dict__"):
+            return (type(obj).__name__, visit(vars(obj)))
+        raise TypeError(f"cannot describe state field of type {type(obj).__name__}")
+
+    return visit(value)
 
 
 class ReplayWrapper(nn.Module):
@@ -52,6 +81,19 @@ class ReplayWrapper(nn.Module):
         return getattr(self["wrapped"], name)
 
 
+def require_independent_models(first, second):
+    """Weight arrays may be shared; mutable modules must belong to one arm."""
+    if not isinstance(first, nn.Module) or not isinstance(second, nn.Module):
+        return
+    originals = {id(module) for module in first.modules()}
+    for path, module in second.named_modules():
+        if id(module) in originals:
+            raise ValueError(
+                f"build() reused a model module at {path or '<root>'}; return fresh model "
+                "and layer instances on every call so installing a kernel cannot modify "
+                "the untouched baseline. Weight arrays may be shared.")
+
+
 def resolve(model: object, path: str):
     """path -> (container, key, child). Empty path means the model itself and
     has no parent; installing there is the caller's special case."""
@@ -63,6 +105,14 @@ def resolve(model: object, path: str):
         obj = _child(obj, part, path)
     last = parts[-1]
     return obj, last, _child(obj, last, path)
+
+
+def resolve_value(model: object, path: str):
+    """Resolve recorded weights/state through modules, dictionaries and sequences."""
+    obj = model
+    for part in path.split(".") if path else []:
+        obj = _child(obj, part, path)
+    return obj
 
 
 def _child(obj: object, key: str, full_path: str):

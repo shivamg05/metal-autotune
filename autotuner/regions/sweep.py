@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from ..trace.types import Trace
 from .build import _boundary
+from .fingerprint import boundary_roles
 from .types import Stretch
 
 
@@ -36,4 +37,10 @@ def locate_span(priced: Trace, stretch: Stretch, retrace: Trace, workload: str) 
             f"member ops are no longer consecutive in the retrace "
             f"(seqs {sorted(new_seqs)}); the stream diverged at this size"
         )
-    return _boundary(retrace, workload, lo, hi)
+    span = _boundary(retrace, workload, lo, hi)
+    if lo == hi and retrace.nodes[lo].kernel_definition is not None:
+        from dataclasses import replace
+        span = replace(span, output_ids=retrace.nodes[lo].out_arrays)
+    if boundary_roles(priced, stretch) != boundary_roles(retrace, span):
+        raise SweepDivergence("the region's required input/output roles changed at this size")
+    return span

@@ -1,8 +1,9 @@
 # run directories and generated artifacts stay out of the tree
 work-*
-artifact/
-artifact-*/
-autotune_work/
+/work_*/
+/artifact/
+/artifact-*/
+/autotune_work/
 # python and tooling
 __pycache__/
 *.pyc

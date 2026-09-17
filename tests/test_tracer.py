@@ -14,7 +14,7 @@ import pytest
 
 from autotuner.trace import Tracer
 from tests.conftest import current_tracer, tracer_for_module
-from autotuner.trace.recorder import OPAQUE_OP
+from autotuner.trace.recorder import KERNEL_PREFIX, OPAQUE_OP, UNNAMED_KERNEL_OP, ArrayRef
 from autotuner.trace.replay import replay
 from autotuner.trace.types import Retention, TraceIncomplete
 
@@ -115,6 +115,56 @@ def test_compiled_lambda_is_one_opaque_call():
     assert trace.edges.get(opaque.seq)
     with pytest.raises(RuntimeError, match="cannot be replayed"):
         replay([opaque], {aid: mx.zeros((4, 8)) for aid in opaque.in_arrays}, opaque.out_arrays)
+
+
+def test_named_custom_kernel_records_definition_and_launch():
+    """Definition and launch replay bitwise without importing the model."""
+    from tests.conftest import arrays_by_path
+
+    model = load_fixture("kernel_submodule")
+    x = mx.random.normal((4, 8), key=mx.random.key(0))
+    trace, outs = tracer().trace(model, [x])
+    ops = [n.op for n in trace.nodes]
+    assert len(ops) == 3 and ops[1] == UNNAMED_KERNEL_OP
+    node = trace.nodes[1]
+    launch = node.scalar_args["kwargs"]
+    assert node.scalar_args["args"] == ()
+    assert launch["inputs"] == [ArrayRef(0), 4] and launch["grid"] == (32, 1, 1)
+    assert launch["template"] == [("T", mx.float32)] and launch["output_shapes"] == [(4, 8)]
+    assert node.in_arrays == (trace.nodes[0].out_arrays[0],)
+    assert node.out_specs == (((4, 8), "float32"),)
+    by_path = arrays_by_path(model)
+    bindings = {aid: x for aid in trace.inputs}
+    bindings.update({aid: by_path[trace.weight_paths[aid]] for aid in trace.weights
+                     if trace.weight_paths.get(aid) in by_path})
+    replayed = replay(trace.nodes, bindings, trace.step_outputs)
+    mx.eval(list(replayed.values()))
+    assert mx.array_equal(replayed[trace.step_outputs[0]], outs).item()
+
+
+def test_custom_kernel_stand_in_is_transparent_outside_a_pass():
+    """Disarmed, the stand-in the factory hands the model forwards the call
+    and records nothing; the module teardown checks the factory is restored."""
+    load_fixture("kernel_submodule")
+    fixture = sys.modules["fixture_kernel_submodule"]
+    assert type(fixture.scale_kernel).__name__ == "CapturedKernel"
+    before = len(tracer().recorder.nodes)
+    out = fixture.scale(mx.arange(8, dtype=mx.float32), 3)
+    mx.eval(out)
+    assert out.tolist() == [0.0, 3.0, 6.0, 9.0, 12.0, 15.0, 18.0, 21.0]
+    assert len(tracer().recorder.nodes) == before
+
+
+def test_custom_kernel_held_on_the_model_is_one_unnamed_opaque_call():
+    trace, _ = trace_of("kernel_closure", (4, 8))
+    ops = [n.op for n in trace.nodes]
+    assert ops.count(UNNAMED_KERNEL_OP) == 1
+    # the opaque node anchors completeness: its output feeds the next op
+    node = next(n for n in trace.nodes if n.op == UNNAMED_KERNEL_OP)
+    assert trace.edges.get(node.seq)
+    assert node.kernel_definition["kwargs"]["source"]
+    result = replay([node], {aid: mx.zeros((4, 8)) for aid in node.in_arrays}, node.out_arrays)
+    mx.eval(list(result.values()))
 
 
 def test_cache_retention_marks_python_retained():

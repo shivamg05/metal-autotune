@@ -1,10 +1,32 @@
-model: models/qwen3_0.6b_4bit_decode.py   # the bf16 model quantized in memory; the model file says why
+model: models/recurrentgemma_2b.py   # RecurrentGemma 2B (Griffin: recurrent blocks + local attention), pretrained, prefill only
 workloads:
-  - name: decode
+  # Three prompt lengths across the 480 to 520 band, each timed on its own and
+  # each served by the installed code; a length not listed runs the original.
+  # No context: the library starts each prompt from an empty cache.
+  - name: prefill_480
     inputs:
-      - shape: [1, 1]
+      - shape: [1, 480]
         dtype: int32
         low: 0
-        high: 151936    # Qwen3's vocabulary size
-baseline: compiled      # "faster" is measured against the model under mx.compile
-budget: {per_region: 24, total: 120}
+        high: 256000
+  - name: prefill_500
+    inputs:
+      - shape: [1, 500]
+        dtype: int32
+        low: 0
+        high: 256000
+  - name: prefill_520
+    inputs:
+      - shape: [1, 520]
+        dtype: int32
+        low: 0
+        high: 256000
+budget:
+  per_region: 12
+  total: 60
+final_benchmark:
+  # One complete prompt per sample: the target is prompt processing, so no
+  # generated tokens beyond the first dilute it.
+  steps: 1
+  pairs: 8
+  warmup_steps: 3
