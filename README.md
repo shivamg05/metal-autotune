@@ -69,6 +69,25 @@ The final summary tells you whether an artifact was verified, no improvement
 was confirmed, or the job failed. An isolated kernel speedup is not a shipped
 model speedup. Use [the artifact guide](docs/artifacts.md) after a verified win.
 
+## Run through an AI agent
+
+For progress updates without reading logs yourself, open this repo in a coding
+agent after completing setup and give it this prompt:
+
+```text
+Follow RUNNING.md to run metal-autotune on manifest.yaml with --judge claude-cli
+using a fresh work directory under runs/ labeled work-<date-time-est>.
+Do not look at other runs' work directories or artifacts. Along the way, give
+concise updates at milestones: initial measurements, region changes, accepted
+improvements, errors, and final validation. Report the final result and artifact
+path, or explain why nothing shipped.
+```
+
+Replace `manifest.yaml` with your chosen workload; use `examples/tiny_mlp.yaml`
+for the download-free example. The supervising agent launches and monitors the
+run. `--judge claude-cli` selects the separate AI that proposes kernel changes;
+it does not have to be the same provider as your supervising agent.
+
 ## Model examples
 
 The repo includes [model definitions and workload manifests](models/README.md)
