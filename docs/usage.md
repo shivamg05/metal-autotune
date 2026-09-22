@@ -1,30 +1,12 @@
 # Running an optimization
 
-Start with the [quickstart](../README.md). This page covers custom models, manifests, and troubleshooting. Commands run from the repository root.
+Start with the [quickstart](../README.md#quickstart) for installation and a small
+example. Commands below run from the repository root. For a larger target,
+choose a [model example](../models/README.md).
 
-## Setup
+## 1. Provide a model
 
-You need an Apple Silicon Mac and `uv`. Nothing else is configured by hand:
-the tool measures this machine's own speed limits at the start of every job.
-If it cannot measure (no Metal GPU), it stops with an error instead of
-pretending.
-
-```bash
-uv sync
-```
-
-## 1. Write the model file
-
-The harness starts tracing before importing your model and captures custom Metal
-kernel definitions during every model build, including later comparison copies.
-Your model does not need tracer setup or capture hooks. Captured custom Metal kernels can be searched individually using their original
-source as the starting point, and can participate in supported fusions.
-Preserving edits must match every output bit-for-bit. Arithmetic-reordering
-edits use the manifest tolerance against the untouched original model. Unsupported calls are
-reported before search, and signatures outside the optimized workload use the original.
-
-One `.py` file with a `build()` function at module level. It takes no
-arguments and returns your model, ready to call:
+Write a Python file with a `build()` function that returns a callable MLX model:
 
 ```python
 def build():
@@ -33,324 +15,172 @@ def build():
     return model
 ```
 
-Two rules, both checked before the job starts, both reported with the fix if
-you break them:
+Put downloads and weight loading inside `build()`, not at import time. Resolve
+local file paths relative to `__file__`, so the model works from another working
+directory. Return fresh model and layer instances each time; do not reuse a
+module-global model. The harness builds independent comparison models and shares
+their weights. Seeding random initialization inside `build()` also makes separate
+runs repeatable.
 
-- The file must import cleanly from any working directory. Resolve paths from
-  `__file__`, never from the current directory.
-- Slow work like loading weights goes inside `build()`, not at import time.
+The tool keeps the model's precision and quantization. It captures supported
+MLX operations and custom Metal kernels automatically; no tracing hooks are
+needed in your model. Unsupported regions are reported and skipped.
 
-`build()` is called more than once per job to get untouched copies of the
-model, so it must return the same weights every time. Seed random weights
-inside `build()` or load a fixed checkpoint; artifact validation rebuilds it
-in a separate process. Return fresh model and layer instances each time.
-Reusing a module-global layer would let an installation alter the baseline,
-so the tool rejects it before search. Weight arrays may be shared.
+## 2. Define what to measure
 
-The model file also decides what there is to win. The tool never changes a
-model's dtypes or quantization, and on a model decoding one token at a time
-the weight stream alone can be most of the step. The `step_floor` line in
-the log and `coverage.step_floor` in the report say, before any search
-starts, an estimated lower limit and the remaining headroom. Compute costs
-use each operation's dtype, and never-evaluated work is left out. The chip's
-measured peaks are the limit's ceiling; when the step or a priced spot is
-measured running faster than those peaks allow, the peaks rise to what was
-seen (a `peaks` line says so), so the room is never negative. This estimate
-guides search; only measured forward-pass improvements count as wins.
-
-## 2. Write the manifest
-
-The manifest is the job order: which model, which input shapes matter to you,
-how much searching to pay for. Workload names cannot contain `@`, which is
-reserved for generated shape labels.
+A manifest is a YAML file describing the model, its inputs, and the search
+budget. Save this example in the repo root as `my_run.yaml`:
 
 ```yaml
 model: models/llama8b.py
+baseline: compiled
+use_library_inference: true
 workloads:
-  - name: prefill
+  - name: first_token
     inputs:
       - shape: [1, 512]
         dtype: int32
-        low: 0          # integer inputs sample from [low, high)
-        high: 128000    # keep token ids inside the vocabulary
-budget: {per_region: 8, total: 40}
+        low: 0
+        high: 128000
+budget: {per_region: 8, total: 24}
+final_benchmark: {steps: 1, pairs: 4, warmup_steps: 3}
 ```
 
-That is a complete manifest. Model files live in `models/`; the manifests in
-the repo root are ready-made jobs (`manifest.yaml` is the FLUX.2 Klein4B
-denoiser with fixed random weights; the two `manifest_llama_*.yaml` files
-are Llama 3 8B jobs, a prompt and a decode step over the same model file).
-Optional settings:
+This measures a complete MLX-LM request for one output token from a 512-token
+prompt, including sampling and any work the library queues before returning.
+It is not a pure prefill-only timer. Loading and tokenization are excluded. Token IDs are
+synthetic, sampled from `[low, high)`; keep that range within the vocabulary.
+Model paths are relative to the manifest's directory.
 
-- `use_library_inference: true` measures the supported model library's normal
-  inference routine. Currently this supports complete MLX-LM language models
-  with one prompt, shaped `[T]` or `[1, T]`. One measurement processes that
-  prompt and finishes generating `final_benchmark.steps` tokens. Loading and
-  tokenization are excluded; sampling, cache updates and queued GPU work are
-  included. Every candidate, confirmation and final result uses this same task.
-  An existing `context` is prepared before timing; each trial starts with an
-  independent copy. Workload names remain arbitrary labels.
-  `false` measures the model's forward call, including denoisers, encoders and
-  custom callables. When omitted, the tool chooses library inference if the
-  model and inputs are supported, otherwise forward execution, and records
-  its choice before search. Explicit `true` with an unsupported model or input
-  fails before search. Encoder-only and denoiser-only files do not imply a full
-  transcription or image-generation pipeline.
+Choose the measurement explicitly:
 
-- Write a letter instead of a number (`shape: [1, L]`) for a size that varies
-  in real use. `primary: {L: 512}` picks the size that is traced and timed
-  (default: the largest entry of `sweep`). Every kernel is also checked for
-  correct outputs at the other sizes in `sweep` (default `[1, 13, 50, 4096]`),
-  and at any size other than the primary the installed code hands the work
-  back to the model's original code, so the result is correct at every size
-  and faster at the primary one.
-- `context: 512` on a workload means 512 tokens of conversation are already in
-  place when the call runs. That is what a decode step is: `shape: [1, 1]`
-  plus `context: 512`. The job builds the model's cache the model's own
-  way (`make_cache()`), fills it once with 512 synthetic tokens, and restores
-  its full state after every call, so every call is the same step; the model file needs
-  nothing for this. A workload with a context is the only workload in its
-  manifest and has one input, the token ids. `context: 0` supplies an empty
-  cache for first-prompt processing. In forward mode, omitting `context`
-  supplies no cache. In library inference mode, the library creates an empty
-  cache when no context is given. Names such as `prefill` are labels only.
-  Attention, recurrent and sliding-window caches with Python state fields
-  use the same snapshot/restore path, including failures partway through a call.
-  The timed call includes cache writes, even when they do not affect its
-  logits. An exported model can instead use a caller-owned cache that advances
-  normally; untested shapes or cache positions fall back to the original code.
-- `budget` caps improvement attempts per spot and for the whole job (defaults
-  25 and 250). Each attempt costs minutes, so this is the run-length dial. A
-  spot keeps going until its share of the budget is spent, whatever the
-  verdicts: the AI is asked again when it runs out of ideas, and a reply with
-  nothing to try costs an attempt. A spot's first few attempts, up to four,
-  are each a fresh design written against the starting code in a different
-  direction the tool lists; after those the AI edits its best kernel. A spot
-  whose only remaining cost is the kernel launch itself, with the last three
-  kernels at that floor and the best one unmoved for two attempts, closes
-  early and the log says so.
-- `tolerances: {rtol: ..., atol: ...}` sets the allowance for edits that change
-  floating-point evaluation: `abs(new - original) <= atol + rtol * abs(original)`.
-  `rtol` scales with the original value; `atol` covers values near zero. The same
-  pair applies to region, whole-model, consecutive-step and artifact checks.
-  Values must be finite, non-negative and fit in float32, which performs the comparison.
-  Without it, recorded per-dtype defaults apply. Other edits must match bit for
-  bit. The judge cannot change these values, and integer outputs stay exact.
-- `final_benchmark: {steps: 10, pairs: 4, warmup_steps: 3}` shapes the last
-  timing of the job. With library inference, `steps` is the number of generated
-  tokens in every whole-model comparison throughout search, and final timing
-  repeats that same task. With forward measurement, it runs whole sequences of `steps` consecutive forward
-  passes on the workload inputs, original and patched, each sequence
-  uninterrupted, the two alternated in both orders `pairs` times with cooling
-  in between. The speedup the job reports is this comparison, and the
-  artifact is written only if it confirms a win.
-  For `context` workloads, the final sequence advances an isolated KV cache
-  from the saved prefix. Both arms receive the same input tokens at each
-  step, and correctness covers every output in the sequence. This measures
-  controlled decode, including cache growth, rather than text sampling.
-  Prefix-copy setup is included equally in both sequence times.
-- `baseline: compiled` (the default) means "faster" is measured against the
-  model run under `mx.compile`, which is the faster way to run it and so the
-  honest bar; `baseline: plain` measures against the model exactly as
-  `build()` returns it. A step that keeps state in Python, such as a decode
-  step writing its KV cache, cannot be compiled from outside the model, so
-  the job uses the plain baseline for it and says so in the log (`baseline`
-  line) and the report. Both timings are recorded whenever both can be taken.
+| Setting | What gets timed |
+|---|---|
+| `use_library_inference: true` | MLX-LM processes the prompt and produces `final_benchmark.steps` tokens, including sampling and cache updates. `steps: 1` targets the first token; `steps: 32` includes generating 32 tokens. |
+| `use_library_inference: false` | Calls the model directly with the declared inputs. For example, one encoder call or one denoiser call. This does not include a surrounding transcription or image-generation pipeline. |
 
-Precision and quantization are not settings: the model is optimized exactly
-as `build()` hands it over.
+Library inference currently supports complete MLX-LM language models with one
+input shaped `[T]` or `[1, T]`. Explicit `true` fails preflight when unsupported.
+If omitted, the tool selects a mode based on model/input support and records it.
+Workload names are labels, not instructions: naming a workload `prefill` or
+`decode` does not configure its behavior.
 
-## 3. Start the run
+`baseline: compiled` is the default. Stateless forward calls run under
+`mx.compile`. For library inference, the harness compiles supported model scopes
+while the library handles generation. Stateful forward calls that cannot safely
+be compiled use a plain baseline. The report records the actual choice and
+reason; requesting compilation does not guarantee every part can be compiled.
+`baseline: plain` compares against the model's existing execution instead.
 
-```bash
-uv run autotune run manifest.yaml --judge claude-cli --work-dir runs/work1
+### Cache and decode
+
+In library inference mode, each measurement starts with a fresh empty cache
+unless `context` supplies an existing prefix. In forward mode, no `context`
+means no cache is supplied.
+
+- `context: 0` supplies an empty cache.
+- `context: 512` prepares a cache containing 512 synthetic tokens before timing.
+- A controlled single decode step uses `use_library_inference: false`, token
+  input shape `[1, 1]`, and `context: 512`.
+
+During candidate comparisons, the cache is restored between trials so both
+models start in the same state. For final forward benchmarks with a cache,
+`steps` consecutive calls advance independent copies of that state, using the
+same input tokens in both arms. With `steps: 1`, the final check measures one
+call. Prefix-copy setup is included equally in these sequence timings.
+Currently a manifest with `context` must contain only one workload with one
+token input. Supported cache APIs and model-specific limits are listed in the
+[model examples](../models/README.md).
+
+### Shapes, correctness, and budget
+
+- Add entries under `workloads` to optimize several specific input shapes.
+  A candidate names one workload to improve and must show no resolved slowdown
+  on the others. Final confirmation requires at least one resolved improvement
+  and no resolved regressions; gains are not averaged across workloads.
+- Named dimensions such as `shape: [1, L]` use `primary: {L: 512}` for search.
+  `sweep: {L: [32, 128, 512]}` adds correctness checks, not extra optimization
+  targets. Without an explicit primary, the largest sweep value is used;
+  the default sweep is `[1, 13, 50, 4096]`. Untested signatures use the original
+  computation. Workload names cannot contain `@`, reserved for sweep labels.
+- `budget: {per_region: 8, total: 24}` permits up to eight attempts on each
+  region and 24 overall. A region is a replaceable group of operations. Budgets
+  count attempts, not minutes or provider tokens. Defaults are 25 and 250.
+  The first up to four attempts explore different designs proposed by the AI;
+  later attempts can refine, revisit, or combine designs. See the
+  [architecture](architecture.md) for the search flow.
+- Arithmetic-preserving changes require bit-identical outputs. Reordered
+  floating-point arithmetic uses per-dtype tolerances, or your explicit
+  `tolerances: {rtol: ..., atol: ...}`. The check is
+  `abs(new - original) <= atol + rtol * abs(original)`. Integer outputs remain
+  exact. Tolerances must be finite, nonnegative, and representable in float32.
+- `final_benchmark` defaults to `{steps: 10, pairs: 4, warmup_steps: 3}`.
+  Forward benchmarks repeat complete calls; short stateless workloads may use
+  more repetitions to make timing meaningful. Library inference keeps the
+  requested generated-token count. Each pair compares original and patched
+  execution, with order balanced across pairs. `pairs` must be even and at
+  least four. Warmup and cooling are handled by the tool. Actual repetition
+  counts are saved with the result and reused by the exported benchmark.
+
+## 3. Run it
+
+```sh
+uv run autotune run my_run.yaml --judge claude-cli
 ```
 
-Three rules before you press enter:
+The command checks judge readiness before loading the model. Keep the terminal
+open and other GPU work quiet. Runs can take hours depending on the model and
+budget; cooling pauses and judge requests are normal. The tool prints its log
+paths and uses a fresh folder under `runs/` by default. An explicit `--work-dir`
+must be empty. Only one CLI optimization job may run at a time.
 
-- Use a fresh `--work-dir` every run. The job refuses a used one so two runs'
-  records can never mix.
-- On a fanless Mac, start cool. The GPU slows itself several-fold when hot
-  and recovers after about twenty minutes of idle; a hot start makes
-  everything slow and small wins invisible.
-- Run it in the background. You will watch its log, not its terminal.
-
-`--judge` picks where the AI suggestions come from:
-
-| option | what it means |
+| Judge | Setup |
 |---|---|
-| `api` (default) | the Anthropic SDK; needs `ANTHROPIC_API_KEY`; `--model` picks the model |
-| `claude-cli`, `codex`, `gemini` | that agent's own CLI, run headless in an empty directory, using the login the CLI already has; no API key; `--model` picks the model |
-| `--judge-cmd "<command>"` | any other headless agent CLI; the prompt goes on the command's stdin, or in place of a `{system}`/`{prompt}` token in the command |
-| `agent` | you answer the AI's requests yourself through files in `<work-dir>/judge_io/`; [the judge protocol](judge-protocol.md) explains how |
+| `claude-cli`, `codex`, `gemini` | Install and sign in to the selected CLI first. `--model` selects its model. |
+| `api` (default if omitted) | Requires `ANTHROPIC_API_KEY`; `--model` selects the Anthropic model. |
+| `--judge-cmd "<command>"` | Custom headless command; see the [judge protocol](judge-protocol.md). |
+| `agent` | File-based requests answered by an external operator; see the [judge protocol](judge-protocol.md). |
 
-Each transport receives the same JSON contract. The Codex preset reads its
-final-response file so progress messages cannot corrupt the reply. Omitting
-`--model` uses the selected provider's default. See [the judge protocol](judge-protocol.md) for details.
+For CLI judges, the readiness request costs one small provider call, not a
+search attempt. `--judge-effort` controls Claude CLI effort. To have an agent
+run and monitor the job, give it [RUNNING.md](../RUNNING.md); the
+[operator guide](operating.md) defines milestone updates.
 
-For CLI judges, the tool first sends one small readiness request through the
-same command, model, environment, and response channel used for search. It
-allows up to 60 seconds and requires the expected JSON response. This costs
-one short judge call, no optimization attempts, and no model GPU work. A
-failure stops startup and prints the CLI's diagnostic from both output streams.
-If Claude reports expired authentication, sign in with `claude auth login` in
-your terminal, then start a fresh run. An operating agent must report that
-required action; it must not invent credentials, strip authentication settings,
-or keep restarting the job. API and file-mailbox judges do not use this CLI check.
+To stop new attempts while keeping final validation and packaging, use another
+terminal:
 
-A successful readiness check cannot prevent a later service outage or expired
-session. Three consecutive transport failures during search stop the job,
-preserving its partial report and accepted checkpoints. They do not consume
-optimization attempts or trigger work on further regions. This is an
-incomplete run, not a successful search that found no improvements.
+```sh
+uv run autotune finish --work-dir runs/YOUR_RUN
+```
 
-## 4. Watch it
+The current work finishes first. Killing the process instead may leave only
+recovery checkpoints. There is no automatic resume command.
 
-For an AI operator, set up the event-driven monitoring in [the operator guide](operating.md) immediately
-after launch. Every accepted win, region switch and error needs an update.
+## 4. Read the result
 
-The job writes one JSON line per event to `<work-dir>/run.jsonl`, one plain
-line per attempt to `<work-dir>/candidates.log` (time, spot, the idea tried,
-its verdict), every question to the AI and its answer to
-`<work-dir>/judge.jsonl`, and every kernel it checked to `<work-dir>/kernels/`.
-A candidate may contain several ordered GPU stages. Its shader bodies live in
-`kernels/<id>.stages/`, with their wiring and launches in `<id>.launch.json`.
-It still counts as one attempt and is measured as a complete replacement.
-Each judge request records `context_chars`: the character count of its system
-text plus all message text, including any malformed-reply retry. This is not
-a provider token count. Large supporting code is introduced with focused
-excerpts; the judge can request exact slices or literal searches from the
-harness's source catalog. `source_rounds` counts those lookups within the
-current proposal. They are navigation, not candidate attempts or GPU work;
-they do add model calls when used. Identical code and measurement details are
-shared within each request, and failed attempts and lessons remain available.
-See [the judge protocol](judge-protocol.md) for the reference and lookup formats.
-The stages arrive in this order:
+The final summary reports a verified artifact, no confirmed improvement, or a
+failure. A speedup is **original time divided by optimized time**, for the stated
+workload and baseline. `1.25x` means 20% less execution time. A faster isolated
+kernel or a temporary acceptance during search is not the final result.
 
-| stage | log lines you see | typical time | what is happening |
-|---|---|---|---|
-| load and map | `model`, `trace`, `regions` | 1-2 min | loads the model twice (weights shared, memory does not double) and finds the spots worth trying |
-| measure | `step_clock`, `peaks`, `aa_floor`, `step_floor`, `selection`, `pricing`, `ranked` | depends on step cost | times the model before calibration, then measures distinct regions sharing model samples |
-| search | `region_open`, then `region_closed` | minutes per attempt | builds starting code, asks the AI for improvements, verifies each one |
-| finish | `step_clock`, then the summary on stdout | 1-2 min | runs final validation, then packages accepted improvements; a no-win run finishes with its report |
+- `report.json`: measured workloads, baseline, attempts, final checks, and outcome.
+- `run.jsonl`: progress events; `candidates.log`: readable per-attempt records.
+- `checkpoints/`: accepted work saved during search, still awaiting final checks.
+- `artifact/`: the deployable bundle, only after confirmation and export validation.
 
-Preparation checks that a region has a delivery scope and a buildable
-starter. A CPU estimate selects regions whose recorded spans do not overlap.
-The others stay queued and become available as selected regions finish.
-Repeated regions are grouped only when their required inputs and outputs have
-the same roles and order. A final layer that returns fewer live values is a
-separate target. Saved input/reference file headers are checked before each
-wave is priced or searched; a mismatch stops with the exact file and reason.
-Measured ranking uses Amdahl's law: the region's share of the step times the
-fraction of its cost that its estimated limit could remove. Both parts of that
-limit are clocked beside the spot in the same window: a kernel that only
-streams its bytes, and a large plain matmul at its dtype for the arithmetic
-(`measured_compute_gflops` in the pricing table).
-`price_stability` in the pricing report shows agreement between observations:
-closer to 1 means more consistent, while small values mean the ranking is noisy.
-It is a diagnostic, not a confidence interval or proof of no headroom.
-The report's `pricing` table retains measured regions, largest share first,
-including their rejection reasons. `coverage.discovery` distinguishes legal
-regions from those the tool can currently build and install. Unsupported
-does not mean unprofitable. The roofline is a scheduling estimate, not a
-guaranteed upper bound on a real kernel's performance.
+See [Using an artifact](artifacts.md) to apply a result. For timing details and
+internal log fields, see the [measurement reference](measurement.md).
 
-`report.json` exists from startup and records failures as well as results.
-Its `accepted` list records each completed full-model promotion immediately,
-even if the region has not finished. Each acceptance also saves the exact
-kernels, wrappers, runtime, and measurement report under
-`<work-dir>/checkpoints/accepted-0001/` (then `0002`, etc.). These are recovery
-packages: final comparison and fresh-process artifact validation are still
-pending, and the checkpoint report says so. A later crash does not erase them.
-There is no automatic resume command; retain the checkpoint and logs if the
-run stops, and report them to the maintainer.
-`session.jsonl` records each cooling pause before sleeping, with its duration,
-then records completion. Long pauses also appear on stdout. The default cooldown
-is three times the accounted work. `cooling_scheduled` means a completed
-comparison or correctness check has returned its verdict and CPU work may use
-that cooldown. Candidate workers also return their remaining cooling deadline
-to the parent (`cooling_adopted`), so process cleanup, preparation and judge
-thinking can use the same interval. The parent waits before the next worker or
-model evaluation; `cooling_reused` reports that remainder.
-A pending cooldown does not mean the verdict is still being measured.
-`ladder_result.result.detail.pacing` records accounted work and time spent
-sleeping inside each successful worker phase. Parent waits appear in
-`session.jsonl`. These are wall-clock accounting figures, not direct GPU-active
-time: compilation and mixed CPU/GPU checks are still charged conservatively.
-Warmup entries include their first-call time and total work; `off_clock_work`
-records capture/correctness phase time. The cooling ratio, warmup rules, sample
-counts and speedup requirements are unchanged.
+## Troubleshooting
 
-The judge normally returns its initial plan and first kernel together. Once a
-region has an installed kernel, `incumbent_screen` reports a fresh local
-comparison against it. A resolved local regression skips whole-model timing;
-this screening result is not a measured whole-model regression. Identity wrapper
-checks share model passes while comparing each scope separately.
-
-The `trace` row's `never_evaluated` count is work the model builds but never
-runs (MLX is lazy; a result nothing returns, keeps, evaluates or reads never
-executes), such as the logits of a prompt-processing call the library drops.
-It is left out of regions, prices and the step floor, and
-`coverage.discovery.never_evaluated_ops` totals it.
-
-How a win gets installed: the `installation` row names the method for each
-module it touches. `direct` means the replacement covers the whole module
-call and is one guarded kernel call. `graph` means the original module builds
-its calculation as usual, the replacement is substituted into that graph, and
-the result is compiled once and reused for calls of the same shapes. `replay`
-means generated Python re-runs the module's recorded operations with the
-replacement spliced in; it is kept for scopes graph substitution cannot
-preserve, such as one whose compiled identity is not bitwise the original
-or one that reaches state it was not handed. Both graph and replay serve
-only the cache positions the job recorded: a job that records position N
-optimizes position N. A `graph_fallback` row names why a scope moved to
-replay, `delivery_settled` lists the split before the search, and `graph_verified`
-records that both the inspected and the compiled calculation contained exactly
-the expected substitutions. Every method passes the same correctness and
-whole-model timing checks, and the artifact carries whichever was measured.
-
-The baseline is the compiled model, as everywhere else. Under library
-inference it is realized as the model with its outermost compilable scopes
-compiled and nothing inserted (`delivery_settled` names the scopes); that
-model is installed empty as the job's starting state, every kernel composes
-into it, and every whole-model number is measured against it. The artifact
-carries it. `baseline: plain` in the manifest keeps the plain model as the
-baseline instead; kernels are then measured against their scope compiled with
-the cuts it carried before (`incumbent_compiled_scopes` on the accepted row).
-Each region's report row says its `delivery` and which `library_arm` its
-clocks ran (a graph scope's library ops run as one compiled graph, the way the
-deployed scope will).
-
-Candidate workers have a separate five-second limit for each GPU evaluation,
-including the first compilation and launch. Cooling does not consume that
-limit; it still counts toward the overall worker budget. If either deadline
-expires, the job stops and records the reason. Workers share the desktop GPU,
-so killing one does not prove its submitted GPU work has stopped.
-
-Keep other GPU work quiet. Interleaved measurements reduce drift, but cannot
-guarantee that arbitrary background load affects both arms equally. The macOS
-GPU utilization counter does not measure remaining throughput; compare it
-with measured bandwidth, compute throughput, and timing noise.
-The CLI prevents a second CLI job from running at the same time. If the A/A
-control finds a significant difference between identical code twice, the
-run stops before search because those measurements could create false wins.
-
-## 5. When things go differently
-
-| situation | what to do |
+| Situation | Next step |
 |---|---|
-| the job refuses to start | read the message; it names the fix (bad manifest key, model file rule broken, used work dir) |
-| the log shows `env_warning` | read the observation: high utilization alone does not establish contention; low throughput or unstable timings can obscure small wins |
-| a spot is skipped (`region_skip`, `scaffold_failed`) | normal; the log line names the reason; report it plainly and move on |
-| judge readiness fails before loading | follow the printed login/configuration instruction; preserve console output; do not retry unchanged settings |
-| the AI's replies keep getting discarded (`babble`) | these are unusable answers, distinct from connection failures; capture the log if persistent |
-| the judge becomes unavailable during search | three consecutive transport failures stop the job; preserve the partial report and accepted checkpoints, then resolve the reported connection problem |
-| the job crashes or hangs | a bug in the tool; capture `run.jsonl` and console output for the maintainer; do not edit the tool and rerun |
-| a worker exits with a Python exception (`WorkerFailed`) | the tool preserves the traceback and stops; report the exception as a worker failure, not a GPU hang |
-| a GPU evaluation or worker times out | the whole job stops; preserve the logs and candidate files, and investigate before another run; do not submit a GPU health probe or immediately retry the candidate |
-| it finishes with nothing installed | no attempt established a correct, sufficiently certain whole-model improvement within the budget; the model is unchanged; distinguish slow code from inconclusive timing using the recorded verdicts |
+| Missing judge or expired login | Follow the printed diagnostic, sign in, and start a fresh run. |
+| Missing compiler or graph build failure | Install Apple's Command Line Tools; see the [setup steps](../README.md#quickstart). Preserve the compiler diagnostic if it still fails. |
+| Unsupported region | Other regions may still be searched. The report records the coverage limit. |
+| No confirmed improvement | A valid outcome: no candidate passed correctness and final performance confirmation within the budget. Inconclusive timing is not proof that no improvement exists. |
+| Judge becomes unavailable | Three consecutive transport failures stop search and preserve accepted checkpoints. Resolve the provider error before another run. |
+| Crash, worker failure, or GPU timeout | Preserve console output, `report.json`, and `run.jsonl`; report the failing stage and traceback. Do not immediately retry a timed-out GPU candidate. |
 
-
-## Results and deployment
-
-See [Using an artifact](artifacts.md).
+Background load and temperature can hide small differences. The tool accounts
+for uncertainty; it cannot promise a win on every model. See [limitations](limitations.md).

@@ -1,4 +1,5 @@
 model: models/flux2_4b.py   # FLUX.2 Klein4B denoiser, ~3.9B, quantized 4-bit in memory; the model file says why
+use_library_inference: false  # measure the denoiser forward call
 workloads:
   - name: denoise
     inputs:
@@ -9,4 +10,4 @@ workloads:
       - shape: [1]               # timestep
         dtype: float32
 baseline: compiled       # the denoiser step is stateless, so the compiled model is available and the honest bar
-budget: {per_region: 12, total: 60}   # FLUX attempts are heavy; raise once the ship-check cost is addressed
+budget: {per_region: 12, total: 60}   # candidate-attempt limits, not a time limit

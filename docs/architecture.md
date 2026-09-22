@@ -46,7 +46,8 @@ The invariants below describe the boundaries that implementation changes must pr
   in a fresh process. Preserve accepted checkpoints if finalization fails.
 
 Behavioral platform assumptions are pinned by the `test_platform_*` tests and
-other regression tests. Reusable timing investigations live in `tools/`; old
+other regression tests. See the [measurement reference](measurement.md) for
+log fields and timing details. Reusable timing investigations live in `tools/`; old
 machine-specific measurements are not universal constants or product guarantees.
 
 ## Development

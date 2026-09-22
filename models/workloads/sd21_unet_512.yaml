@@ -1,5 +1,6 @@
 model: ../sd21_unet.py
-baseline: plain
+baseline: compiled
+use_library_inference: false
 workloads:
 - name: sd21_unet_512
   inputs:

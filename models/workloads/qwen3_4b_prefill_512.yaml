@@ -1,5 +1,6 @@
 model: ../qwen3_4b_4bit.py
-baseline: plain
+baseline: compiled
+use_library_inference: true
 workloads:
 - name: qwen3_4b_prefill_512
   inputs:
@@ -13,6 +14,7 @@ budget:
   per_region: 8
   total: 24
 final_benchmark:
-  steps: 10
+  # Complete an MLX-LM request for one token, starting from an empty cache.
+  steps: 1
   pairs: 4
   warmup_steps: 3

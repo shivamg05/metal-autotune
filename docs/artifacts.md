@@ -1,47 +1,15 @@
 # Using an artifact
 
-The job prints how many spots got a proven speedup, the model's time per
-step before and after, and the time for a whole sequence of consecutive
-steps before and after, both against the baseline the manifest chose
-(compiled unless you said otherwise). The sequence comparison is the one
-that decides: it times the model the way it is deployed.
-`<work-dir>/report.json` has the full account: every spot, why work on it
-ended, every attempt with its verdict (each with `floor_ms`, the physical
-floor timed beside that kernel), and both step timings, plain and compiled.
-`step_ms[workload].win_confirmed` says whether the final measurement resolved
-a speedup for an installed replacement. The finished model is also measured
-against the baseline the job did not ship against, paired at the end of the job:
-under the compiled baseline `step_ms[workload].speedup_vs_plain` (against eager
-MLX, compile's own gain included), under the plain baseline `speedup_vs_compiled`
-(eager plus its kernels against the untouched model under mx.compile; under 1
-means compile alone is faster). `plain_win_confirmed` and its siblings say
-whether that comparison resolved. When the final check finds the outputs
-right and cannot confirm the win, the job still ends normally: `final.passed` is
-false with a `reason`, the session's `outcome` is `unconfirmed`, every measured
-number stays in the report, and no artifact is written, since only a confirmed
-win ships. Wrong outputs end the job with an error. `step_ms[workload].min_win_ms` is
-the least a region win had to save per step there (1% of the step, at most
-30 us). `step_ms[workload].steps_per_sample`
-is how many dependent steps one timed sample held; more than one means the
-step was too short to bring the GPU clock up on its own, and every
-whole-model number is still per step. A nominal `speedup` ratio alone can
-be noise, especially when nothing was installed. The final timing record
-comes from the same comparison as the final whole-model validation.
+A successful run prints `verified artifact` and its folder path. This is the
+code bundle to use in your application. A checkpoint saved during search has
+not passed final validation and is not the finished artifact.
 
-Before publishing the artifact, the tool loads it in a fresh process and
-checks every declared workload and sweep against the patched model, both
-through `apply()` and through the bundle's own `load()`. A failed check never
-publishes the staged result. The CLI requires a fresh destination and defaults
-to `<work-dir>/artifact/`. It rejects paths that overlap the run's logs,
-kernels, or checkpoints before starting GPU work.
+Copy the folder into your project as `artifact/`, then install its dependencies
+in your application's environment:
 
-The artifact folder is a code bundle that needs no optimizer installation:
-the model's source copied unchanged, the input
-tensors the job measured on (and, for a workload with a `context`, the tokens
-that filled the cache, so `load()` rebuilds the same step), the kernels and
-generated wrappers, a pinned `requirements.txt`, and a `README.md` written for
-that job that states the measured result in plain words and lists which part
-of the model got which kernel. It loads, verifies, and re-times itself:
+```sh
+python -m pip install -r artifact/requirements.txt
+```
 
 For normal inference, copy `artifact/` into your project, install its
 `requirements.txt`, load your chosen compatible weights, then apply the patch.
@@ -93,12 +61,6 @@ revisions as provenance, without redirecting its loader to the original
 machine's cache paths. Pin a checkpoint revision in the model source when you
 need future builds to select that exact revision.
 
-Search finishes each region in ranked order before opening the next. It spends
-the full per-region budget, including starter repairs, unless the total budget
-is exhausted, the operator requests finalization, or the starter is unsupported.
-A win keeps the same search going with its queue and history intact. Remaining
-regions are repriced after an installed improvement while search budget remains.
-
 Export writes into a temporary sibling directory and validates there before
 publication. A write or validation failure preserves accepted checkpoints and
 any existing artifact; a failed publication restores the previous artifact.
@@ -113,13 +75,68 @@ remain in the bundle for repeatable validation and benchmarking; model weights
 do not. Validation uses the existing Hugging Face cache in offline mode, so it
 will report missing external resources instead of downloading during export.
 
+From inside the artifact folder, run:
+
 ```sh
 python validate.py     # patched vs original outputs on the saved inputs, the job's own rule
-python benchmark.py    # re-time original vs patched the way the final check did; exits 1 unless the win holds
+python benchmark.py    # repeat the saved final measurement; exits 1 unless a win is confirmed
 ```
 
-When the manifest's baseline was `compiled`, `load()` returns a callable that
-already runs under `mx.compile`, so what you time is what the job timed.
-Ship it, commit it, or copy it to another machine of the same chip
-generation. The code it installs is exactly the code that was measured; to
-change the model itself, edit the source and run the optimizer again.
+The bundle preserves the measured execution mode, including compiled model
+scopes where applicable. Its benchmark defaults to the actual repetition count
+recorded for each workload, even when short forward workloads needed more
+repetitions than the manifest requested. `--steps` explicitly overrides that
+count and changes the experiment; older bundles without recorded counts use
+their manifest setting. Timing noise and a different machine can still change
+the measured result.
+
+Keep the pinned runtime dependencies. To change model architecture or
+quantization, run the optimizer again.
+
+## What the bundle contains
+
+Before publishing the artifact, the tool loads it in a fresh process and
+checks every declared workload and sweep against the patched model, both
+through `apply()` and through the bundle's own `load()`. A failed check never
+publishes the staged result. The CLI requires a fresh destination and defaults
+to `<work-dir>/artifact/`. It rejects paths that overlap the run's logs,
+kernels, or checkpoints before starting GPU work.
+
+The artifact folder is a code bundle that needs no optimizer installation:
+the model's source copied unchanged, the input
+tensors the job measured on (and, for a workload with a `context`, the tokens
+that filled the cache, so `load()` rebuilds the same step), the kernels and
+generated wrappers, a pinned `requirements.txt`, and a `README.md` written for
+that job that states the measured result in plain words and lists which part
+of the model got which kernel. It loads, verifies, and re-times itself:
+
+
+## Reading the detailed report
+
+The job prints how many spots got a proven speedup, the model's time per
+step before and after, and the time for a whole sequence of consecutive
+steps before and after, both against the baseline the manifest chose
+(compiled unless you said otherwise). The final comparison decides whether a win ships. Its task is the one
+selected by the manifest; it need not represent an entire application.
+`<work-dir>/report.json` has the full account: every spot, why work on it
+ended, every attempt with its verdict (each with `floor_ms`, the physical
+floor timed beside that kernel), and both step timings, plain and compiled.
+`step_ms[workload].win_confirmed` says whether the final measurement resolved
+a speedup for an installed replacement. The finished model is also measured
+against the baseline the job did not ship against, paired at the end of the job:
+under the compiled baseline `step_ms[workload].speedup_vs_plain` (against eager
+MLX, compile's own gain included), under the plain baseline `speedup_vs_compiled`
+(eager plus its kernels against the untouched model under mx.compile; under 1
+means compile alone is faster). `plain_win_confirmed` and its siblings say
+whether that comparison resolved. When the final check finds the outputs
+right and cannot confirm the win, the job still ends normally: `final.passed` is
+false with a `reason`, the session's `outcome` is `unconfirmed`, every measured
+number stays in the report, and no artifact is written, since only a confirmed
+win ships. Wrong outputs end the job with an error. `step_ms[workload].min_win_ms` is
+the least a region win had to save per step there (1% of the step, at most
+30 us). `step_ms[workload].steps_per_sample`
+is how many dependent steps one timed sample held; more than one means the
+step was too short to bring the GPU clock up on its own, and every
+whole-model number is still per step. A nominal `speedup` ratio alone can
+be noise, especially when nothing was installed. The final timing record
+comes from the same comparison as the final whole-model validation.

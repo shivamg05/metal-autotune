@@ -1,4 +1,6 @@
 model: models/recurrentgemma_2b.py   # RecurrentGemma 2B (Griffin: recurrent blocks + local attention), pretrained, prefill only
+baseline: compiled
+use_library_inference: true
 workloads:
   # Three prompt lengths across the 480 to 520 band, each timed on its own and
   # each served by the installed code; a length not listed runs the original.
@@ -25,8 +27,7 @@ budget:
   per_region: 12
   total: 60
 final_benchmark:
-  # One complete prompt per sample: the target is prompt processing, so no
-  # generated tokens beyond the first dilute it.
+  # Complete an MLX-LM request for one token, starting from an empty cache.
   steps: 1
   pairs: 8
   warmup_steps: 3

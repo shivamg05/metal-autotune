@@ -31,16 +31,28 @@ are included, along with the reproduction command and follow-up verification not
 
 ## Quickstart
 
-You need an Apple Silicon Mac, Python 3.12, [uv](https://docs.astral.sh/uv/),
-and a supported judge provider. For the example below, install the Claude CLI
-and complete its login first. Codex and Gemini CLIs are also supported.
+Use an Apple Silicon Mac. The project uses Python 3.12 and MLX 0.32.2;
+`uv` installs the pinned Python dependencies for you.
 
-From this checkout:
+1. Install [Apple's Command Line Tools](https://developer.apple.com/library/archive/technotes/tn2339/_index.html)
+   if needed: run `xcode-select --install` in Terminal and finish the installer.
+   They provide the C++ compiler used by the graph extension.
+2. Install [uv](https://docs.astral.sh/uv/getting-started/installation/) and
+   [Claude Code](https://code.claude.com/docs/en/setup). Run `claude` once,
+   complete sign-in, then exit its session. You need an account with Claude Code
+   access. Existing Codex and Gemini CLI logins are also supported.
+3. Get the repo and run the small example:
 
 ```sh
-uv sync
+git clone https://github.com/shivamg05/metal-autotune.git
+cd metal-autotune
+uv sync --locked
 uv run autotune run examples/tiny_mlp.yaml --judge claude-cli
 ```
+
+Already have the checkout? Run the last two commands from its root directory.
+Keep this terminal open until the job finishes. The tool checks the judge
+connection before loading the model and builds its graph extension on first use.
 
 This example uses a small randomly initialized model and downloads no weights.
 Judge calls may consume your provider's subscription allowance or API credits.
@@ -54,17 +66,19 @@ The CLI prints its output paths. New jobs default to a unique folder under
 - `run.jsonl` and `candidates.log`: progress and per-candidate results.
 - `artifact/`: produced only when a final improvement is confirmed and export passes.
 
-An isolated kernel speedup is not a shipped model speedup. Read the final
-confirmation and workload timings in the report.
+The final summary tells you whether an artifact was verified, no improvement
+was confirmed, or the job failed. An isolated kernel speedup is not a shipped
+model speedup. Use [the artifact guide](docs/artifacts.md) after a verified win.
 
 ## Model examples
 
 The repo includes [model definitions and workload manifests](models/README.md)
-for Qwen, Llama, Mamba, RecurrentGemma, Whisper, and Stable Diffusion, plus a
-randomly initialized FLUX transformer. These show how to target language,
+for Qwen, Llama, Mamba, RecurrentGemma, and Whisper, plus a randomly initialized
+FLUX transformer. The Stable Diffusion integration requires extra setup. These show how to target language,
 audio, and image models. Model weights are downloaded when needed, not committed.
 
-For example, optimize a 128-token Qwen3-4B prompt:
+For example, optimize an MLX-LM request with a 128-token Qwen3-4B prompt and
+one generated token, against the compiled baseline:
 
 ```sh
 uv run autotune run models/workloads/qwen3_4b_prefill_128.yaml --judge claude-cli

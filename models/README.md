@@ -15,14 +15,28 @@ workload manifest and adjust its model path and inputs to make your own target.
 | [Qwen3-0.6B Base, 4-bit](qwen3_0.6b_4bit.py) | Yes, `qwen3`; quantized after loading | Same token-input contract as the bf16 example |
 | [Llama 3 8B Instruct, 4-bit](llama8b.py) | Yes, `llama` | Define token inputs in your manifest; see the [usage guide](../docs/usage.md) |
 | [FLUX.2 transformer, random weights](flux2_4b.py) | No; standalone MLX implementation | One denoiser call; inspect the model's input signature. No checkpoint download or image generation |
-| Qwen3-4B, 4-bit | Yes, `qwen3` | `workloads/qwen3_4b_prefill_128.yaml`, `qwen3_4b_prefill_512.yaml` |
-| Qwen3.5-4B, 4-bit | Yes, `qwen3_5` | Define input shapes in your manifest; see the usage guide |
-| Mamba-370M, fp16 | Yes, `mamba` | `workloads/mamba_370m_prefill_32.yaml`, `mamba_370m_prefill_128.yaml` |
-| RecurrentGemma 2B, checkpoint precision | Yes, `recurrent_gemma` | `workloads/recurrentgemma_2b_prefill_512.yaml`, `recurrentgemma_2b_prefill_2048.yaml` |
-| Whisper small, fp16 encoder | No; MLX-Whisper | `workloads/whisper_small_encoder_30s.yaml` |
-| Stable Diffusion 2.1-base, fp16 U-Net | No; MLX Examples | `workloads/sd21_unet_512.yaml`, `sd21_unet_768.yaml` |
+| [Qwen3-4B, 4-bit](qwen3_4b_4bit.py) | Yes, `qwen3` | `workloads/qwen3_4b_prefill_128.yaml`, `qwen3_4b_prefill_512.yaml` |
+| [Qwen3.5-4B, 4-bit](qwen3_5_4b_4bit.py) | Yes, `qwen3_5` | Define input shapes in your manifest; see the usage guide |
+| [Mamba-370M, fp16](mamba_370m.py) | Yes, `mamba` | `workloads/mamba_370m_prefill_32.yaml`, `mamba_370m_prefill_128.yaml` |
+| [RecurrentGemma 2B, checkpoint precision](recurrentgemma_2b.py) | Yes, `recurrent_gemma` | `workloads/recurrentgemma_2b_prefill_512.yaml`, `recurrentgemma_2b_prefill_2048.yaml` |
+| [Whisper small, fp16 encoder](whisper_small_encoder.py) | No; MLX-Whisper | `workloads/whisper_small_encoder_30s.yaml` |
 
-Each manifest is a separate job with a modest
+The workload manifests above are ready to run once their checkpoints are
+accessible. `uv sync` installs MLX-LM and MLX-Whisper with the project's default
+dependencies. RecurrentGemma also requires checkpoint access, described below.
+Stable Diffusion is an [integration example requiring extra packaging](#stable-diffusion-extra-setup),
+not a ready-to-run optimizer target.
+
+All supplied manifests explicitly select `baseline: compiled`. Language-model
+prefill examples also select `use_library_inference: true` and
+`final_benchmark.steps: 1`: they measure a complete MLX-LM request for one output
+token from the given synthetic prompt, with a fresh empty cache each trial.
+That includes sampling and any extra work the library queues before returning;
+it is not an isolated forward-pass measurement. Model loading and tokenization
+are excluded. Whisper and Stable Diffusion explicitly use forward measurement
+instead, as described below.
+
+Each manifest is a separate job with a
 24-attempt budget. From the repo root, follow RUNNING.md and substitute:
 
 ```sh
@@ -41,10 +55,9 @@ headroom rather than current chat-model quality. Its checkpoint is
 
 Start with one 32-token prompt, batch 1, with a real empty cache. The 128-token
 variant is also available but produces a much larger trace.
-Its final benchmark uses eight paired comparisons of one complete prompt each.
-Additional calls that advance the cache would measure continuation chunks,
-which are a different workload. The budget is eight attempts per region,
-24 total. From the repo root, follow RUNNING.md with:
+Its final benchmark uses eight paired comparisons of a request for one output
+token from the prompt, starting from an empty cache each time. The budget is
+eight attempts per region, 24 total. From the repo root, follow RUNNING.md with:
 
 ```sh
 uv run autotune run models/workloads/mamba_370m_prefill_32.yaml --judge claude-cli --work-dir runs/work-mamba-prefill-32
@@ -60,17 +73,16 @@ The checkpoint is `google/recurrentgemma-2b`. Accept Google's license on Hugging
 Face and authenticate with `hf auth login` before building it. This target keeps
 its checkpoint precision; it is not the 4-bit variant.
 
-Use prefill only. The harness does not currently support rewinding this model's
-recurrent state for decode. Repeated final benchmark calls repeat independent
-prefills, not consecutive generated tokens.
+These examples target prompt processing plus one output token. Each trial starts
+from an empty cache. They do not establish support or performance for a decode
+workload starting from a populated recurrent state.
 
 ## Whisper
 
-Install the optional dependency into the project environment:
+The default `uv sync` setup includes MLX-Whisper. Run:
 
 ```sh
-uv pip install mlx-whisper
-uv run --no-sync autotune run models/workloads/whisper_small_encoder_30s.yaml --judge codex --work-dir runs/work-whisper-small
+uv run autotune run models/workloads/whisper_small_encoder_30s.yaml --judge codex --work-dir runs/work-whisper-small
 ```
 
 The input is a synthetic mel tensor in MLX layout `[1, 3000, 80]`, representing
@@ -78,7 +90,12 @@ the shape of a 30-second audio window. This times the encoder only, excluding
 feature extraction, token decoding and audio I/O. It is not a transcription
 quality benchmark.
 
-## Stable Diffusion
+## Stable Diffusion: extra setup
+
+[The SD 2.1 adapter](sd21_unet.py) and its
+[512-pixel](workloads/sd21_unet_512.yaml) and
+[768-pixel](workloads/sd21_unet_768.yaml) manifests illustrate a U-Net target.
+They require external source packaging before a full optimizer run can succeed.
 
 Use Apple's official source implementation instead of copying it into this repo:
 

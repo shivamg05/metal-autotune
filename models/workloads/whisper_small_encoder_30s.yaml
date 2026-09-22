@@ -1,5 +1,6 @@
 model: ../whisper_small_encoder.py
-baseline: plain
+baseline: compiled
+use_library_inference: false
 workloads:
 - name: whisper_small_encoder_30s
   inputs:
