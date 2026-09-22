@@ -7,7 +7,7 @@ model's precision during optimization. The first build downloads weights.
 | Target | MLX-LM support | Example workloads |
 | --- | --- | --- |
 | Qwen3-4B, 4-bit | Yes, `qwen3` | `workloads/qwen3_4b_prefill_128.yaml`, `qwen3_4b_prefill_512.yaml` |
-| Qwen3.5-4B, 4-bit | Yes, `qwen3_5` | `manifest.yaml` at the repo root (prefill 512) |
+| Qwen3.5-4B, 4-bit | Yes, `qwen3_5` | Define input shapes in your manifest; see the usage guide |
 | Mamba-370M, fp16 | Yes, `mamba` | `workloads/mamba_370m_prefill_32.yaml`, `mamba_370m_prefill_128.yaml` |
 | RecurrentGemma 2B, checkpoint precision | Yes, `recurrent_gemma` | `workloads/recurrentgemma_2b_prefill_512.yaml`, `recurrentgemma_2b_prefill_2048.yaml` |
 | Whisper small, fp16 encoder | No; MLX-Whisper | `workloads/whisper_small_encoder_30s.yaml` |
@@ -17,7 +17,7 @@ Each manifest is a separate job with a modest
 24-attempt budget. From the repo root, follow RUNNING.md and substitute:
 
 ```sh
-uv run autotune run models/workloads/qwen3_4b_prefill_128.yaml --judge codex --work-dir work-qwen4b-prefill-128
+uv run autotune run models/workloads/qwen3_4b_prefill_128.yaml --judge codex --work-dir runs/work-qwen4b-prefill-128
 ```
 
 Use a fresh work directory each time. These are target definitions, not evidence
@@ -38,7 +38,7 @@ which are a different workload. The budget is eight attempts per region,
 24 total. From the repo root, follow RUNNING.md with:
 
 ```sh
-uv run autotune run models/workloads/mamba_370m_prefill_32.yaml --judge claude-cli --work-dir work-mamba-prefill-32
+uv run autotune run models/workloads/mamba_370m_prefill_32.yaml --judge claude-cli --work-dir runs/work-mamba-prefill-32
 ```
 
 Choose a fresh work directory. This target's many small state-update operations
@@ -61,7 +61,7 @@ Install the optional dependency into the project environment:
 
 ```sh
 uv pip install mlx-whisper
-uv run --no-sync autotune run models/workloads/whisper_small_encoder_30s.yaml --judge codex --work-dir work-whisper-small
+uv run --no-sync autotune run models/workloads/whisper_small_encoder_30s.yaml --judge codex --work-dir runs/work-whisper-small
 ```
 
 The input is a synthetic mel tensor in MLX layout `[1, 3000, 80]`, representing
@@ -94,7 +94,8 @@ and VAE. Keep the source checkout available to worker processes.
 
 ## Deployment limits
 
-The artifact packager knows how to include MLX-LM checkpoints. Its automatic
-checkpoint copying does not yet cover the Whisper or SD loaders, and the SD
-source checkout is an additional dependency. Treat these two as experimental
-benchmark targets, not verified self-contained export targets.
+Artifacts bundle code and dependency information, not model weights by default.
+The original builder retains its loading behavior, so downloads, local paths and
+optional libraries must also work on the deployment machine. External SD source
+must be packaged or installed as described above. See
+[artifact compatibility](../docs/artifacts.md).

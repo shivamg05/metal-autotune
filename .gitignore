@@ -10,3 +10,14 @@ __pycache__/
 .pytest_cache/
 .venv/
 metalbench/generated/
+
+# consolidated output and legacy benchmark output
+/runs/
+/metalbench/results/
+.ruff_cache/
+/dist/
+
+# personal writing guidance and machine-local agent settings
+/ARTICULATE.md
+/.claude/
+.DS_Store

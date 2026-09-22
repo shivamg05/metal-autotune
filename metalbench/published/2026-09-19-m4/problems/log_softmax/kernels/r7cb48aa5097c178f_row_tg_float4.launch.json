@@ -1,0 +1,44 @@
+{
+ "kernel_id": "r7cb48aa5097c178f_row_tg_float4",
+ "name": "at_r7cb48aa5097c178f_row_tg_float4",
+ "input_names": [
+  "in0"
+ ],
+ "output_names": [
+  "out0"
+ ],
+ "header": "",
+ "grid": [
+  "in0.shape[0] * 256",
+  "1",
+  "1"
+ ],
+ "threadgroup": [
+  "256",
+  "1",
+  "1"
+ ],
+ "output_shapes": [
+  [
+   "in0.shape[0]",
+   "in0.shape[1]"
+  ]
+ ],
+ "output_dtypes": [
+  "float32"
+ ],
+ "template": [
+  [
+   "T",
+   "in0"
+  ]
+ ],
+ "fallback_predicate": "in0.shape[1] != 1024",
+ "ensure_row_contiguous": true,
+ "atomic_outputs": false,
+ "native_call": null,
+ "input_signature": null,
+ "reference_sequence": null,
+ "stages": [],
+ "reassociates": false
+}

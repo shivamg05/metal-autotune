@@ -220,7 +220,7 @@ def test_rejects_unsupported(args, reason):
 # decode shapes: x is (1, 1, K) fp16, weights 4-bit affine group 64 transposed.
 # The matmul bits are the library's own; the fused chain keeps float
 # intermediates and library sigmoid is 1 ulp off the precise::exp composition
-# (PLATFORM.md), so comparisons use the harness's fp16 tolerance.
+# in eager evaluation, so comparisons use the harness's fp16 tolerance.
 
 FP16_TOL = dict(rtol=1e-2, atol=2e-2)
 

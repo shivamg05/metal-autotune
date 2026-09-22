@@ -1,0 +1,950 @@
+{
+  "chip": "apple-m4",
+  "problems": {
+    "matmul_gelu_softmax": {
+      "vs_compiled": 1.2692296329907904,
+      "vs_eager": 1.3053967872164016,
+      "confirmed": true,
+      "regions": [
+        {
+          "ops": "matmul",
+          "share": 0.6248610611804816,
+          "speedup": 1.402229441468494,
+          "installed": true
+        },
+        {
+          "ops": "softmax",
+          "share": 0.10071772413585545,
+          "speedup": 1.2460336854798417,
+          "installed": false
+        }
+      ],
+      "plain_ms": 0.04623794851724204,
+      "compiled_ms": 0.04574336030511368,
+      "shipped_regions": 1,
+      "status": "complete",
+      "work_dir": "problems/matmul_gelu_softmax",
+      "set": "standard",
+      "minutes": 12.7,
+      "exit_code": 0
+    },
+    "rms_norm_linear": {
+      "vs_compiled": 1.1213427384648051,
+      "vs_eager": 1.136048419332509,
+      "confirmed": true,
+      "regions": [
+        {
+          "ops": "matmul",
+          "share": 0.7375927786934884,
+          "speedup": 0.988814557441228,
+          "installed": false
+        },
+        {
+          "ops": "mul+mean+add+rsqrt+mul",
+          "share": 0.1683625320461602,
+          "speedup": 2.36713081153487,
+          "installed": true
+        }
+      ],
+      "plain_ms": 1.2273166639109454,
+      "compiled_ms": 1.2179499957710505,
+      "shipped_regions": 1,
+      "status": "complete",
+      "work_dir": "problems/rms_norm_linear",
+      "set": "standard",
+      "minutes": 15.5,
+      "exit_code": 0
+    },
+    "silu_linear": {
+      "vs_compiled": 1.0292774875473323,
+      "vs_eager": 1.0288008857463367,
+      "confirmed": true,
+      "regions": [
+        {
+          "ops": "matmul",
+          "share": 0.7708025568892061,
+          "speedup": 1.0206258009919982,
+          "installed": true
+        }
+      ],
+      "plain_ms": 0.9610270499251783,
+      "compiled_ms": 0.9740333480294794,
+      "shipped_regions": 1,
+      "status": "complete",
+      "work_dir": "problems/silu_linear",
+      "set": "standard",
+      "minutes": 9.4,
+      "exit_code": 0
+    },
+    "gelu_linear": {
+      "vs_compiled": 1.0,
+      "vs_eager": 1.009329769680665,
+      "confirmed": false,
+      "regions": [
+        {
+          "ops": "matmul",
+          "share": 0.7666941276083172,
+          "speedup": 0.5700004918591093,
+          "installed": false
+        }
+      ],
+      "plain_ms": 0.9841250009938246,
+      "compiled_ms": 0.9765625,
+      "shipped_regions": 0,
+      "status": "complete",
+      "work_dir": "problems/gelu_linear",
+      "set": "standard",
+      "minutes": 7.7,
+      "exit_code": 0
+    },
+    "add_norm": {
+      "vs_compiled": 1.1790442576206606,
+      "vs_eager": 1.1845055675990623,
+      "confirmed": true,
+      "regions": [
+        {
+          "ops": "add+layer_norm",
+          "share": 0.5845252071547022,
+          "speedup": 1.3240407872244337,
+          "installed": true
+        }
+      ],
+      "plain_ms": 0.3055218527684125,
+      "compiled_ms": 0.27874542723932283,
+      "shipped_regions": 1,
+      "status": "complete",
+      "work_dir": "problems/add_norm",
+      "set": "standard",
+      "minutes": 7.6,
+      "exit_code": 0
+    },
+    "rope_embedding": {
+      "vs_compiled": 1.0,
+      "vs_eager": 1.5496244011604994,
+      "confirmed": false,
+      "regions": [
+        {
+          "ops": "stack",
+          "share": 0.13629621618707155,
+          "speedup": 1.1280660817598183,
+          "installed": false
+        },
+        {
+          "ops": "add",
+          "share": 0.05684038906703774,
+          "speedup": 0.6151343999256428,
+          "installed": false
+        },
+        {
+          "ops": "sub",
+          "share": 0.05152205460068797,
+          "speedup": 0.620551276994762,
+          "installed": false
+        }
+      ],
+      "plain_ms": 0.05897072199588232,
+      "compiled_ms": 0.03575828577244374,
+      "shipped_regions": 0,
+      "status": "complete",
+      "work_dir": "problems/rope_embedding",
+      "set": "standard",
+      "minutes": 12.9,
+      "exit_code": 0
+    },
+    "swiglu": {
+      "vs_compiled": 1.3878610372283051,
+      "vs_eager": 1.4492318268607423,
+      "confirmed": true,
+      "regions": [
+        {
+          "ops": "matmul",
+          "share": 0.8975278555429358,
+          "speedup": 1.2767905219105806,
+          "installed": true
+        },
+        {
+          "ops": "matmul+mul",
+          "share": 0.4555548836241362,
+          "speedup": 0.6486421519362842,
+          "installed": false
+        },
+        {
+          "ops": "mul",
+          "share": 0.14557550025919622,
+          "speedup": 0.8789402748514068,
+          "installed": false
+        }
+      ],
+      "plain_ms": 0.0655529670587747,
+      "compiled_ms": 0.0648069183275201,
+      "shipped_regions": 1,
+      "status": "complete",
+      "work_dir": "problems/swiglu",
+      "set": "standard",
+      "minutes": 17.2,
+      "exit_code": 0
+    },
+    "softmax_attention": {
+      "vs_compiled": 1.2435333373329294,
+      "vs_eager": 1.3182900556171187,
+      "confirmed": true,
+      "regions": [
+        {
+          "ops": "array+sqrt+truediv+softmax+matmul",
+          "share": 0.4123702067355668,
+          "speedup": 1.3724607965441944,
+          "installed": true
+        },
+        {
+          "ops": "T+matmul",
+          "share": 0.25227256796886266,
+          "speedup": 1.2339195595256256,
+          "installed": false
+        },
+        {
+          "ops": "matmul",
+          "share": 0.22380722680429105,
+          "speedup": 1.865914087217348,
+          "installed": true
+        }
+      ],
+      "plain_ms": 0.023388790869659882,
+      "compiled_ms": 0.021358545240827927,
+      "shipped_regions": 2,
+      "status": "complete",
+      "work_dir": "problems/softmax_attention",
+      "set": "standard",
+      "minutes": 19.8,
+      "exit_code": 0
+    },
+    "residual_add": {
+      "vs_compiled": 1.0,
+      "vs_eager": 1.3433078216931327,
+      "confirmed": false,
+      "regions": [
+        {
+          "ops": "rmul+add",
+          "share": 0.5216684898741788,
+          "speedup": 0.9762131410670327,
+          "installed": false
+        },
+        {
+          "ops": "add",
+          "share": 0.5085859531293078,
+          "speedup": 0.9982690268760231,
+          "installed": false
+        },
+        {
+          "ops": "rmul",
+          "share": 0.32572921708894675,
+          "speedup": 0.9978047365375633,
+          "installed": false
+        }
+      ],
+      "plain_ms": 0.3521799055092475,
+      "compiled_ms": 0.2586926470565445,
+      "shipped_regions": 0,
+      "status": "complete",
+      "work_dir": "problems/residual_add",
+      "set": "standard",
+      "minutes": 12.9,
+      "exit_code": 0
+    },
+    "dropout": {
+      "vs_compiled": 1.0,
+      "vs_eager": 1.1713881570218645,
+      "confirmed": false,
+      "regions": [
+        {
+          "ops": "mul+mul",
+          "share": 0.5105314374240649,
+          "speedup": 0.9865244118768529,
+          "installed": false
+        },
+        {
+          "ops": "mul",
+          "share": 0.509708012783451,
+          "speedup": 0.9868110080162641,
+          "installed": false
+        },
+        {
+          "ops": "mul",
+          "share": 0.3385529319519699,
+          "speedup": 1.0160893989624677,
+          "installed": false
+        }
+      ],
+      "plain_ms": 0.27215476230984287,
+      "compiled_ms": 0.25162103563724525,
+      "shipped_regions": 0,
+      "status": "complete",
+      "work_dir": "problems/dropout",
+      "set": "standard",
+      "minutes": 12.6,
+      "exit_code": 0
+    },
+    "instance_norm": {
+      "vs_compiled": 2.2307692692069643,
+      "vs_eager": 3.062644411130824,
+      "confirmed": true,
+      "regions": [
+        {
+          "ops": "mean+sub+pow+mean+sub+add+rsqrt+mul",
+          "share": 0.7319937761852362,
+          "speedup": 3.628913493285738,
+          "installed": true
+        }
+      ],
+      "plain_ms": 0.21439790096435998,
+      "compiled_ms": 0.17425863949061782,
+      "shipped_regions": 1,
+      "status": "complete",
+      "work_dir": "problems/instance_norm",
+      "set": "standard",
+      "minutes": 7.8,
+      "exit_code": 0
+    },
+    "group_norm": {
+      "vs_compiled": 2.3440053940866803,
+      "vs_eager": 3.1180630447151763,
+      "confirmed": true,
+      "regions": [
+        {
+          "ops": "reshape+mean+sub+pow+mean+sub+add+rsqrt+mul",
+          "share": 0.7097921764366031,
+          "speedup": 3.405468146036154,
+          "installed": true
+        }
+      ],
+      "plain_ms": 0.22128364284856056,
+      "compiled_ms": 0.17647629330327752,
+      "shipped_regions": 1,
+      "status": "complete",
+      "work_dir": "problems/group_norm",
+      "set": "standard",
+      "minutes": 8.1,
+      "exit_code": 0
+    },
+    "cross_entropy_loss": {
+      "vs_compiled": 1.5354764839521005,
+      "vs_eager": 1.825619899337028,
+      "confirmed": true,
+      "regions": [
+        {
+          "ops": "logsumexp+sub+mul+sum+neg",
+          "share": 0.6106722102178117,
+          "speedup": 2.2354271718391576,
+          "installed": true
+        }
+      ],
+      "plain_ms": 0.39601865669351016,
+      "compiled_ms": 0.3082506104942356,
+      "shipped_regions": 1,
+      "status": "complete",
+      "work_dir": "problems/cross_entropy_loss",
+      "set": "standard",
+      "minutes": 9.1,
+      "exit_code": 0
+    },
+    "log_softmax": {
+      "vs_compiled": 1.1428223002724491,
+      "vs_eager": 1.1524260735128253,
+      "confirmed": true,
+      "regions": [
+        {
+          "ops": "logsumexp+sub",
+          "share": 0.5256219588793498,
+          "speedup": 1.3012461650829354,
+          "installed": true
+        }
+      ],
+      "plain_ms": 0.21872656240399616,
+      "compiled_ms": 0.2279822074342519,
+      "shipped_regions": 1,
+      "status": "complete",
+      "work_dir": "problems/log_softmax",
+      "set": "standard",
+      "minutes": 8.9,
+      "exit_code": 0
+    },
+    "masked_softmax": {
+      "vs_compiled": 1.1713409407419344,
+      "vs_eager": 1.1560865139900056,
+      "confirmed": true,
+      "regions": [
+        {
+          "ops": "add+softmax",
+          "share": 0.5697105475950344,
+          "speedup": 1.3376161219446452,
+          "installed": true
+        }
+      ],
+      "plain_ms": 0.2729613098338069,
+      "compiled_ms": 0.2903864175702135,
+      "shipped_regions": 1,
+      "status": "complete",
+      "work_dir": "problems/masked_softmax",
+      "set": "standard",
+      "minutes": 8.5,
+      "exit_code": 0
+    },
+    "bias_add": {
+      "vs_compiled": 1.0,
+      "vs_eager": 1.0178620673523993,
+      "confirmed": false,
+      "regions": [
+        {
+          "ops": "add",
+          "share": 1.3018359590073447,
+          "speedup": 0.9833255985469805,
+          "installed": false
+        }
+      ],
+      "plain_ms": 0.07326979605202896,
+      "compiled_ms": 0.07452036209859596,
+      "shipped_regions": 0,
+      "status": "complete",
+      "work_dir": "problems/bias_add",
+      "set": "standard",
+      "minutes": 4.7,
+      "exit_code": 0
+    },
+    "fused_add_rms_norm": {
+      "vs_compiled": 1.1631151338707606,
+      "vs_eager": 1.1731017261059788,
+      "confirmed": true,
+      "regions": [
+        {
+          "ops": "add+rms_norm",
+          "share": 0.5734996977651909,
+          "speedup": 1.319456063841477,
+          "installed": true
+        }
+      ],
+      "plain_ms": 0.29734963807614817,
+      "compiled_ms": 0.2891612323540924,
+      "shipped_regions": 1,
+      "status": "complete",
+      "work_dir": "problems/fused_add_rms_norm",
+      "set": "standard",
+      "minutes": 8.2,
+      "exit_code": 0
+    },
+    "linear_bias": {
+      "vs_compiled": 1.2497165389174847,
+      "vs_eager": 1.2451867550932885,
+      "confirmed": true,
+      "regions": [
+        {
+          "ops": "matmul+add",
+          "share": 0.7202731214309683,
+          "speedup": 1.127738339746417,
+          "installed": true
+        }
+      ],
+      "plain_ms": 0.036144947196766884,
+      "compiled_ms": 0.03637415408884113,
+      "shipped_regions": 1,
+      "status": "complete",
+      "work_dir": "problems/linear_bias",
+      "set": "standard",
+      "minutes": 8.3,
+      "exit_code": 0
+    },
+    "bias_gelu": {
+      "vs_compiled": 1.0,
+      "vs_eager": 2.1307923547873457,
+      "confirmed": false,
+      "regions": [
+        {
+          "ops": "add",
+          "share": 0.9256138136999531,
+          "speedup": 0.9934332762129704,
+          "installed": false
+        }
+      ],
+      "plain_ms": 0.19557597927608286,
+      "compiled_ms": 0.08407983187382587,
+      "shipped_regions": 0,
+      "status": "complete",
+      "work_dir": "problems/bias_gelu",
+      "set": "standard",
+      "minutes": 5.1,
+      "exit_code": 0
+    },
+    "fused_qkv_projection": {
+      "vs_compiled": 1.1022050607282607,
+      "vs_eager": 1.0881793818272167,
+      "confirmed": true,
+      "regions": [
+        {
+          "ops": "matmul",
+          "share": 0.8101759098168693,
+          "speedup": 1.1244495293802146,
+          "installed": true
+        }
+      ],
+      "plain_ms": 0.027034131121647157,
+      "compiled_ms": 0.02718457801396889,
+      "shipped_regions": 1,
+      "status": "complete",
+      "work_dir": "problems/fused_qkv_projection",
+      "set": "standard",
+      "minutes": 8.4,
+      "exit_code": 0
+    },
+    "attention_scores": {
+      "vs_compiled": 1.2256061397470106,
+      "vs_eager": 1.2945384436292078,
+      "confirmed": true,
+      "regions": [
+        {
+          "ops": "T+matmul+array+sqrt+truediv+softmax",
+          "share": 0.4287562187676177,
+          "speedup": 1.3901117944666743,
+          "installed": true
+        }
+      ],
+      "plain_ms": 0.019441504772861027,
+      "compiled_ms": 0.018070631059230242,
+      "shipped_regions": 1,
+      "status": "complete",
+      "work_dir": "problems/attention_scores",
+      "set": "standard",
+      "minutes": 8.4,
+      "exit_code": 0
+    },
+    "nll_loss": {
+      "vs_compiled": 1.3458111917772675,
+      "vs_eager": 1.3390563785393104,
+      "confirmed": true,
+      "regions": [
+        {
+          "ops": "mul+sum+neg",
+          "share": 0.558660822994759,
+          "speedup": 1.840806908950473,
+          "installed": true
+        }
+      ],
+      "plain_ms": 0.27689529517187905,
+      "compiled_ms": 0.27995085857139945,
+      "shipped_regions": 1,
+      "status": "complete",
+      "work_dir": "problems/nll_loss",
+      "set": "standard",
+      "minutes": 8.3,
+      "exit_code": 0
+    },
+    "log_softmax_cross_entropy": {
+      "vs_compiled": 1.5328145302190048,
+      "vs_eager": 1.838289210759184,
+      "confirmed": true,
+      "regions": [
+        {
+          "ops": "logsumexp+sub+mul+sum+neg",
+          "share": 0.589524321359296,
+          "speedup": 2.172106346390242,
+          "installed": true
+        }
+      ],
+      "plain_ms": 0.38665129194179404,
+      "compiled_ms": 0.32069230846200997,
+      "shipped_regions": 1,
+      "status": "complete",
+      "work_dir": "problems/log_softmax_cross_entropy",
+      "set": "standard",
+      "minutes": 8.5,
+      "exit_code": 0
+    },
+    "scaled_dot_product": {
+      "vs_compiled": 1.471667636081354,
+      "vs_eager": 1.472817017342511,
+      "confirmed": true,
+      "regions": [
+        {
+          "ops": "T+matmul+mul+softmax",
+          "share": 0.3980233762672758,
+          "speedup": 1.6978623136716602,
+          "installed": true
+        },
+        {
+          "ops": "matmul",
+          "share": 0.28650468822440245,
+          "speedup": 1.4645006392370492,
+          "installed": true
+        }
+      ],
+      "plain_ms": 0.026386748050528586,
+      "compiled_ms": 0.02511528820700402,
+      "shipped_regions": 2,
+      "status": "complete",
+      "work_dir": "problems/scaled_dot_product",
+      "set": "standard",
+      "minutes": 13.9,
+      "exit_code": 0
+    },
+    "llama_attention": {
+      "vs_compiled": 1.0597316781533905,
+      "vs_eager": 1.6715692264683457,
+      "confirmed": true,
+      "regions": [
+        {
+          "ops": "matmul",
+          "share": 0.15224177975481548,
+          "speedup": 2.701266030014474,
+          "installed": true
+        },
+        {
+          "ops": "stack",
+          "share": 0.12071305052307701,
+          "speedup": 1.1135087661979388,
+          "installed": false
+        },
+        {
+          "ops": "array+sqrt+truediv+softmax+matmul",
+          "share": 0.07972420144115569,
+          "speedup": 3.5779021914448896,
+          "installed": true
+        }
+      ],
+      "plain_ms": 0.1535053731882215,
+      "compiled_ms": 0.09429358559647738,
+      "shipped_regions": 2,
+      "status": "complete",
+      "work_dir": "problems/llama_attention",
+      "set": "standard",
+      "minutes": 20.2,
+      "exit_code": 0
+    },
+    "silu_residual": {
+      "vs_compiled": 1.0,
+      "vs_eager": 1.2201291232083276,
+      "confirmed": false,
+      "regions": [
+        {
+          "ops": "add",
+          "share": 0.19135738633022564,
+          "speedup": 0.5929317703213318,
+          "installed": false
+        },
+        {
+          "ops": "sigmoid+mul+add",
+          "share": 0.18517877462835447,
+          "speedup": 0.6867701819082432,
+          "installed": false
+        },
+        {
+          "ops": "sigmoid+mul",
+          "share": 0.1621626443449401,
+          "speedup": 0.6845018196811293,
+          "installed": false
+        }
+      ],
+      "plain_ms": 0.015769039037542235,
+      "compiled_ms": 0.013454276081742675,
+      "shipped_regions": 0,
+      "status": "complete",
+      "work_dir": "problems/silu_residual",
+      "set": "standard",
+      "minutes": 12.9,
+      "exit_code": 0
+    },
+    "gelu_residual": {
+      "vs_compiled": 1.0,
+      "vs_eager": 2.5037507952643754,
+      "confirmed": false,
+      "regions": [
+        {
+          "ops": "rmul+rmul+mul+mul+add+rmul+tanh+radd",
+          "share": 0.3633021975874244,
+          "speedup": 1.0650174298709216,
+          "installed": false
+        },
+        {
+          "ops": "rmul+rmul+mul+mul+add+rmul+tanh+radd+mul+add",
+          "share": 0.2230378921346266,
+          "speedup": 0.8878878339789835,
+          "installed": false
+        },
+        {
+          "ops": "rmul+rmul+mul+mul+add+rmul+tanh+radd+mul",
+          "share": 0.20045817403943916,
+          "speedup": 0.8458898295701415,
+          "installed": false
+        }
+      ],
+      "plain_ms": 0.033416835009724984,
+      "compiled_ms": 0.014864757659200705,
+      "shipped_regions": 0,
+      "status": "complete",
+      "work_dir": "problems/gelu_residual",
+      "set": "standard",
+      "minutes": 14.2,
+      "exit_code": 0
+    },
+    "add_silu": {
+      "vs_compiled": 1.0,
+      "vs_eager": 1.5161317274053943,
+      "confirmed": false,
+      "regions": [
+        {
+          "ops": "add+add+sigmoid",
+          "share": 0.3836352806906637,
+          "speedup": 0.9393187855460721,
+          "installed": false
+        },
+        {
+          "ops": "add+add",
+          "share": 0.3743123558777569,
+          "speedup": 0.9942616690019184,
+          "installed": false
+        },
+        {
+          "ops": "add",
+          "share": 0.367763033254269,
+          "speedup": 0.4784716637792881,
+          "installed": false
+        },
+        {
+          "ops": "add+add+sigmoid+mul",
+          "share": 0.18423857910036423,
+          "speedup": 0.7691044439049828,
+          "installed": false
+        }
+      ],
+      "plain_ms": 0.018165165546396328,
+      "compiled_ms": 0.013521021370448775,
+      "shipped_regions": 0,
+      "status": "complete",
+      "work_dir": "problems/add_silu",
+      "set": "standard",
+      "minutes": 14.1,
+      "exit_code": 0
+    },
+    "mul_silu": {
+      "vs_compiled": 1.0,
+      "vs_eager": 1.5097075349104023,
+      "confirmed": false,
+      "regions": [
+        {
+          "ops": "mul",
+          "share": 0.5857544138865183,
+          "speedup": 0.4824367177663117,
+          "installed": false
+        },
+        {
+          "ops": "mul+mul",
+          "share": 0.3807806893420751,
+          "speedup": 1.0832997985739357,
+          "installed": false
+        },
+        {
+          "ops": "mul+mul+sigmoid",
+          "share": 0.3662354650333923,
+          "speedup": 0.8418952577665888,
+          "installed": false
+        },
+        {
+          "ops": "mul+mul+sigmoid+mul",
+          "share": 0.18560189694809415,
+          "speedup": 0.6361883042677356,
+          "installed": false
+        }
+      ],
+      "plain_ms": 0.0181352555855489,
+      "compiled_ms": 0.012581796094270499,
+      "shipped_regions": 0,
+      "status": "complete",
+      "work_dir": "problems/mul_silu",
+      "set": "standard",
+      "minutes": 13.4,
+      "exit_code": 0
+    },
+    "add_gelu": {
+      "vs_compiled": 1.0,
+      "vs_eager": 2.465318307672738,
+      "confirmed": false,
+      "regions": [
+        {
+          "ops": "add+rmul+rmul+mul+mul+add+rmul+tanh+radd",
+          "share": 0.5120575749798973,
+          "speedup": 1.478615787431351,
+          "installed": false
+        },
+        {
+          "ops": "add+rmul+rmul+mul+mul+add+rmul",
+          "share": 0.47730486448940335,
+          "speedup": 1.5645813666115151,
+          "installed": false
+        },
+        {
+          "ops": "add+rmul+rmul+mul+mul+add+rmul+tanh",
+          "share": 0.4764748585696831,
+          "speedup": 1.5151756897841941,
+          "installed": false
+        },
+        {
+          "ops": "add+rmul+rmul+mul+mul+add+rmul+tanh+radd+mul",
+          "share": 0.2244583620095687,
+          "speedup": 0.9468052696419249,
+          "installed": false
+        }
+      ],
+      "plain_ms": 0.03279819648865371,
+      "compiled_ms": 0.01274510232285101,
+      "shipped_regions": 0,
+      "status": "complete",
+      "work_dir": "problems/add_gelu",
+      "set": "standard",
+      "minutes": 17.3,
+      "exit_code": 0
+    },
+    "mul_gelu": {
+      "vs_compiled": 1.0,
+      "vs_eager": 2.5112569894071846,
+      "confirmed": false,
+      "regions": [
+        {
+          "ops": "mul+rmul+rmul+mul+mul+add+rmul+tanh+radd",
+          "share": 0.4932060701592351,
+          "speedup": 1.6013015964758373,
+          "installed": false
+        },
+        {
+          "ops": "mul+rmul+rmul+mul+mul+add+rmul",
+          "share": 0.4862277295529333,
+          "speedup": 1.4652361802604665,
+          "installed": false
+        },
+        {
+          "ops": "mul+rmul+rmul+mul+mul+add+rmul+tanh",
+          "share": 0.48599449867879463,
+          "speedup": 1.2897637124843904,
+          "installed": false
+        },
+        {
+          "ops": "mul+rmul+rmul+mul+mul+add+rmul+tanh+radd+mul",
+          "share": 0.22196363404829678,
+          "speedup": 0.8570269451029119,
+          "installed": false
+        }
+      ],
+      "plain_ms": 0.031683789031793835,
+      "compiled_ms": 0.011774635990786422,
+      "shipped_regions": 0,
+      "status": "complete",
+      "work_dir": "problems/mul_gelu",
+      "set": "standard",
+      "minutes": 14.7,
+      "exit_code": 0
+    },
+    "add_relu": {
+      "vs_compiled": 1.0,
+      "vs_eager": 1.1559207930487345,
+      "confirmed": false,
+      "regions": [
+        {
+          "ops": "add",
+          "share": 0.18200500725498908,
+          "speedup": 0.5700107667939558,
+          "installed": false
+        }
+      ],
+      "plain_ms": 0.013227482936630695,
+      "compiled_ms": 0.011153724439035895,
+      "shipped_regions": 0,
+      "status": "complete",
+      "work_dir": "problems/add_relu",
+      "set": "standard",
+      "minutes": 4.9,
+      "exit_code": 0
+    },
+    "mul_relu": {
+      "vs_compiled": 1.0,
+      "vs_eager": 1.211090577476757,
+      "confirmed": false,
+      "regions": [
+        {
+          "ops": "mul",
+          "share": 0.19062006552404565,
+          "speedup": 0.6919270483954951,
+          "installed": false
+        }
+      ],
+      "plain_ms": 0.013223721989201,
+      "compiled_ms": 0.013200962091681088,
+      "shipped_regions": 0,
+      "status": "complete",
+      "work_dir": "problems/mul_relu",
+      "set": "standard",
+      "minutes": 5.2,
+      "exit_code": 0
+    },
+    "add_swish": {
+      "vs_compiled": 1.0,
+      "vs_eager": 1.4938700984503999,
+      "confirmed": false,
+      "regions": [
+        {
+          "ops": "add+add+sigmoid",
+          "share": 0.3689880681594162,
+          "speedup": 0.9030977235377857,
+          "installed": false
+        },
+        {
+          "ops": "add+add",
+          "share": 0.3616810947847456,
+          "speedup": 1.0728260632405522,
+          "installed": false
+        },
+        {
+          "ops": "add+add+sigmoid+mul",
+          "share": 0.17751424403020072,
+          "speedup": 0.7200721826380129,
+          "installed": false
+        }
+      ],
+      "plain_ms": 0.017150527005872777,
+      "compiled_ms": 0.011174311926901706,
+      "shipped_regions": 0,
+      "status": "complete",
+      "work_dir": "problems/add_swish",
+      "set": "standard",
+      "minutes": 13.9,
+      "exit_code": 0
+    },
+    "residual_tanh": {
+      "vs_compiled": 1.0,
+      "vs_eager": 1.0432477063184347,
+      "confirmed": false,
+      "regions": [
+        {
+          "ops": "add",
+          "share": 0.19333400719480484,
+          "speedup": 0.919613253551573,
+          "installed": false
+        },
+        {
+          "ops": "tanh+add",
+          "share": 0.18128658076722687,
+          "speedup": 0.580935089513261,
+          "installed": false
+        },
+        {
+          "ops": "tanh",
+          "share": 0.1469015516304038,
+          "speedup": 0.7850650690637755,
+          "installed": false
+        }
+      ],
+      "plain_ms": 0.015016081192480109,
+      "compiled_ms": 0.012498295839173725,
+      "shipped_regions": 0,
+      "status": "complete",
+      "work_dir": "problems/residual_tanh",
+      "set": "standard",
+      "minutes": 12.6,
+      "exit_code": 0
+    }
+  }
+}

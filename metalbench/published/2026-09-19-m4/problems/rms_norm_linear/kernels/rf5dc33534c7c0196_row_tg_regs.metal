@@ -1,0 +1,15 @@
+const uint row = threadgroup_position_in_grid.y;
+const uint lid = thread_position_in_threadgroup.x;
+const uint simd_id = lid / 32u;
+const uint lane = lid % 32u;
+const device float4* src = (const device float4*)(in0 + row * 1024u);
+device float4* dst = (device float4*)(out0 + row * 1024u);
+float4 v = src[lid];
+float s = v.x * v.x + v.y * v.y + v.z * v.z + v.w * v.w;
+s = simd_sum(s);
+threadgroup float part[8];
+if (lane == 0u) part[simd_id] = s;
+threadgroup_barrier(mem_flags::mem_threadgroup);
+float tot = part[0] + part[1] + part[2] + part[3] + part[4] + part[5] + part[6] + part[7];
+float inv = metal::precise::rsqrt(tot / 1024.0f + 1e-05f);
+dst[lid] = v * inv;

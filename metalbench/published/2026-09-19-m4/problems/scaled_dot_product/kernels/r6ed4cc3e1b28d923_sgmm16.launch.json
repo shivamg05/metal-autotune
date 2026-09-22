@@ -1,0 +1,45 @@
+{
+ "kernel_id": "r6ed4cc3e1b28d923_sgmm16",
+ "name": "at_r6ed4cc3e1b28d923_sgmm16",
+ "input_names": [
+  "in0",
+  "in1"
+ ],
+ "output_names": [
+  "out0"
+ ],
+ "header": "",
+ "grid": [
+  "512",
+  "4",
+  "1"
+ ],
+ "threadgroup": [
+  "128",
+  "1",
+  "1"
+ ],
+ "output_shapes": [
+  [
+   "in0.shape[0]",
+   "in1.shape[1]"
+  ]
+ ],
+ "output_dtypes": [
+  "float32"
+ ],
+ "template": [
+  [
+   "T",
+   "in0"
+  ]
+ ],
+ "fallback_predicate": "not (in0.shape[0] == 128 and in0.shape[1] == 128 and in1.shape[0] == 128 and in1.shape[1] == 128)",
+ "ensure_row_contiguous": true,
+ "atomic_outputs": false,
+ "native_call": null,
+ "input_signature": null,
+ "reference_sequence": null,
+ "stages": [],
+ "reassociates": false
+}

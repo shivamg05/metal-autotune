@@ -1,0 +1,1657 @@
+{
+ "legend": {
+  "target_workload": "the workload nominated before timing; its whole-model win must repeat before installation",
+  "timing_case": "the captured input case behind this hypothesis's local kernel timings",
+  "timing_workload": "the workload behind a region's recorded shipped-kernel speedup",
+  "model_ratios": "per-workload products of incremental model ratios; diagnostic estimates, not final measurements",
+  "p": "share of one step this region costs, all copies together, per workload",
+  "T_orig_ms": "library time for all copies, per workload, from pricing",
+  "T_rep_ms": "library time for one copy, per workload, from pricing",
+  "roofline_ms": "estimated ideal cost of one copy from boundary traffic and arithmetic",
+  "s_max": "optimistic headroom estimate: library time divided by estimated ideal cost",
+  "bound": "estimated limiting resource: memory, known compute, or launch; custom arithmetic may be unknown",
+  "s": "speedup shipped: the library's time over the shipped kernel's, both from the kernel's own ship clock",
+  "region_ms": "the kernel's time for one pass of one copy, from the ship clock",
+  "library_ms": "the library's time for the same pass, measured beside it",
+  "win_ms": "library_ms minus region_ms; positive means the kernel is faster",
+  "sigma_ms": "uncertainty of win_ms; a ship needs a win past three of these",
+  "stranded": "regions dropped before the search, grouped by reason",
+  "steps_per_sample": "dependent model steps in one timed sample of the step clock; more than one when a step is too short to bring the GPU clock up on its own",
+  "min_win_ms": "the least a region win had to save per step on this workload: 1% of the step, at most constants.min_win_ms; the three-sigma rule decides the rest",
+  "speedup_vs_plain": "under the compiled baseline: the finished model against plain eager MLX, paired in one window at the end of the job; compile's own gain is included, since the model runs compiled",
+  "speedup_vs_compiled": "under the plain baseline: the finished model (eager plus its kernels) against the untouched model under mx.compile, measured the same way; under 1 means compile alone is faster",
+  "plain_win_confirmed": "whether that comparison resolved a win past three sigma (compiled_win_confirmed likewise)",
+  "plain_loss_confirmed": "whether it resolved a loss (compiled_loss_confirmed likewise)",
+  "measured_compute_gflops": "the plain-matmul rate per dtype clocked in the region's own pricing window; the compute term of its estimated limit divides the region's flops by it",
+  "close_rule": "why a region's search ended: its budget or the job's is spent, the operator asked to finish, or no discernible headroom (launch-bound, head unmoved by the last two attempts, the last three kernels each within one sigma of the launch floor clocked beside them)",
+  "constants.openers_per_region": "how many attempts a region's widening round holds at most, each an opener written against the scaffold from a different agent-generated direction; limited by the remaining attempt budget",
+  "delivery": "how a kernel installs at the region's scope, per workload: direct, graph (the scope compiled with the cut inserted) or replay",
+  "library_arm": "what the region's clocks ran the library as, per workload: plain ops, or one compiled graph where graph delivery compiles the scope",
+  "baseline.clocks_ms.compiled": "under library inference: the model with its outermost compilable scopes compiled and empty, the baseline unless the manifest asks for plain",
+  "final.delivery": "under a plain baseline: the untouched model against the installed scopes compiled with no kernel, and that against the patched model"
+ },
+ "written_at": "2026-09-19T22:29:01-0700",
+ "machine": {
+  "chip": "Apple M4",
+  "memory_bytes": 25769803776,
+  "os": "macOS-26.6.2-arm64-arm-64bit",
+  "python": "3.12.13",
+  "mlx": "0.32.2"
+ },
+ "env": {
+  "MLX_MAX_OPS_PER_BUFFER": null,
+  "MLX_MAX_MB_PER_BUFFER": null,
+  "MTL_SHADER_VALIDATION": null,
+  "MTL_SHADER_VALIDATION_REPORT_TO_STDERR": null,
+  "MTL_CAPTURE_ENABLED": null
+ },
+ "manifest": "<repo>/runs/metalbench/jobs/2026-09-19_21-23-09-675242/generated/standard/rope_embedding/manifest.yaml",
+ "constants": {
+  "min_win_ms": 0.03,
+  "min_win_share": 0.01,
+  "budget_per_region": 10,
+  "budget_total": 30,
+  "seed": 1296389185,
+  "openers_per_region": 4,
+  "clock_pairs": 32,
+  "price_pairs": 8,
+  "ship_pairs": 20,
+  "model_min_gain_pct": 0.0,
+  "model_confidence_sigma": 3.0,
+  "model_confirmation_comparisons": 1,
+  "final_benchmark": {
+   "steps": 10,
+   "pairs": 8,
+   "warmup_steps": 3
+  },
+  "numeric_policy": "exact_preserving_baseline_tolerance_changing",
+  "tolerances": [
+   0.0001,
+   1e-05
+  ],
+  "tolerance_defaults": {
+   "float32": [
+    1e-05,
+    1e-06
+   ],
+   "float16": [
+    0.01,
+    0.02
+   ],
+   "bfloat16": [
+    0.02,
+    0.04
+   ]
+  },
+  "duty_idle_factor": 3.0,
+  "gpu_evaluation_timeout_s": 5.0,
+  "single_group_element_limit": 1048576,
+  "single_group_scaffold_work_limit": 16777216,
+  "defaulted": [
+   "use_library_inference",
+   "final_benchmark.steps",
+   "final_benchmark.warmup_steps",
+   "seed"
+  ],
+  "use_library_inference": false,
+  "measurement": {
+   "kind": "forward",
+   "generated_tokens": null,
+   "baseline": "compiled"
+  },
+  "checkpoint_pins": []
+ },
+ "baseline": {
+  "requested": "compiled",
+  "choice": "compiled",
+  "compiled_available": true,
+  "reason": null,
+  "clocks_ms": {
+   "rope_embedding": {
+    "plain": 0.05897072199588232,
+    "compiled": 0.03575828577244374
+   }
+  }
+ },
+ "peaks": {
+  "bandwidth_gbps": 92.71648583866109,
+  "flops_gflops": {
+   "float32": 2833.5128901484622,
+   "float16": 3347.2303940447387,
+   "bfloat16": 3352.0435363909723
+  },
+  "launch_us": 6.763023520761635
+ },
+ "session": {
+  "status": "complete",
+  "stage": "checking final model timings",
+  "gpu_utilization_at_start_pct": 85.0,
+  "aa_floor_sigma_ms": 0.05791230915587153,
+  "aa_control": {
+   "passed": true,
+   "attempts": 1
+  },
+  "idled_s": 169.1,
+  "artifact": null,
+  "outcome": "no_improvement"
+ },
+ "step_ms": {
+  "rope_embedding": {
+   "before": 0.03575828577244374,
+   "steps_per_sample": 518,
+   "min_win_ms": 0.00035758285772443743,
+   "after": 0.038303249101172485,
+   "baseline_at_end": 0.0383284266675826,
+   "speedup": 0.998886017403183,
+   "stability": 0.9784675002348819,
+   "win_confirmed": false,
+   "plain_at_end": 0.060230252905173455,
+   "speedup_vs_plain": 1.5496244011604994,
+   "plain_win_confirmed": true,
+   "plain_loss_confirmed": false
+  }
+ },
+ "regions": [
+  {
+   "fingerprint": "d0aedbb256b2f78a",
+   "ops": [
+    "mx.stack"
+   ],
+   "copies": 1,
+   "workloads": [
+    "rope_embedding"
+   ],
+   "p": {
+    "rope_embedding": 0.13629621618707155
+   },
+   "T_orig_ms": {
+    "rope_embedding": 0.005184327805895127
+   },
+   "T_rep_ms": {
+    "rope_embedding": 0.005184327805895127
+   },
+   "roofline_ms": 0.004115970540601204,
+   "bound": "launch",
+   "s_max": 1.2595638755805751,
+   "T_shipped_ms": null,
+   "s": null,
+   "head_ms": 0.005095752278132073,
+   "hypotheses": 10,
+   "timing_workload": null,
+   "delivery": {
+    "rope_embedding": "graph"
+   },
+   "library_arm": {
+    "rope_embedding": "compiled"
+   },
+   "outcomes": {
+    "correct_slower": 9,
+    "failed": 2
+   },
+   "close_rule": "the region's hypothesis budget is spent"
+  },
+  {
+   "fingerprint": "a77489f1aa3d4771",
+   "ops": [
+    "array.__add__"
+   ],
+   "copies": 1,
+   "workloads": [
+    "rope_embedding"
+   ],
+   "p": {
+    "rope_embedding": 0.05684038906703774
+   },
+   "T_orig_ms": {
+    "rope_embedding": 0.0021822749482187658
+   },
+   "T_rep_ms": {
+    "rope_embedding": 0.0021822749482187658
+   },
+   "roofline_ms": 0.0033542684410653627,
+   "bound": "launch",
+   "s_max": 0.6505963927936682,
+   "T_shipped_ms": null,
+   "s": null,
+   "head_ms": 0.0046104716856617605,
+   "hypotheses": 10,
+   "timing_workload": null,
+   "delivery": {
+    "rope_embedding": "graph"
+   },
+   "library_arm": {
+    "rope_embedding": "compiled"
+   },
+   "outcomes": {
+    "correct_slower": 11
+   },
+   "close_rule": "the region's hypothesis budget is spent"
+  },
+  {
+   "fingerprint": "8017aa8adb48ba04",
+   "ops": [
+    "array.__sub__"
+   ],
+   "copies": 1,
+   "workloads": [
+    "rope_embedding"
+   ],
+   "p": {
+    "rope_embedding": 0.05152205460068797
+   },
+   "T_orig_ms": {
+    "rope_embedding": 0.001968697897042382
+   },
+   "T_rep_ms": {
+    "rope_embedding": 0.001968697897042382
+   },
+   "roofline_ms": 0.003576699296241421,
+   "bound": "launch",
+   "s_max": 0.550423095145625,
+   "T_shipped_ms": null,
+   "s": null,
+   "head_ms": 0.004689108850524648,
+   "hypotheses": 10,
+   "timing_workload": null,
+   "delivery": {
+    "rope_embedding": "graph"
+   },
+   "library_arm": {
+    "rope_embedding": "compiled"
+   },
+   "outcomes": {
+    "correct_slower": 11
+   },
+   "close_rule": "the region's hypothesis budget is spent"
+  }
+ ],
+ "hypotheses": [
+  {
+   "id": "scaffold",
+   "region": "d0aedbb256b2f78a",
+   "kind": "scaffold",
+   "hypothesis": "the harness's starting kernel",
+   "assoc_tag": "preserving",
+   "parent": null,
+   "kernel": "rd0aedbb256b2f78a_scaffold",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.01780880683537152,
+   "library_ms": 0.005220215126218346,
+   "win_ms": -0.012673677597027004,
+   "sigma_ms": 0.00013451120090293134,
+   "floor_ms": 0.0034455003795021465,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "rope_embedding",
+   "timing_case": "rope_embedding"
+  },
+  {
+   "id": "pair_per_thread",
+   "region": "d0aedbb256b2f78a",
+   "kind": "one thread per interleaved pair",
+   "hypothesis": "launch 4096 threads across many threadgroups instead of one 128-thread group looping 64 times; each thread reads in0[i] and in1[i] and writes one contiguous float2, so the whole copy runs in a single wave with no division/modulo index math and no branch. Expected: cut the 0.018ms scaffold to near the library copy since the region is launch/occupancy bound, not bandwidth bound.",
+   "assoc_tag": "preserving",
+   "parent": "rd0aedbb256b2f78a_scaffold",
+   "kernel": "rd0aedbb256b2f78a_pair_per_thread",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.004827590406161367,
+   "library_ms": 0.005301711228509833,
+   "win_ms": 0.0003995187073867006,
+   "sigma_ms": 0.000656751254818437,
+   "floor_ms": 0.004544933614982125,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "rope_embedding",
+   "timing_case": "rope_embedding"
+  },
+  {
+   "id": "vec4_per_thread",
+   "region": "d0aedbb256b2f78a",
+   "kind": "float4 vector load and store",
+   "hypothesis": "each of 1024 threads loads a float4 from in0 and a float4 from in1 and stores two float4s (8 interleaved outputs) via swizzle; fewer threads with 16-byte transactions differs from the pair design by trading thread count for wider memory ops, testing whether wider stores beat more threads at this tiny size.",
+   "assoc_tag": "preserving",
+   "parent": "rd0aedbb256b2f78a_scaffold",
+   "kernel": "rd0aedbb256b2f78a_vec4_per_thread",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.0054416497032848815,
+   "library_ms": 0.005275365215283644,
+   "win_ms": -0.00024306015532532142,
+   "sigma_ms": 0.00015480809838923717,
+   "floor_ms": 0.00540226319868733,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "rope_embedding",
+   "timing_case": "rope_embedding"
+  },
+  {
+   "id": "row_per_thread",
+   "region": "d0aedbb256b2f78a",
+   "kind": "one row per thread",
+   "hypothesis": "128 threads, one per row of 32 elements, each thread streams its row and writes 16 float4s; a different mapping from element-parallel designs: minimal threads but a long sequential inner loop, testing whether the tiny problem prefers fewer threads with long per-thread streams.",
+   "assoc_tag": "preserving",
+   "parent": "rd0aedbb256b2f78a_scaffold",
+   "kernel": "rd0aedbb256b2f78a_row_per_thread",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.008888272044197315,
+   "library_ms": 0.005252734238825489,
+   "win_ms": -0.0037785013707931415,
+   "sigma_ms": 0.0002865626831715764,
+   "floor_ms": 0.004607826418492253,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "rope_embedding",
+   "timing_case": "rope_embedding"
+  },
+  {
+   "id": "elem_select_judge_babble1",
+   "region": "d0aedbb256b2f78a",
+   "kind": "one thread per output element with branchless select",
+   "hypothesis": "8192 threads, one per output scalar, each computes parity from its index and selects the source with a branchless ternary; maximum thread count with scalar 4-byte stores, differing from the pair design by doubling threads and halving per-thread work.",
+   "assoc_tag": null,
+   "parent": null,
+   "kernel": null,
+   "verdict": "failed",
+   "failed_gate": "judge_babble",
+   "region_ms": null,
+   "library_ms": null,
+   "win_ms": null,
+   "sigma_ms": null,
+   "floor_ms": null,
+   "summary": "failed at judge_babble: ",
+   "target_workload": null,
+   "timing_case": null
+  },
+  {
+   "id": "elem_select",
+   "region": "d0aedbb256b2f78a",
+   "kind": "one thread per output element with branchless select",
+   "hypothesis": "8192 threads, one per output scalar, each computes parity from its index and selects the source with a branchless ternary; maximum thread count with scalar 4-byte stores, differing from the pair design by doubling threads and halving per-thread work.",
+   "assoc_tag": "preserving",
+   "parent": "rd0aedbb256b2f78a_scaffold",
+   "kernel": "rd0aedbb256b2f78a_elem_select",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.005042222774869607,
+   "library_ms": 0.0052988948769692925,
+   "win_ms": 0.0003273764342142673,
+   "sigma_ms": 0.0002774609748369482,
+   "floor_ms": 0.004776836389905016,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "rope_embedding",
+   "timing_case": "rope_embedding"
+  },
+  {
+   "id": "pair2_float4",
+   "region": "d0aedbb256b2f78a",
+   "kind": "two pairs per thread with one float4 store",
+   "hypothesis": "2048 threads, each loads a float2 from in0 and a float2 from in1 and writes a single float4 (two interleaved pairs). Sits between pair_per_thread (4096 threads, 8-byte stores) and vec4_per_thread (1024 threads, two 16-byte stores): halves thread count versus head while keeping one store per thread, testing whether one 16-byte transaction per thread trims the tail below the noise band.",
+   "assoc_tag": "preserving",
+   "parent": "rd0aedbb256b2f78a_pair_per_thread",
+   "kernel": "rd0aedbb256b2f78a_pair2_float4",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.005030701077063975,
+   "library_ms": 0.005349579577052632,
+   "win_ms": 0.00019448523696424152,
+   "sigma_ms": 0.0003345349777189571,
+   "floor_ms": 0.005233363723434022,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "rope_embedding",
+   "timing_case": "rope_embedding"
+  },
+  {
+   "id": "pair_tg64_judge_babble2",
+   "region": "d0aedbb256b2f78a",
+   "kind": "small threadgroups to spread across cores",
+   "hypothesis": "same per-thread work as pair_per_thread but threadgroup size 64, giving 64 threadgroups over 10 cores instead of 16; at 32KB the cost is launch and dispatch tail, so finer groups may balance cores better.",
+   "assoc_tag": null,
+   "parent": null,
+   "kernel": null,
+   "verdict": "failed",
+   "failed_gate": "judge_babble",
+   "region_ms": null,
+   "library_ms": null,
+   "win_ms": null,
+   "sigma_ms": null,
+   "floor_ms": null,
+   "summary": "failed at judge_babble: ",
+   "target_workload": null,
+   "timing_case": null
+  },
+  {
+   "id": "pair_tg64",
+   "region": "d0aedbb256b2f78a",
+   "kind": "small threadgroups to spread across cores",
+   "hypothesis": "same per-thread work as pair_per_thread but threadgroup size 64, giving 64 threadgroups over 10 cores instead of 16; at 32KB the cost is launch and dispatch tail, so finer groups may balance cores better.",
+   "assoc_tag": "preserving",
+   "parent": "rd0aedbb256b2f78a_pair_per_thread",
+   "kernel": "rd0aedbb256b2f78a_pair_tg64",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.005095752278132073,
+   "library_ms": 0.005748345306011116,
+   "win_ms": 0.0004226736600263822,
+   "sigma_ms": 0.0001912673840927501,
+   "floor_ms": 0.005461351064985444,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "rope_embedding",
+   "timing_case": "rope_embedding"
+  },
+  {
+   "id": "pair_tg1024",
+   "region": "d0aedbb256b2f78a",
+   "kind": "few large threadgroups",
+   "hypothesis": "pair_per_thread mapping with threadgroup size 1024, so only 4 threadgroups are scheduled; tests whether dispatch overhead of many groups dominates at this tiny size.",
+   "assoc_tag": "preserving",
+   "parent": "rd0aedbb256b2f78a_pair_per_thread",
+   "kernel": "rd0aedbb256b2f78a_pair_tg1024",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.006713467008431997,
+   "library_ms": 0.006212039107385163,
+   "win_ms": 0.00046587022622518866,
+   "sigma_ms": 0.0008365156806086163,
+   "floor_ms": 0.004280861853308475,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "rope_embedding",
+   "timing_case": "rope_embedding"
+  },
+  {
+   "id": "vec8_tg32",
+   "region": "d0aedbb256b2f78a",
+   "kind": "eight pairs per thread in single-simdgroup threadgroups",
+   "hypothesis": "512 threads each load two float4 from in0 and two from in1 and write four float4 outputs, with threadgroup size 32 so every threadgroup is exactly one simdgroup spread over 16 groups; tests whether fewer, wider threads plus simdgroup-sized groups shave dispatch tail below the library at this 32KB launch-bound size.",
+   "assoc_tag": "preserving",
+   "parent": "rd0aedbb256b2f78a_pair_per_thread",
+   "kernel": "rd0aedbb256b2f78a_vec8_tg32",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.005505835038560893,
+   "library_ms": 0.005209563394011909,
+   "win_ms": -0.0003388832186713522,
+   "sigma_ms": 0.0008006765847496976,
+   "floor_ms": 0.004625068619568105,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "rope_embedding",
+   "timing_case": "rope_embedding"
+  },
+  {
+   "id": "scaffold",
+   "region": "a77489f1aa3d4771",
+   "kind": "scaffold",
+   "hypothesis": "the harness's starting kernel",
+   "assoc_tag": "preserving",
+   "parent": null,
+   "kernel": "ra77489f1aa3d4771_scaffold",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.004338606836666402,
+   "library_ms": 0.0025061184025712705,
+   "win_ms": -0.0019025989795887943,
+   "sigma_ms": 0.000679329644934286,
+   "floor_ms": 0.0035085634169119756,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "rope_embedding",
+   "timing_case": "rope_embedding"
+  },
+  {
+   "id": "flat_elem",
+   "region": "a77489f1aa3d4771",
+   "kind": "flat one thread per element",
+   "hypothesis": "the scaffold launches 128 threadgroups of 128 threads where 96 of 128 threads idle; a flat 1-D grid of exactly 4096 threads with 256-thread groups (16 groups) removes idle threads and the row loop, cutting dispatch overhead for this launch-bound 16 KB add",
+   "assoc_tag": "preserving",
+   "parent": "ra77489f1aa3d4771_scaffold",
+   "kernel": "ra77489f1aa3d4771_flat_elem",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.004399346282440876,
+   "library_ms": 0.0022264090754712624,
+   "win_ms": -0.0017290237569706698,
+   "sigma_ms": 0.0005308539084984688,
+   "floor_ms": 0.004251950732021429,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "rope_embedding",
+   "timing_case": "rope_embedding"
+  },
+  {
+   "id": "vec4",
+   "region": "a77489f1aa3d4771",
+   "kind": "float4 vectorized stream",
+   "hypothesis": "read and write float4 per thread (1024 threads, 4 groups of 256) so each thread moves 16 bytes per load; fewer threads and wider transactions differ from the scalar flat design and reduce per-thread issue cost",
+   "assoc_tag": "preserving",
+   "parent": "ra77489f1aa3d4771_scaffold",
+   "kernel": "ra77489f1aa3d4771_vec4",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.0048051760405339265,
+   "library_ms": 0.0026055194202864278,
+   "win_ms": -0.0021042591577176664,
+   "sigma_ms": 0.000117805118441066,
+   "floor_ms": 0.00462895381684569,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "rope_embedding",
+   "timing_case": "rope_embedding"
+  },
+  {
+   "id": "single_tg",
+   "region": "a77489f1aa3d4771",
+   "kind": "single threadgroup grid-stride",
+   "hypothesis": "one threadgroup of 256 threads grid-strides over all 4096 elements with float4 loads; a single group avoids multi-core scheduling latency, testing whether for 16 KB the launch cost dominates any bandwidth loss",
+   "assoc_tag": "preserving",
+   "parent": "ra77489f1aa3d4771_scaffold",
+   "kernel": "ra77489f1aa3d4771_single_tg",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.0049006941969886985,
+   "library_ms": 0.0021865592502127652,
+   "win_ms": -0.002722373380581097,
+   "sigma_ms": 0.00016471202720949254,
+   "floor_ms": 0.00362143814576269,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "rope_embedding",
+   "timing_case": "rope_embedding"
+  },
+  {
+   "id": "row_simd",
+   "region": "a77489f1aa3d4771",
+   "kind": "one simdgroup per row",
+   "hypothesis": "each 32-wide simdgroup handles one 32-element row, 4 rows per 128-thread group (32 groups); maps rows to simd lanes so the row index is a simd id and per-thread indexing is trivial, a middle point between the flat and single-group designs",
+   "assoc_tag": "preserving",
+   "parent": "ra77489f1aa3d4771_scaffold",
+   "kernel": "ra77489f1aa3d4771_row_simd",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.004641728899063294,
+   "library_ms": 0.002184949839508445,
+   "win_ms": -0.002413209357961173,
+   "sigma_ms": 0.00010941042221008446,
+   "floor_ms": 0.003627279494031947,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "rope_embedding",
+   "timing_case": "rope_embedding"
+  },
+  {
+   "id": "flat_notemplate",
+   "region": "a77489f1aa3d4771",
+   "kind": "flat elementwise without template or shape buffers",
+   "hypothesis": "every kernel sits about 2x above library_ms, so the cost is the custom-kernel dispatch itself; this design strips everything from the dispatch that the harness would otherwise bind: no template parameter, no inN_shape buffers, plain float arithmetic on a flat 4096-thread grid of 256-thread groups. Tests whether binding fewer arguments trims the fixed launch overhead; unlike flat_elem it drops the T template and casts.",
+   "assoc_tag": "preserving",
+   "parent": "ra77489f1aa3d4771_scaffold",
+   "kernel": "ra77489f1aa3d4771_flat_notemplate",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.004098165401299589,
+   "library_ms": 0.0021580220854410526,
+   "win_ms": -0.0018509163876165658,
+   "sigma_ms": 0.0006220896584906117,
+   "floor_ms": 0.005060316755390845,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "rope_embedding",
+   "timing_case": "rope_embedding"
+  },
+  {
+   "id": "float2_half_grid",
+   "region": "a77489f1aa3d4771",
+   "kind": "float2 per thread",
+   "hypothesis": "halfway between the scalar flat grid (best so far) and float4 (worse): 2048 threads each add one float2, 8 groups of 256; tests whether the trend between flat and vec4 is monotone or whether an intermediate width sits below both.",
+   "assoc_tag": "preserving",
+   "parent": "ra77489f1aa3d4771_flat_notemplate",
+   "kernel": "ra77489f1aa3d4771_float2_half_grid",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.0046104716856617605,
+   "library_ms": 0.0028360597337337137,
+   "win_ms": -0.0019208241506472568,
+   "sigma_ms": 0.0006975371324816177,
+   "floor_ms": 0.005588490451709444,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "rope_embedding",
+   "timing_case": "rope_embedding"
+  },
+  {
+   "id": "multi_elem_loop",
+   "region": "a77489f1aa3d4771",
+   "kind": "eight elements per thread in one small group",
+   "hypothesis": "512 threads in 2 groups of 256, each thread adds 8 consecutive floats via two float4 pairs; fewer threadgroups than vec4 but more than single_tg, probing whether group count between 1 and 4 changes dispatch cost.",
+   "assoc_tag": "preserving",
+   "parent": "ra77489f1aa3d4771_float2_half_grid",
+   "kernel": "ra77489f1aa3d4771_multi_elem_loop",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.004885309413995646,
+   "library_ms": 0.0026309262960138007,
+   "win_ms": -0.0023132748453120475,
+   "sigma_ms": 0.00019373277065205604,
+   "floor_ms": 0.0040338682113154655,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "rope_embedding",
+   "timing_case": "rope_embedding"
+  },
+  {
+   "id": "grid2d_native",
+   "region": "a77489f1aa3d4771",
+   "kind": "2-D grid matching the tensor shape",
+   "hypothesis": "all flat 1-D variants sit ~0.002 ms above the library add regardless of width or group count; this tests a 2-D dispatch (x=32 columns, y=128 rows, threadgroup 32x8 = 16 groups of 256 threads) so the kernel's index math is two thread-position reads and no divisions, mirroring how MLX's own binary kernel is launched, to see whether dispatch shape rather than body affects the fixed cost.",
+   "assoc_tag": "preserving",
+   "parent": "ra77489f1aa3d4771_flat_notemplate",
+   "kernel": "ra77489f1aa3d4771_grid2d_native",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.004503818943678124,
+   "library_ms": 0.002221447765319625,
+   "win_ms": -0.0023125812419299355,
+   "sigma_ms": 9.133403272455388e-05,
+   "floor_ms": 0.0038955354930138484,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "rope_embedding",
+   "timing_case": "rope_embedding"
+  },
+  {
+   "id": "tiny_grid_loop",
+   "region": "a77489f1aa3d4771",
+   "kind": "few threads, long float4 loop",
+   "hypothesis": "the opposite extreme from flat: 64 threads in one 64-thread group, each looping over 16 float4 pairs with stride 64; tests whether a minimal thread count and one small threadgroup reduces the fixed launch cost more than the 256-thread single group did.",
+   "assoc_tag": "preserving",
+   "parent": "ra77489f1aa3d4771_float2_half_grid",
+   "kernel": "ra77489f1aa3d4771_tiny_grid_loop",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.0056978436210783304,
+   "library_ms": 0.0023303651752244908,
+   "win_ms": -0.0035983651012727056,
+   "sigma_ms": 0.0006804253881452993,
+   "floor_ms": 0.0038512379807584428,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "rope_embedding",
+   "timing_case": "rope_embedding"
+  },
+  {
+   "id": "nan_free_direct_copy",
+   "region": "a77489f1aa3d4771",
+   "kind": "row-per-thread scalar loop",
+   "hypothesis": "128 threads, one per row, each adding 32 consecutive scalars in a fully unrolled loop; a single 128-thread group with per-thread row ownership gives sequential per-thread addressing that the compiler can coalesce into wide loads without explicit vector types.",
+   "assoc_tag": "preserving",
+   "parent": "ra77489f1aa3d4771_flat_notemplate",
+   "kernel": "ra77489f1aa3d4771_nan_free_direct_copy",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.006569562539771269,
+   "library_ms": 0.0023812056408558132,
+   "win_ms": -0.0036668134527663965,
+   "sigma_ms": 0.0008130849452645059,
+   "floor_ms": 0.004275655702246762,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "rope_embedding",
+   "timing_case": "rope_embedding"
+  },
+  {
+   "id": "scaffold",
+   "region": "8017aa8adb48ba04",
+   "kind": "scaffold",
+   "hypothesis": "the harness's starting kernel",
+   "assoc_tag": "preserving",
+   "parent": null,
+   "kernel": "r8017aa8adb48ba04_scaffold",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.004406621854317652,
+   "library_ms": 0.002160728813561357,
+   "win_ms": -0.002152398357651115,
+   "sigma_ms": 0.00010533194948706808,
+   "floor_ms": 0.003572661283519764,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "rope_embedding",
+   "timing_case": "rope_embedding"
+  },
+  {
+   "id": "flat1d",
+   "region": "8017aa8adb48ba04",
+   "kind": "flat one element per thread",
+   "hypothesis": "the scaffold launches 128x128 threads with 96 of every 128 idle; a flat 1D grid of exactly in0.shape[0]*in0.shape[1] threads, one element each, cuts launched threads 4x and removes the inner loop, so the launch-bound dispatch finishes sooner",
+   "assoc_tag": "preserving",
+   "parent": "r8017aa8adb48ba04_scaffold",
+   "kernel": "r8017aa8adb48ba04_flat1d",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.004669442806499146,
+   "library_ms": 0.0023776874920951006,
+   "win_ms": -0.002136116220391413,
+   "sigma_ms": 0.00012192693213870406,
+   "floor_ms": 0.0037309601931507065,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "rope_embedding",
+   "timing_case": "rope_embedding"
+  },
+  {
+   "id": "vec4",
+   "region": "8017aa8adb48ba04",
+   "kind": "float4 vectorized loads",
+   "hypothesis": "reinterpret in0/in1/out0 as float4 so 1024 threads move 16 bytes each; fewer threads and wider transactions than the flat design, same per-element math",
+   "assoc_tag": "preserving",
+   "parent": "r8017aa8adb48ba04_scaffold",
+   "kernel": "r8017aa8adb48ba04_vec4",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.004684942424659542,
+   "library_ms": 0.002517195149476092,
+   "win_ms": -0.0021414425502804912,
+   "sigma_ms": 0.00011143648663290129,
+   "floor_ms": 0.003942417030565194,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "rope_embedding",
+   "timing_case": "rope_embedding"
+  },
+  {
+   "id": "fewgroups",
+   "region": "8017aa8adb48ba04",
+   "kind": "grid-stride with few threadgroups",
+   "hypothesis": "launch only 256 threads in one threadgroup, each striding over 16 elements; minimal threadgroup scheduling overhead for a 4096-element op that cannot saturate bandwidth anyway, differing from vec4 by looping rather than widening",
+   "assoc_tag": "preserving",
+   "parent": "r8017aa8adb48ba04_scaffold",
+   "kernel": "r8017aa8adb48ba04_fewgroups",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.005832072157845755,
+   "library_ms": 0.0021344903583653835,
+   "win_ms": -0.003734132438103943,
+   "sigma_ms": 0.0004912481797551673,
+   "floor_ms": 0.0035777482818702385,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "rope_embedding",
+   "timing_case": "rope_embedding"
+  },
+  {
+   "id": "rowpergroup",
+   "region": "8017aa8adb48ba04",
+   "kind": "one 32-thread group per row",
+   "hypothesis": "128 threadgroups of 32 threads (one SIMD group per row), each thread one element; spreads work across all cores with the smallest group size, testing whether many tiny groups beat one or few large groups",
+   "assoc_tag": "preserving",
+   "parent": "r8017aa8adb48ba04_scaffold",
+   "kernel": "r8017aa8adb48ba04_rowpergroup",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.004466111436080501,
+   "library_ms": 0.0022351828777904055,
+   "win_ms": -0.0022873394188906134,
+   "sigma_ms": 0.0003196530103889188,
+   "floor_ms": 0.004038933344683568,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "rope_embedding",
+   "timing_case": "rope_embedding"
+  },
+  {
+   "id": "noshape_flat",
+   "region": "8017aa8adb48ba04",
+   "kind": "drop shape buffers",
+   "hypothesis": "every prior kernel names in0_shape, making the harness bind extra shape buffers per launch; since all custom launches sit ~2x above the library regardless of kernel shape, the per-launch argument setup may be the cost. Launch exactly n threads with no bounds check and no shape references, guarded by a fallback predicate requiring n % 256 == 0 so no padded threads exist",
+   "assoc_tag": "preserving",
+   "parent": "r8017aa8adb48ba04_flat1d",
+   "kernel": "r8017aa8adb48ba04_noshape_flat",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.0045718670278315394,
+   "library_ms": 0.0027517435996806325,
+   "win_ms": -0.0016497662534356071,
+   "sigma_ms": 0.000188596946679089,
+   "floor_ms": 0.004653242394103106,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "rope_embedding",
+   "timing_case": "rope_embedding"
+  },
+  {
+   "id": "noshape_vec4",
+   "region": "8017aa8adb48ba04",
+   "kind": "float4 without shape buffers",
+   "hypothesis": "combine the vec4 layout with the no-shape-buffer launch: 1024 threads, no bounds check, fallback predicate n % 1024 == 0; tests whether argument count and width together move the launch floor",
+   "assoc_tag": "preserving",
+   "parent": "r8017aa8adb48ba04_vec4",
+   "kernel": "r8017aa8adb48ba04_noshape_vec4",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.004689108850524648,
+   "library_ms": 0.002909832485160511,
+   "win_ms": -0.0018641123550906934,
+   "sigma_ms": 0.00016844667453894807,
+   "floor_ms": 0.0044078759209225825,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "rope_embedding",
+   "timing_case": "rope_embedding"
+  },
+  {
+   "id": "tg64_flat",
+   "region": "8017aa8adb48ba04",
+   "kind": "64-thread groups flat",
+   "hypothesis": "flat 1D with 64-thread groups (64 groups over 10 cores) sits between the 32-thread and 256-thread configurations tried; tests whether group count/size at this tiny size changes dispatch latency",
+   "assoc_tag": "preserving",
+   "parent": "r8017aa8adb48ba04_noshape_flat",
+   "kernel": "r8017aa8adb48ba04_tg64_flat",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.004570690773951735,
+   "library_ms": 0.002498446719154287,
+   "win_ms": -0.001952006771868608,
+   "sigma_ms": 0.0001547280304648291,
+   "floor_ms": 0.004227432321833847,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "rope_embedding",
+   "timing_case": "rope_embedding"
+  },
+  {
+   "id": "vec8_tg32",
+   "region": "8017aa8adb48ba04",
+   "kind": "eight elements per thread in 32-thread groups",
+   "hypothesis": "512 threads, each moving two float4 (8 elements) so the launch has 16 groups of 32 threads: fewer total threads than any prior variant while still spanning more cores than fewgroups; tests whether a lower thread count with wide per-thread traffic shifts the floor",
+   "assoc_tag": "preserving",
+   "parent": "r8017aa8adb48ba04_noshape_vec4",
+   "kernel": "r8017aa8adb48ba04_vec8_tg32",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.004574121556245783,
+   "library_ms": 0.002725762943712387,
+   "win_ms": -0.001825226543680715,
+   "sigma_ms": 0.0001806802124252843,
+   "floor_ms": 0.004302094491180787,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "rope_embedding",
+   "timing_case": "rope_embedding"
+  },
+  {
+   "id": "row2d_vec4",
+   "region": "8017aa8adb48ba04",
+   "kind": "2D grid rows by float4 columns",
+   "hypothesis": "grid 8x128 with float4 per thread and 8-thread groups per row, so each row is exactly one threadgroup of 8 threads; tests whether tiny 8-thread groups matching the row shape dispatch differently than 32+ groups",
+   "assoc_tag": "preserving",
+   "parent": "r8017aa8adb48ba04_noshape_vec4",
+   "kernel": "r8017aa8adb48ba04_row2d_vec4",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.004846235883983743,
+   "library_ms": 0.0023596005684154257,
+   "win_ms": -0.0020527158274512972,
+   "sigma_ms": 0.00018016779591222497,
+   "floor_ms": 0.004175681094816024,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "rope_embedding",
+   "timing_case": "rope_embedding"
+  },
+  {
+   "id": "onegroup_vec4",
+   "region": "8017aa8adb48ba04",
+   "kind": "single 1024-thread float4 group",
+   "hypothesis": "one threadgroup of 1024 threads, each one float4: unlike fewgroups (256 threads striding) there is no loop and every thread does a single 16-byte transaction; tests whether the one-group penalty came from striding or from group count",
+   "assoc_tag": "preserving",
+   "parent": "r8017aa8adb48ba04_noshape_vec4",
+   "kernel": "r8017aa8adb48ba04_onegroup_vec4",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.004818864096568464,
+   "library_ms": 0.0024500856182397635,
+   "win_ms": -0.0023805023145491945,
+   "sigma_ms": 0.00012679229577098488,
+   "floor_ms": 0.004371581216381021,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "rope_embedding",
+   "timing_case": "rope_embedding"
+  }
+ ],
+ "accepted": [],
+ "pricing": [
+  {
+   "fingerprint": "d0aedbb256b2f78a",
+   "ops": [
+    "mx.stack"
+   ],
+   "copies": 1,
+   "p": {
+    "rope_embedding": 0.13629621618707155
+   },
+   "region_ms": {
+    "rope_embedding": 0.005184327805895127
+   },
+   "ranking_basis": "estimated_removable_share",
+   "price_stability": {
+    "rope_embedding": 0.9715256238731629
+   },
+   "estimate_basis": "boundary_probe_and_known_compute",
+   "compute_model_complete": true,
+   "headroom_is_estimate": true,
+   "estimated_s_max": {
+    "rope_embedding": 1.2595638755805751
+   },
+   "measured_compute_gflops": {
+    "rope_embedding": {
+     "float32": 2850.8107521305215
+    }
+   },
+   "potential_model_latency_reduction_pct": {
+    "rope_embedding": 2.8087161585336426
+   },
+   "status": "eligible",
+   "reason": null
+  },
+  {
+   "fingerprint": "a77489f1aa3d4771",
+   "ops": [
+    "array.__add__"
+   ],
+   "copies": 1,
+   "p": {
+    "rope_embedding": 0.05684038906703774
+   },
+   "region_ms": {
+    "rope_embedding": 0.0021822749482187658
+   },
+   "ranking_basis": "estimated_removable_share",
+   "price_stability": {
+    "rope_embedding": 0.9821984724866025
+   },
+   "estimate_basis": "boundary_probe_and_known_compute",
+   "compute_model_complete": true,
+   "headroom_is_estimate": true,
+   "estimated_s_max": {
+    "rope_embedding": 0.6505963927936682
+   },
+   "measured_compute_gflops": {
+    "rope_embedding": {
+     "float32": 2850.8107521305215
+    }
+   },
+   "potential_model_latency_reduction_pct": {
+    "rope_embedding": 0.0
+   },
+   "status": "eligible",
+   "reason": null
+  },
+  {
+   "fingerprint": "8017aa8adb48ba04",
+   "ops": [
+    "array.__sub__"
+   ],
+   "copies": 1,
+   "p": {
+    "rope_embedding": 0.05152205460068797
+   },
+   "region_ms": {
+    "rope_embedding": 0.001968697897042382
+   },
+   "ranking_basis": "estimated_removable_share",
+   "price_stability": {
+    "rope_embedding": 0.9250848610860141
+   },
+   "estimate_basis": "boundary_probe_and_known_compute",
+   "compute_model_complete": true,
+   "headroom_is_estimate": true,
+   "estimated_s_max": {
+    "rope_embedding": 0.550423095145625
+   },
+   "measured_compute_gflops": {
+    "rope_embedding": {
+     "float32": 2850.8107521305215
+    }
+   },
+   "potential_model_latency_reduction_pct": {
+    "rope_embedding": 0.0
+   },
+   "status": "eligible",
+   "reason": null
+  },
+  {
+   "fingerprint": "817ae961ec8c5331",
+   "ops": [
+    "array.__truediv__"
+   ],
+   "copies": 1,
+   "p": {
+    "rope_embedding": 0.050294299581780236
+   },
+   "region_ms": {
+    "rope_embedding": 0.0019070561308723584
+   },
+   "ranking_basis": "estimated_removable_share",
+   "price_stability": {
+    "rope_embedding": 0.8949388812767973
+   },
+   "estimate_basis": "boundary_probe_and_known_compute",
+   "compute_model_complete": true,
+   "headroom_is_estimate": true,
+   "estimated_s_max": {
+    "rope_embedding": 0.581509986964845
+   },
+   "measured_compute_gflops": {
+    "rope_embedding": {
+     "float32": 2850.8107521305215
+    }
+   },
+   "potential_model_latency_reduction_pct": {
+    "rope_embedding": 0.0
+   },
+   "status": "eligible",
+   "reason": null
+  },
+  {
+   "fingerprint": "8d79f9460568670f",
+   "ops": [
+    "array.__rtruediv__"
+   ],
+   "copies": 1,
+   "p": {
+    "rope_embedding": 0.049999754701234085
+   },
+   "region_ms": {
+    "rope_embedding": 0.0018864786433218754
+   },
+   "ranking_basis": "estimated_removable_share",
+   "price_stability": {
+    "rope_embedding": 0.9340237374645415
+   },
+   "estimate_basis": "boundary_probe_and_known_compute",
+   "compute_model_complete": true,
+   "headroom_is_estimate": true,
+   "estimated_s_max": {
+    "rope_embedding": 0.5717788599826884
+   },
+   "measured_compute_gflops": {
+    "rope_embedding": {
+     "float32": 2850.8107521305215
+    }
+   },
+   "potential_model_latency_reduction_pct": {
+    "rope_embedding": 0.0
+   },
+   "status": "eligible",
+   "reason": null
+  },
+  {
+   "fingerprint": "100b4b70bc16ca62",
+   "ops": [
+    "mx.sin"
+   ],
+   "copies": 1,
+   "p": {
+    "rope_embedding": 0.04786725848773509
+   },
+   "region_ms": {
+    "rope_embedding": 0.0018469513366546702
+   },
+   "ranking_basis": "estimated_removable_share",
+   "price_stability": {
+    "rope_embedding": 0.8922619654773624
+   },
+   "estimate_basis": "boundary_probe_and_known_compute",
+   "compute_model_complete": true,
+   "headroom_is_estimate": true,
+   "estimated_s_max": {
+    "rope_embedding": 0.6066275729905138
+   },
+   "measured_compute_gflops": {
+    "rope_embedding": {
+     "float32": 2850.8107521305215
+    }
+   },
+   "potential_model_latency_reduction_pct": {
+    "rope_embedding": 0.0
+   },
+   "status": "eligible",
+   "reason": null
+  },
+  {
+   "fingerprint": "1b0e3ebfe2ec397c",
+   "ops": [
+    "array.__rmul__"
+   ],
+   "copies": 1,
+   "p": {
+    "rope_embedding": 0.04706081932750716
+   },
+   "region_ms": {
+    "rope_embedding": 0.0018183258247079525
+   },
+   "ranking_basis": "estimated_removable_share",
+   "price_stability": {
+    "rope_embedding": 0.9719316777307383
+   },
+   "estimate_basis": "boundary_probe_and_known_compute",
+   "compute_model_complete": true,
+   "headroom_is_estimate": true,
+   "estimated_s_max": {
+    "rope_embedding": 0.5568270133954649
+   },
+   "measured_compute_gflops": {
+    "rope_embedding": {
+     "float32": 2850.8107521305215
+    }
+   },
+   "potential_model_latency_reduction_pct": {
+    "rope_embedding": 0.0
+   },
+   "status": "eligible",
+   "reason": null
+  },
+  {
+   "fingerprint": "ba646ec00ae4247f",
+   "ops": [
+    "mx.cos"
+   ],
+   "copies": 1,
+   "p": {
+    "rope_embedding": 0.04447371818975197
+   },
+   "region_ms": {
+    "rope_embedding": 0.0016861397598721128
+   },
+   "ranking_basis": "estimated_removable_share",
+   "price_stability": {
+    "rope_embedding": 0.9214000087363479
+   },
+   "estimate_basis": "boundary_probe_and_known_compute",
+   "compute_model_complete": true,
+   "headroom_is_estimate": true,
+   "estimated_s_max": {
+    "rope_embedding": 0.5075750197273805
+   },
+   "measured_compute_gflops": {
+    "rope_embedding": {
+     "float32": 2850.8107521305215
+    }
+   },
+   "potential_model_latency_reduction_pct": {
+    "rope_embedding": 0.0
+   },
+   "status": "eligible",
+   "reason": null
+  }
+ ],
+ "stranded": [
+  {
+   "reason": "no scaffold for mx.arange",
+   "count": 27,
+   "regions": [
+    {
+     "fingerprint": "8d9b2f223b8996e6",
+     "ops": [
+      "mx.arange"
+     ]
+    },
+    {
+     "fingerprint": "f3d6ef72979f3e2e",
+     "ops": [
+      "mx.arange"
+     ]
+    },
+    {
+     "fingerprint": "6fef809faca5869b",
+     "ops": [
+      "mx.arange",
+      "array.__rmul__"
+     ]
+    },
+    {
+     "fingerprint": "74769a3ba50f8c15",
+     "ops": [
+      "mx.arange",
+      "array.__rmul__",
+      "array.__truediv__"
+     ]
+    },
+    {
+     "fingerprint": "15edd2db6bcb32af",
+     "ops": [
+      "mx.arange",
+      "array.__rmul__",
+      "array.__truediv__",
+      "array.__rpow__"
+     ]
+    },
+    {
+     "fingerprint": "36b1df227f9f3d28",
+     "ops": [
+      "mx.arange",
+      "array.__rmul__",
+      "array.__truediv__",
+      "array.__rpow__",
+      "array.__rtruediv__"
+     ]
+    },
+    {
+     "fingerprint": "f86a8b1fc1577432",
+     "ops": [
+      "mx.arange",
+      "array.__rmul__",
+      "array.__truediv__",
+      "array.__rpow__",
+      "array.__rtruediv__",
+      "mx.arange"
+     ]
+    },
+    {
+     "fingerprint": "7da4de7aff7f3920",
+     "ops": [
+      "mx.arange",
+      "array.__rmul__",
+      "array.__truediv__",
+      "array.__rpow__",
+      "array.__rtruediv__",
+      "mx.arange",
+      "array.__getitem__",
+      "array.__getitem__",
+      "array.__mul__"
+     ]
+    },
+    {
+     "fingerprint": "cf3afa8e067763c5",
+     "ops": [
+      "mx.arange",
+      "array.__rmul__",
+      "array.__truediv__",
+      "array.__rpow__",
+      "array.__rtruediv__",
+      "mx.arange",
+      "array.__getitem__",
+      "array.__getitem__",
+      "array.__mul__",
+      "mx.cos"
+     ]
+    },
+    {
+     "fingerprint": "a0f981d3ca52b79c",
+     "ops": [
+      "mx.arange",
+      "array.__rmul__",
+      "array.__truediv__",
+      "array.__rpow__",
+      "array.__rtruediv__",
+      "mx.arange",
+      "array.__getitem__",
+      "array.__getitem__",
+      "array.__mul__",
+      "mx.cos",
+      "mx.sin"
+     ]
+    },
+    {
+     "fingerprint": "c7c16a2b1684b8ee",
+     "ops": [
+      "mx.arange",
+      "array.__rmul__",
+      "array.__truediv__",
+      "array.__rpow__",
+      "array.__rtruediv__",
+      "mx.arange",
+      "array.__getitem__",
+      "array.__getitem__",
+      "array.__mul__",
+      "mx.cos",
+      "mx.sin",
+      "array.reshape",
+      "array.__getitem__",
+      "array.__getitem__",
+      "array.__mul__"
+     ]
+    },
+    {
+     "fingerprint": "3134a3c8d1b538dc",
+     "ops": [
+      "mx.arange",
+      "array.__rmul__",
+      "array.__truediv__",
+      "array.__rpow__",
+      "array.__rtruediv__",
+      "mx.arange",
+      "array.__getitem__",
+      "array.__getitem__",
+      "array.__mul__",
+      "mx.cos",
+      "mx.sin",
+      "array.reshape",
+      "array.__getitem__",
+      "array.__getitem__",
+      "array.__mul__",
+      "array.__mul__"
+     ]
+    },
+    {
+     "fingerprint": "7da66bf2d82d4120",
+     "ops": [
+      "mx.arange",
+      "array.__rmul__",
+      "array.__truediv__",
+      "array.__rpow__",
+      "array.__rtruediv__",
+      "mx.arange",
+      "array.__getitem__",
+      "array.__getitem__",
+      "array.__mul__",
+      "mx.cos",
+      "mx.sin",
+      "array.reshape",
+      "array.__getitem__",
+      "array.__getitem__",
+      "array.__mul__",
+      "array.__mul__",
+      "array.__sub__"
+     ]
+    },
+    {
+     "fingerprint": "fc46e3bd93ab2e9e",
+     "ops": [
+      "mx.arange",
+      "array.__rmul__",
+      "array.__truediv__",
+      "array.__rpow__",
+      "array.__rtruediv__",
+      "mx.arange",
+      "array.__getitem__",
+      "array.__getitem__",
+      "array.__mul__",
+      "mx.cos",
+      "mx.sin",
+      "array.reshape",
+      "array.__getitem__",
+      "array.__getitem__",
+      "array.__mul__",
+      "array.__mul__",
+      "array.__sub__",
+      "array.__mul__"
+     ]
+    },
+    {
+     "fingerprint": "95237bbf33a078b7",
+     "ops": [
+      "mx.arange",
+      "array.__rmul__",
+      "array.__truediv__",
+      "array.__rpow__",
+      "array.__rtruediv__",
+      "mx.arange",
+      "array.__getitem__",
+      "array.__getitem__",
+      "array.__mul__",
+      "mx.cos",
+      "mx.sin",
+      "array.reshape",
+      "array.__getitem__",
+      "array.__getitem__",
+      "array.__mul__",
+      "array.__mul__",
+      "array.__sub__",
+      "array.__mul__",
+      "array.__mul__"
+     ]
+    },
+    {
+     "fingerprint": "2922cff8a458d2e9",
+     "ops": [
+      "mx.arange",
+      "array.__rmul__",
+      "array.__truediv__",
+      "array.__rpow__",
+      "array.__rtruediv__",
+      "mx.arange",
+      "array.__getitem__",
+      "array.__getitem__",
+      "array.__mul__",
+      "mx.cos",
+      "mx.sin",
+      "array.reshape",
+      "array.__getitem__",
+      "array.__getitem__",
+      "array.__mul__",
+      "array.__mul__",
+      "array.__sub__",
+      "array.__mul__",
+      "array.__mul__",
+      "array.__add__"
+     ]
+    },
+    {
+     "fingerprint": "61c2fe5325dcddc5",
+     "ops": [
+      "mx.arange",
+      "array.__rmul__",
+      "array.__truediv__",
+      "array.__rpow__",
+      "array.__rtruediv__",
+      "mx.arange",
+      "array.__getitem__",
+      "array.__getitem__",
+      "array.__mul__",
+      "mx.cos",
+      "mx.sin",
+      "array.reshape",
+      "array.__getitem__",
+      "array.__getitem__",
+      "array.__mul__",
+      "array.__mul__",
+      "array.__sub__",
+      "array.__mul__",
+      "array.__mul__",
+      "array.__add__",
+      "mx.stack"
+     ]
+    },
+    {
+     "fingerprint": "e07fd0e1f4c14e05",
+     "ops": [
+      "mx.arange",
+      "array.__getitem__",
+      "array.__getitem__",
+      "array.__mul__"
+     ]
+    },
+    {
+     "fingerprint": "331099469aca731a",
+     "ops": [
+      "mx.arange",
+      "array.__getitem__",
+      "array.__getitem__",
+      "array.__mul__",
+      "mx.cos"
+     ]
+    },
+    {
+     "fingerprint": "a02dd63c60a8038a",
+     "ops": [
+      "mx.arange",
+      "array.__getitem__",
+      "array.__getitem__",
+      "array.__mul__",
+      "mx.cos",
+      "mx.sin"
+     ]
+    },
+    {
+     "fingerprint": "482e2c91e6cb24f2",
+     "ops": [
+      "mx.arange",
+      "array.__getitem__",
+      "array.__getitem__",
+      "array.__mul__",
+      "mx.cos",
+      "mx.sin",
+      "array.reshape",
+      "array.__getitem__",
+      "array.__getitem__",
+      "array.__mul__"
+     ]
+    },
+    {
+     "fingerprint": "284dab50cd15c0a8",
+     "ops": [
+      "mx.arange",
+      "array.__getitem__",
+      "array.__getitem__",
+      "array.__mul__",
+      "mx.cos",
+      "mx.sin",
+      "array.reshape",
+      "array.__getitem__",
+      "array.__getitem__",
+      "array.__mul__",
+      "array.__mul__"
+     ]
+    },
+    {
+     "fingerprint": "a378032d60a2f9f3",
+     "ops": [
+      "mx.arange",
+      "array.__getitem__",
+      "array.__getitem__",
+      "array.__mul__",
+      "mx.cos",
+      "mx.sin",
+      "array.reshape",
+      "array.__getitem__",
+      "array.__getitem__",
+      "array.__mul__",
+      "array.__mul__",
+      "array.__sub__"
+     ]
+    },
+    {
+     "fingerprint": "1cae7938693c2868",
+     "ops": [
+      "mx.arange",
+      "array.__getitem__",
+      "array.__getitem__",
+      "array.__mul__",
+      "mx.cos",
+      "mx.sin",
+      "array.reshape",
+      "array.__getitem__",
+      "array.__getitem__",
+      "array.__mul__",
+      "array.__mul__",
+      "array.__sub__",
+      "array.__mul__"
+     ]
+    },
+    {
+     "fingerprint": "645d20de7d1de477",
+     "ops": [
+      "mx.arange",
+      "array.__getitem__",
+      "array.__getitem__",
+      "array.__mul__",
+      "mx.cos",
+      "mx.sin",
+      "array.reshape",
+      "array.__getitem__",
+      "array.__getitem__",
+      "array.__mul__",
+      "array.__mul__",
+      "array.__sub__",
+      "array.__mul__",
+      "array.__mul__"
+     ]
+    },
+    {
+     "fingerprint": "72bcc55e27cee203",
+     "ops": [
+      "mx.arange",
+      "array.__getitem__",
+      "array.__getitem__",
+      "array.__mul__",
+      "mx.cos",
+      "mx.sin",
+      "array.reshape",
+      "array.__getitem__",
+      "array.__getitem__",
+      "array.__mul__",
+      "array.__mul__",
+      "array.__sub__",
+      "array.__mul__",
+      "array.__mul__",
+      "array.__add__"
+     ]
+    },
+    {
+     "fingerprint": "ad9e48d159d2cf24",
+     "ops": [
+      "mx.arange",
+      "array.__getitem__",
+      "array.__getitem__",
+      "array.__mul__",
+      "mx.cos",
+      "mx.sin",
+      "array.reshape",
+      "array.__getitem__",
+      "array.__getitem__",
+      "array.__mul__",
+      "array.__mul__",
+      "array.__sub__",
+      "array.__mul__",
+      "array.__mul__",
+      "array.__add__",
+      "mx.stack"
+     ]
+    }
+   ]
+  },
+  {
+   "reason": "no scaffold for array.__rpow__",
+   "count": 1,
+   "regions": [
+    {
+     "fingerprint": "68b04464107d1f75",
+     "ops": [
+      "array.__rpow__"
+     ]
+    }
+   ]
+  },
+  {
+   "reason": "cannot build scaffold: NoScaffold: broadcast-mismatch: dims (1, 1, 32) vs (32, 32, 32)",
+   "count": 1,
+   "regions": [
+    {
+     "fingerprint": "95bbd46171d2fbbb",
+     "ops": [
+      "array.__mul__"
+     ]
+    }
+   ]
+  }
+ ],
+ "coverage": {
+  "discovery": {
+   "legal_regions": 37,
+   "supported_regions": 8,
+   "unsupported_regions": 29,
+   "never_evaluated_ops": 0
+  },
+  "step_floor": {
+   "rope_embedding": {
+    "bytes_mb": 0.065536,
+    "gflop": 4.5344e-05,
+    "launches": 16,
+    "t_mem_ms": 0.0007068430107892709,
+    "t_compute_ms": 1.60027505636737e-05,
+    "floor_ms": 0.0007068430107892709,
+    "step_ms": 0.03575828577244374,
+    "room": 0.9802327489833425
+   }
+  },
+  "selection": {
+   "candidates": 8,
+   "waves": [
+    {
+     "wave": 1,
+     "selected": 8,
+     "deferred": 0,
+     "conflicts": {}
+    }
+   ],
+   "unsearched": 5
+  },
+  "measured_atomic_share_this_wave": {
+   "rope_embedding": 0.4843545101428058
+  },
+  "step_ms": {
+   "rope_embedding": 0.03575828577244374
+  }
+ },
+ "final": {
+  "passed": true,
+  "reason": "no replacements installed"
+ }
+}

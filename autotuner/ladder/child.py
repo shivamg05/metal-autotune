@@ -57,10 +57,10 @@ class _OriginalUnstable(Exception):
 
 DETERMINISM_RUNS = 3          # spec-fixed
 WATCHDOG_ITERS = 4            # passes per arm in the watchdog's timed comparison
-# The magnitude regimes step down until the library's own output stays finite
+# The outlier regime steps down until the library's own output stays finite
 # wherever it was finite on the real data: past that point the reference
 # means nothing and no kernel could be written to match it.
-REGIME_MAGNITUDES = {"scaled_up": (1e3, 1e2, 1e1), "outliers": (1e4, 1e3, 1e2)}
+REGIME_MAGNITUDES = {"outliers": (1e4, 1e3, 1e2)}
 
 
 def _probe_offset(kspec: KernelSpec, inputs: list[mx.array]) -> int | None:
@@ -324,8 +324,7 @@ def _evaluate_ladder(spec: LadderSpec, session: Session) -> Verdict:
         for regime in REGIMES:
             found = None
             for magnitude in REGIME_MAGNITUDES.get(regime, (None,)):
-                knobs = {} if magnitude is None else (
-                    {"scale_up": magnitude} if regime == "scaled_up" else {"outlier": magnitude})
+                knobs = {} if magnitude is None else {"outlier": magnitude}
                 rinputs = value_regimes(base_inputs, seed=spec.seed,
                                         weights=spec.weight_inputs, **knobs)[regime]
                 rbinds = dict(zip(s_in, rinputs))
@@ -405,7 +404,12 @@ def _evaluate_ladder(spec: LadderSpec, session: Session) -> Verdict:
         if has_matrix and not fallback_fires(kspec, [variant[i] for i in in_ids]):
             mx.eval(list(variant.values()))
             kouts = launch(variant, in_ids)
-            bad = (changing_mismatch(primary_nodes, variant, out_ids, kouts) if changing
+            # MLX's reductions give different bits for the same values laid out
+            # differently, so a starter that replays the library's own ops is
+            # compared with the library on this layout; a kernel reads its
+            # inputs row-contiguous and must still match the recorded reference
+            on_this_layout = changing or kspec.reference_sequence is not None
+            bad = (changing_mismatch(primary_nodes, variant, out_ids, kouts) if on_this_layout
                    else output_mismatch(kouts, prim_refs[0]))
             if bad:
                 bad.update({"eval_set": prim.label, "kind": "transposed_variant"})

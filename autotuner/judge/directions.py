@@ -1,14 +1,6 @@
-"""The directions a region's widening round opens from (spec "Widening
-round"). Hardware facts only: each names a structure, what it trades, and
-the bounds it can pay under. The region's bound masks the rest, the job seed
-fixes the order, and the judge may add a direction of its own.
-"""
+"""Optional technique examples, available through read-only source lookup."""
 
-from __future__ import annotations
-
-import random
-
-OPENERS = 4  # attempts a widening round holds at most; fewer when fewer directions are offered
+OPENERS = 4  # independent designs, subject to the existing attempt budget
 
 # kind, the direction in one line, the bounds it can pay under
 DIRECTIONS = (
@@ -55,13 +47,3 @@ DIRECTIONS = (
      "packed; shorter encode", ("launch",)),
 )
 assert len({kind for kind, _, _ in DIRECTIONS}) == len(DIRECTIONS)
-
-
-def directions_for(bound: str | None, seed: int, fingerprint: str) -> list[dict]:
-    """The directions offered for one region: those that can pay under its
-    bound, all of them when the bound is unknown, in an order the job seed
-    and the region fix."""
-    offered = [{"kind": kind, "direction": text, "pays": list(pays)}
-               for kind, text, pays in DIRECTIONS if bound is None or bound in pays]
-    random.Random(f"{seed}:{fingerprint}").shuffle(offered)
-    return offered

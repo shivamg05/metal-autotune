@@ -1,0 +1,46 @@
+{
+ "kernel_id": "ree2b45312cc43fb4_sgmm_tile",
+ "name": "at_ree2b45312cc43fb4_sgmm_tile",
+ "input_names": [
+  "in0",
+  "in1",
+  "in2"
+ ],
+ "output_names": [
+  "out0"
+ ],
+ "header": "#include <metal_simdgroup_matrix>\n",
+ "grid": [
+  "128 * 16",
+  "1",
+  "1"
+ ],
+ "threadgroup": [
+  "128",
+  "1",
+  "1"
+ ],
+ "output_shapes": [
+  [
+   "128",
+   "128"
+  ]
+ ],
+ "output_dtypes": [
+  "float32"
+ ],
+ "template": [
+  [
+   "T",
+   "in0"
+  ]
+ ],
+ "fallback_predicate": "in0.shape[0] != 128 or in0.shape[1] != 128 or in1.shape[0] != 128 or in1.shape[1] != 128",
+ "ensure_row_contiguous": true,
+ "atomic_outputs": false,
+ "native_call": null,
+ "input_signature": null,
+ "reference_sequence": null,
+ "stages": [],
+ "reassociates": false
+}

@@ -148,9 +148,10 @@ def test_first_proposal_seeds_queue_and_search_keeps_history(tmp_path):
     runner.kernel_dir = tmp_path
     seed = KernelSpec('seed', 'seed', ('in0',), ('out0',), 'out0[0]=in0[0];')
     runner._kernel_from_proposal = lambda run, region, proposal, name: replace(seed, kernel_id=name)
+    runner._static_refusal = lambda *a: None  # this bare runner has no traces to build a contract from
     run = RegionRun(region('r', 0, 2), scaffold=seed, head=seed, kernels={'seed': seed})
-    item = lambda i: {'id': i, 'kind': 'retile', 'assoc_tag': 'preserving', 'hypothesis': 'try layout'}
-    kernel = {'source': seed.source, 'parent_kernel_id': 'head', 'grid': ['1']*3,
+    item = lambda i: {'id': i, 'kind': f'design-{i}', 'assoc_tag': 'preserving', 'hypothesis': 'try layout'}
+    kernel = {'source': seed.source, 'parent_kernel_id': 'scaffold', 'grid': ['1']*3,
               'threadgroup': ['1']*3, 'output_shapes': [['1']]}
     judge = ScriptedJudge([
         {'mutations': [{'op': 'insert', 'item': item(i)} for i in ('h1', 'h2')], 'kernel': kernel},

@@ -1,0 +1,483 @@
+{
+ "legend": {
+  "target_workload": "the workload nominated before timing; its whole-model win must repeat before installation",
+  "timing_case": "the captured input case behind this hypothesis's local kernel timings",
+  "timing_workload": "the workload behind a region's recorded shipped-kernel speedup",
+  "model_ratios": "per-workload products of incremental model ratios; diagnostic estimates, not final measurements",
+  "p": "share of one step this region costs, all copies together, per workload",
+  "T_orig_ms": "library time for all copies, per workload, from pricing",
+  "T_rep_ms": "library time for one copy, per workload, from pricing",
+  "roofline_ms": "estimated ideal cost of one copy from boundary traffic and arithmetic",
+  "s_max": "optimistic headroom estimate: library time divided by estimated ideal cost",
+  "bound": "estimated limiting resource: memory, known compute, or launch; custom arithmetic may be unknown",
+  "s": "speedup shipped: the library's time over the shipped kernel's, both from the kernel's own ship clock",
+  "region_ms": "the kernel's time for one pass of one copy, from the ship clock",
+  "library_ms": "the library's time for the same pass, measured beside it",
+  "win_ms": "library_ms minus region_ms; positive means the kernel is faster",
+  "sigma_ms": "uncertainty of win_ms; a ship needs a win past three of these",
+  "stranded": "regions dropped before the search, grouped by reason",
+  "steps_per_sample": "dependent model steps in one timed sample of the step clock; more than one when a step is too short to bring the GPU clock up on its own",
+  "min_win_ms": "the least a region win had to save per step on this workload: 1% of the step, at most constants.min_win_ms; the three-sigma rule decides the rest",
+  "speedup_vs_plain": "under the compiled baseline: the finished model against plain eager MLX, paired in one window at the end of the job; compile's own gain is included, since the model runs compiled",
+  "speedup_vs_compiled": "under the plain baseline: the finished model (eager plus its kernels) against the untouched model under mx.compile, measured the same way; under 1 means compile alone is faster",
+  "plain_win_confirmed": "whether that comparison resolved a win past three sigma (compiled_win_confirmed likewise)",
+  "plain_loss_confirmed": "whether it resolved a loss (compiled_loss_confirmed likewise)",
+  "measured_compute_gflops": "the plain-matmul rate per dtype clocked in the region's own pricing window; the compute term of its estimated limit divides the region's flops by it",
+  "close_rule": "why a region's search ended: its budget or the job's is spent, the operator asked to finish, or no discernible headroom (launch-bound, head unmoved by the last two attempts, the last three kernels each within one sigma of the launch floor clocked beside them)",
+  "constants.openers_per_region": "how many attempts a region's widening round holds at most, each an opener written against the scaffold from a different agent-generated direction; limited by the remaining attempt budget",
+  "delivery": "how a kernel installs at the region's scope, per workload: direct, graph (the scope compiled with the cut inserted) or replay",
+  "library_arm": "what the region's clocks ran the library as, per workload: plain ops, or one compiled graph where graph delivery compiles the scope",
+  "baseline.clocks_ms.compiled": "under library inference: the model with its outermost compilable scopes compiled and empty, the baseline unless the manifest asks for plain",
+  "final.delivery": "under a plain baseline: the untouched model against the installed scopes compiled with no kernel, and that against the patched model"
+ },
+ "written_at": "2026-09-20T00:40:14-0700",
+ "machine": {
+  "chip": "Apple M4",
+  "memory_bytes": 25769803776,
+  "os": "macOS-26.6.2-arm64-arm-64bit",
+  "python": "3.12.13",
+  "mlx": "0.32.2"
+ },
+ "env": {
+  "MLX_MAX_OPS_PER_BUFFER": null,
+  "MLX_MAX_MB_PER_BUFFER": null,
+  "MTL_SHADER_VALIDATION": null,
+  "MTL_SHADER_VALIDATION_REPORT_TO_STDERR": null,
+  "MTL_CAPTURE_ENABLED": null
+ },
+ "manifest": "<repo>/runs/metalbench/jobs/2026-09-19_21-23-09-675242/generated/standard/bias_gelu/manifest.yaml",
+ "constants": {
+  "min_win_ms": 0.03,
+  "min_win_share": 0.01,
+  "budget_per_region": 10,
+  "budget_total": 30,
+  "seed": 1296389185,
+  "openers_per_region": 4,
+  "clock_pairs": 32,
+  "price_pairs": 8,
+  "ship_pairs": 20,
+  "model_min_gain_pct": 0.0,
+  "model_confidence_sigma": 3.0,
+  "model_confirmation_comparisons": 1,
+  "final_benchmark": {
+   "steps": 10,
+   "pairs": 8,
+   "warmup_steps": 3
+  },
+  "numeric_policy": "exact_preserving_baseline_tolerance_changing",
+  "tolerances": [
+   0.001,
+   0.001
+  ],
+  "tolerance_defaults": {
+   "float32": [
+    1e-05,
+    1e-06
+   ],
+   "float16": [
+    0.01,
+    0.02
+   ],
+   "bfloat16": [
+    0.02,
+    0.04
+   ]
+  },
+  "duty_idle_factor": 3.0,
+  "gpu_evaluation_timeout_s": 5.0,
+  "single_group_element_limit": 1048576,
+  "single_group_scaffold_work_limit": 16777216,
+  "defaulted": [
+   "use_library_inference",
+   "final_benchmark.steps",
+   "final_benchmark.warmup_steps",
+   "seed"
+  ],
+  "use_library_inference": false,
+  "measurement": {
+   "kind": "forward",
+   "generated_tokens": null,
+   "baseline": "compiled"
+  },
+  "checkpoint_pins": []
+ },
+ "baseline": {
+  "requested": "compiled",
+  "choice": "compiled",
+  "compiled_available": true,
+  "reason": null,
+  "clocks_ms": {
+   "bias_gelu": {
+    "plain": 0.19557597927608286,
+    "compiled": 0.08407983187382587
+   }
+  }
+ },
+ "peaks": {
+  "bandwidth_gbps": 99.81827761733021,
+  "flops_gflops": {
+   "float32": 2834.506331054825,
+   "float16": 3368.0204839102425,
+   "bfloat16": 3367.748800319865
+  },
+  "launch_us": 7.401039056276204
+ },
+ "session": {
+  "status": "complete",
+  "stage": "checking final model timings",
+  "gpu_utilization_at_start_pct": 85.0,
+  "aa_floor_sigma_ms": 0.09790866088297874,
+  "aa_control": {
+   "passed": true,
+   "attempts": 1
+  },
+  "idled_s": 84.2,
+  "artifact": null,
+  "outcome": "no_improvement"
+ },
+ "step_ms": {
+  "bias_gelu": {
+   "before": 0.08407983187382587,
+   "steps_per_sample": 238,
+   "min_win_ms": 0.0008407983187382587,
+   "after": 0.07820513846348784,
+   "baseline_at_end": 0.07818811333409564,
+   "speedup": 0.9964342274547228,
+   "stability": 0.9764644110896896,
+   "win_confirmed": false,
+   "plain_at_end": 0.18423875332066492,
+   "speedup_vs_plain": 2.1307923547873457,
+   "plain_win_confirmed": true,
+   "plain_loss_confirmed": false
+  }
+ },
+ "regions": [
+  {
+   "fingerprint": "11f60c3b9c9ddc4b",
+   "ops": [
+    "array.__add__"
+   ],
+   "copies": 1,
+   "workloads": [
+    "bias_gelu"
+   ],
+   "p": {
+    "bias_gelu": 0.9256138136999531
+   },
+   "T_orig_ms": {
+    "bias_gelu": 0.08060153172609497
+   },
+   "T_rep_ms": {
+    "bias_gelu": 0.08060153172609497
+   },
+   "roofline_ms": 0.08728309751276736,
+   "bound": "memory",
+   "s_max": 0.9234494881933464,
+   "T_shipped_ms": null,
+   "s": null,
+   "head_ms": 0.08672058489488288,
+   "hypotheses": 10,
+   "timing_workload": null,
+   "delivery": {
+    "bias_gelu": "graph"
+   },
+   "library_arm": {
+    "bias_gelu": "compiled"
+   },
+   "outcomes": {
+    "correct_slower": 11
+   },
+   "close_rule": "the region's hypothesis budget is spent"
+  }
+ ],
+ "hypotheses": [
+  {
+   "id": "scaffold",
+   "region": "11f60c3b9c9ddc4b",
+   "kind": "scaffold",
+   "hypothesis": "the harness's starting kernel",
+   "assoc_tag": "preserving",
+   "parent": null,
+   "kernel": "r11f60c3b9c9ddc4b_scaffold",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.08854181204665582,
+   "library_ms": 0.08500768614386947,
+   "win_ms": -0.003537069002551761,
+   "sigma_ms": 0.0013081270681872005,
+   "floor_ms": 0.08638721754260618,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "bias_gelu",
+   "timing_case": "bias_gelu"
+  },
+  {
+   "id": "vec4_flat",
+   "region": "11f60c3b9c9ddc4b",
+   "kind": "float4 flat streaming",
+   "hypothesis": "one thread per 4 contiguous elements over a flat 1D grid, loading in0 and storing out0 as float4 and the bias as float4 (column index = flat index mod cols); fewer, wider memory transactions and a grid that spreads across all cores, unlike the scaffold's 128-thread row loop",
+   "assoc_tag": "preserving",
+   "parent": "r11f60c3b9c9ddc4b_scaffold",
+   "kernel": "r11f60c3b9c9ddc4b_vec4_flat",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.090394521614734,
+   "library_ms": 0.08572875163579569,
+   "win_ms": -0.0044599189715990445,
+   "sigma_ms": 0.0009339703843515021,
+   "floor_ms": 0.08630167248825364,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "bias_gelu",
+   "timing_case": "bias_gelu"
+  },
+  {
+   "id": "scalar_flat",
+   "region": "11f60c3b9c9ddc4b",
+   "kind": "scalar one-element-per-thread flat grid",
+   "hypothesis": "one thread per element on a flat 1D grid with 256-thread groups, no loop; tests whether the scaffold's per-row loop and small threadgroup count is the cost versus vector width",
+   "assoc_tag": "preserving",
+   "parent": "r11f60c3b9c9ddc4b_scaffold",
+   "kernel": "r11f60c3b9c9ddc4b_scalar_flat",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.0862215906663826,
+   "library_ms": 0.08517487563729059,
+   "win_ms": -0.00016969861462712982,
+   "sigma_ms": 0.001204267728275872,
+   "floor_ms": 0.08613251177876285,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "bias_gelu",
+   "timing_case": "bias_gelu"
+  },
+  {
+   "id": "rows_per_thread",
+   "region": "11f60c3b9c9ddc4b",
+   "kind": "bias reuse across rows",
+   "hypothesis": "each thread owns one float4 of columns and walks 8 rows, loading the bias once into registers and streaming 8 rows; reduces bias re-reads and increases per-thread memory-level parallelism via unrolled independent loads",
+   "assoc_tag": "preserving",
+   "parent": "r11f60c3b9c9ddc4b_scaffold",
+   "kernel": "r11f60c3b9c9ddc4b_rows_per_thread",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.09068836887166196,
+   "library_ms": 0.08653410894147978,
+   "win_ms": -0.004963182493834296,
+   "sigma_ms": 0.0008609465884049773,
+   "floor_ms": 0.08597354776700776,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "bias_gelu",
+   "timing_case": "bias_gelu"
+  },
+  {
+   "id": "tg_bias_cache",
+   "region": "11f60c3b9c9ddc4b",
+   "kind": "threadgroup-cached bias, row block",
+   "hypothesis": "a threadgroup of 256 threads handles a block of 16 rows; the 1024 bias values are staged once into threadgroup memory and each thread then streams float4 chunks of the block, so bias traffic comes from on-core memory rather than L1/L2",
+   "assoc_tag": "preserving",
+   "parent": "r11f60c3b9c9ddc4b_scaffold",
+   "kernel": "r11f60c3b9c9ddc4b_tg_bias_cache",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.08956798914501943,
+   "library_ms": 0.08441610872268496,
+   "win_ms": -0.0038402924518577963,
+   "sigma_ms": 0.0011172638108971908,
+   "floor_ms": 0.085910723300469,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "bias_gelu",
+   "timing_case": "bias_gelu"
+  },
+  {
+   "id": "grid2d_scalar",
+   "region": "11f60c3b9c9ddc4b",
+   "kind": "2D grid without modulo",
+   "hypothesis": "scalar_flat was the closest to the library; its only non-memory cost is an integer modulo per element. A 2D grid (x = column, y = row) removes the modulo and index math entirely, with 256-thread groups spanning a quarter of a row so bias reads stay coalesced; tests whether the small residual gap is ALU/index overhead rather than bandwidth",
+   "assoc_tag": "preserving",
+   "parent": "r11f60c3b9c9ddc4b_scalar_flat",
+   "kernel": "r11f60c3b9c9ddc4b_grid2d_scalar",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.08672058489488288,
+   "library_ms": 0.08615111476722853,
+   "win_ms": -0.0017119207375406037,
+   "sigma_ms": 0.0013964911999776442,
+   "floor_ms": 0.08556074159993865,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "bias_gelu",
+   "timing_case": "bias_gelu"
+  },
+  {
+   "id": "grid2d_vec4",
+   "region": "11f60c3b9c9ddc4b",
+   "kind": "2D grid float4, no modulo",
+   "hypothesis": "same 2D layout but each thread owns one float4 of a row (x = col/4, y = row); vec4_flat lost, possibly from the modulo plus narrower grid, so this separates vector width from index cost",
+   "assoc_tag": "preserving",
+   "parent": "r11f60c3b9c9ddc4b_grid2d_scalar",
+   "kernel": "r11f60c3b9c9ddc4b_grid2d_vec4",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.08921910673300523,
+   "library_ms": 0.08478113225216724,
+   "win_ms": -0.003141630672458137,
+   "sigma_ms": 0.0009540115327844003,
+   "floor_ms": 0.08599485392385925,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "bias_gelu",
+   "timing_case": "bias_gelu"
+  },
+  {
+   "id": "scalar_1024tg",
+   "region": "11f60c3b9c9ddc4b",
+   "kind": "wide threadgroups",
+   "hypothesis": "flat scalar grid with 1024-thread groups (one row per group), computing the column as the thread index in threadgroup; fewer threadgroups per core may change scheduling and bias L1 reuse",
+   "assoc_tag": "preserving",
+   "parent": "r11f60c3b9c9ddc4b_grid2d_scalar",
+   "kernel": "r11f60c3b9c9ddc4b_scalar_1024tg",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.08675576342890659,
+   "library_ms": 0.08434288214299489,
+   "win_ms": -0.0010335378729822986,
+   "sigma_ms": 0.0009839189373440328,
+   "floor_ms": 0.08542984693177101,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "bias_gelu",
+   "timing_case": "bias_gelu"
+  },
+  {
+   "id": "vec2_flat",
+   "region": "11f60c3b9c9ddc4b",
+   "kind": "float2 flat streaming",
+   "hypothesis": "float2 loads/stores over a flat grid sit between scalar and float4 in occupancy versus transaction width; tests whether the sweet spot is 8-byte accesses",
+   "assoc_tag": "preserving",
+   "parent": "r11f60c3b9c9ddc4b_grid2d_scalar",
+   "kernel": "r11f60c3b9c9ddc4b_vec2_flat",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.08812068965575048,
+   "library_ms": 0.08373972799243598,
+   "win_ms": -0.003994395153532775,
+   "sigma_ms": 0.0011761458491474773,
+   "floor_ms": 0.08553462765372262,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "bias_gelu",
+   "timing_case": "bias_gelu"
+  },
+  {
+   "id": "scalar_4rows_ilp",
+   "region": "11f60c3b9c9ddc4b",
+   "kind": "scalar column thread walking 4 rows with loads hoisted",
+   "hypothesis": "keeps the scalar access pattern that measured closest to the library (grid2d_scalar) but gives each thread 4 rows of one column: the bias is read once and the four in0 loads are issued before any store, raising per-thread memory-level parallelism without float4 width; differs from rows_per_thread (which used float4 and 8 rows, a 32x narrower grid) by narrowing the grid only 4x while keeping 4-byte coalesced transactions",
+   "assoc_tag": "preserving",
+   "parent": "r11f60c3b9c9ddc4b_grid2d_scalar",
+   "kernel": "r11f60c3b9c9ddc4b_scalar_4rows_ilp",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.08831356578153035,
+   "library_ms": 0.08358835178107893,
+   "win_ms": -0.0036635510895374063,
+   "sigma_ms": 0.001005906567694528,
+   "floor_ms": 0.08362971533456967,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "bias_gelu",
+   "timing_case": "bias_gelu"
+  },
+  {
+   "id": "scalar_tg64",
+   "region": "11f60c3b9c9ddc4b",
+   "kind": "small threadgroups",
+   "hypothesis": "grid2d_scalar with 64-thread groups instead of 256: 4x more threadgroups spread across the 10 cores may fill the memory pipeline more evenly at this size; tests scheduling granularity rather than access width",
+   "assoc_tag": "preserving",
+   "parent": "r11f60c3b9c9ddc4b_grid2d_scalar",
+   "kernel": "r11f60c3b9c9ddc4b_scalar_tg64",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.08765966266837913,
+   "library_ms": 0.08465505195728065,
+   "win_ms": -0.0010071810396473785,
+   "sigma_ms": 0.0008687120592644728,
+   "floor_ms": 0.08484674433658393,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "bias_gelu",
+   "timing_case": "bias_gelu"
+  }
+ ],
+ "accepted": [],
+ "pricing": [
+  {
+   "fingerprint": "11f60c3b9c9ddc4b",
+   "ops": [
+    "array.__add__"
+   ],
+   "copies": 1,
+   "p": {
+    "bias_gelu": 0.9256138136999531
+   },
+   "region_ms": {
+    "bias_gelu": 0.08060153172609497
+   },
+   "ranking_basis": "estimated_removable_share",
+   "price_stability": {
+    "bias_gelu": 0.9717816133990406
+   },
+   "estimate_basis": "boundary_probe_and_known_compute",
+   "compute_model_complete": true,
+   "headroom_is_estimate": true,
+   "estimated_s_max": {
+    "bias_gelu": 0.9234494881933464
+   },
+   "measured_compute_gflops": {
+    "bias_gelu": {
+     "float32": 2836.902714332774
+    }
+   },
+   "potential_model_latency_reduction_pct": {
+    "bias_gelu": 0.0
+   },
+   "status": "eligible",
+   "reason": null
+  }
+ ],
+ "stranded": [],
+ "coverage": {
+  "discovery": {
+   "legal_regions": 1,
+   "supported_regions": 1,
+   "unsupported_regions": 0,
+   "never_evaluated_ops": 0
+  },
+  "step_floor": {
+   "bias_gelu": {
+    "bytes_mb": 8.392704,
+    "gflop": 0.002097152,
+    "launches": 2,
+    "t_mem_ms": 0.08407983187382587,
+    "t_compute_ms": 0.0007398649906065202,
+    "floor_ms": 0.08407983187382587,
+    "step_ms": 0.08407983187382587,
+    "room": 0.0
+   }
+  },
+  "selection": {
+   "candidates": 1,
+   "waves": [
+    {
+     "wave": 1,
+     "selected": 1,
+     "deferred": 0,
+     "conflicts": {}
+    }
+   ],
+   "unsearched": 0
+  },
+  "measured_atomic_share_this_wave": {
+   "bias_gelu": 0.9256138136999531
+  },
+  "step_ms": {
+   "bias_gelu": 0.08407983187382587
+  }
+ },
+ "final": {
+  "passed": true,
+  "reason": "no replacements installed"
+ }
+}

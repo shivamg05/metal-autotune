@@ -1,0 +1,922 @@
+{
+ "legend": {
+  "target_workload": "the workload nominated before timing; its whole-model win must repeat before installation",
+  "timing_case": "the captured input case behind this hypothesis's local kernel timings",
+  "timing_workload": "the workload behind a region's recorded shipped-kernel speedup",
+  "model_ratios": "per-workload products of incremental model ratios; diagnostic estimates, not final measurements",
+  "p": "share of one step this region costs, all copies together, per workload",
+  "T_orig_ms": "library time for all copies, per workload, from pricing",
+  "T_rep_ms": "library time for one copy, per workload, from pricing",
+  "roofline_ms": "estimated ideal cost of one copy from boundary traffic and arithmetic",
+  "s_max": "optimistic headroom estimate: library time divided by estimated ideal cost",
+  "bound": "estimated limiting resource: memory, known compute, or launch; custom arithmetic may be unknown",
+  "s": "speedup shipped: the library's time over the shipped kernel's, both from the kernel's own ship clock",
+  "region_ms": "the kernel's time for one pass of one copy, from the ship clock",
+  "library_ms": "the library's time for the same pass, measured beside it",
+  "win_ms": "library_ms minus region_ms; positive means the kernel is faster",
+  "sigma_ms": "uncertainty of win_ms; a ship needs a win past three of these",
+  "stranded": "regions dropped before the search, grouped by reason",
+  "steps_per_sample": "dependent model steps in one timed sample of the step clock; more than one when a step is too short to bring the GPU clock up on its own",
+  "min_win_ms": "the least a region win had to save per step on this workload: 1% of the step, at most constants.min_win_ms; the three-sigma rule decides the rest",
+  "speedup_vs_plain": "under the compiled baseline: the finished model against plain eager MLX, paired in one window at the end of the job; compile's own gain is included, since the model runs compiled",
+  "speedup_vs_compiled": "under the plain baseline: the finished model (eager plus its kernels) against the untouched model under mx.compile, measured the same way; under 1 means compile alone is faster",
+  "plain_win_confirmed": "whether that comparison resolved a win past three sigma (compiled_win_confirmed likewise)",
+  "plain_loss_confirmed": "whether it resolved a loss (compiled_loss_confirmed likewise)",
+  "measured_compute_gflops": "the plain-matmul rate per dtype clocked in the region's own pricing window; the compute term of its estimated limit divides the region's flops by it",
+  "close_rule": "why a region's search ended: its budget or the job's is spent, the operator asked to finish, or no discernible headroom (launch-bound, head unmoved by the last two attempts, the last three kernels each within one sigma of the launch floor clocked beside them)",
+  "constants.openers_per_region": "how many attempts a region's widening round holds at most, each an opener written against the scaffold from a different agent-generated direction; limited by the remaining attempt budget",
+  "delivery": "how a kernel installs at the region's scope, per workload: direct, graph (the scope compiled with the cut inserted) or replay",
+  "library_arm": "what the region's clocks ran the library as, per workload: plain ops, or one compiled graph where graph delivery compiles the scope",
+  "baseline.clocks_ms.compiled": "under library inference: the model with its outermost compilable scopes compiled and empty, the baseline unless the manifest asks for plain",
+  "final.delivery": "under a plain baseline: the untouched model against the installed scopes compiled with no kernel, and that against the patched model"
+ },
+ "written_at": "2026-09-19T23:47:23-0700",
+ "machine": {
+  "chip": "Apple M4",
+  "memory_bytes": 25769803776,
+  "os": "macOS-26.6.2-arm64-arm-64bit",
+  "python": "3.12.13",
+  "mlx": "0.32.2"
+ },
+ "env": {
+  "MLX_MAX_OPS_PER_BUFFER": null,
+  "MLX_MAX_MB_PER_BUFFER": null,
+  "MTL_SHADER_VALIDATION": null,
+  "MTL_SHADER_VALIDATION_REPORT_TO_STDERR": null,
+  "MTL_CAPTURE_ENABLED": null
+ },
+ "manifest": "<repo>/runs/metalbench/jobs/2026-09-19_21-23-09-675242/generated/standard/group_norm/manifest.yaml",
+ "constants": {
+  "min_win_ms": 0.03,
+  "min_win_share": 0.01,
+  "budget_per_region": 10,
+  "budget_total": 30,
+  "seed": 1296389185,
+  "openers_per_region": 4,
+  "clock_pairs": 32,
+  "price_pairs": 8,
+  "ship_pairs": 20,
+  "model_min_gain_pct": 0.0,
+  "model_confidence_sigma": 3.0,
+  "model_confirmation_comparisons": 1,
+  "final_benchmark": {
+   "steps": 10,
+   "pairs": 8,
+   "warmup_steps": 3
+  },
+  "numeric_policy": "exact_preserving_baseline_tolerance_changing",
+  "tolerances": [
+   0.001,
+   0.001
+  ],
+  "tolerance_defaults": {
+   "float32": [
+    1e-05,
+    1e-06
+   ],
+   "float16": [
+    0.01,
+    0.02
+   ],
+   "bfloat16": [
+    0.02,
+    0.04
+   ]
+  },
+  "duty_idle_factor": 3.0,
+  "gpu_evaluation_timeout_s": 5.0,
+  "single_group_element_limit": 1048576,
+  "single_group_scaffold_work_limit": 16777216,
+  "defaulted": [
+   "use_library_inference",
+   "final_benchmark.steps",
+   "final_benchmark.warmup_steps",
+   "seed"
+  ],
+  "use_library_inference": false,
+  "measurement": {
+   "kind": "forward",
+   "generated_tokens": null,
+   "baseline": "compiled"
+  },
+  "checkpoint_pins": []
+ },
+ "baseline": {
+  "requested": "compiled",
+  "choice": "compiled",
+  "compiled_available": true,
+  "reason": null,
+  "clocks_ms": {
+   "group_norm": {
+    "plain": 0.22128364284856056,
+    "compiled": 0.17647629330327752
+   }
+  }
+ },
+ "peaks": {
+  "bandwidth_gbps": 93.80730221645393,
+  "flops_gflops": {
+   "float32": 2839.5158008604894,
+   "float16": 3359.506589178311,
+   "bfloat16": 3359.681113394417
+  },
+  "launch_us": 8.503742265020264
+ },
+ "session": {
+  "status": "complete",
+  "stage": "exporting and checking artifact",
+  "gpu_utilization_at_start_pct": 83.0,
+  "aa_floor_sigma_ms": 0.07083544596234759,
+  "aa_control": {
+   "passed": true,
+   "attempts": 1
+  },
+  "idled_s": 148.3,
+  "artifact": "<repo>/runs/metalbench/jobs/2026-09-19_21-23-09-675242/standard-group_norm/artifact"
+ },
+ "step_ms": {
+  "group_norm": {
+   "before": 0.17647629330327752,
+   "steps_per_sample": 109,
+   "min_win_ms": 0.0017647629330327752,
+   "after": 0.0707300272001244,
+   "baseline_at_end": 0.16493453679461068,
+   "speedup": 2.3440053940866803,
+   "stability": 0.9258751339063364,
+   "win_confirmed": true,
+   "sequence_win_confirmed": true,
+   "sequence_speedup": 2.354063961770813,
+   "plain_at_end": 0.20949608019399327,
+   "speedup_vs_plain": 3.1180630447151763,
+   "plain_win_confirmed": true,
+   "plain_loss_confirmed": false
+  }
+ },
+ "regions": [
+  {
+   "fingerprint": "842d9a6fe74166cc",
+   "ops": [
+    "array.reshape",
+    "mx.mean",
+    "array.__sub__",
+    "array.__pow__",
+    "mx.mean",
+    "array.__sub__",
+    "array.__add__",
+    "mx.rsqrt",
+    "array.__mul__"
+   ],
+   "copies": 1,
+   "workloads": [
+    "group_norm"
+   ],
+   "p": {
+    "group_norm": 0.7097921764366031
+   },
+   "T_orig_ms": {
+    "group_norm": 0.11950789772966815
+   },
+   "T_rep_ms": {
+    "group_norm": 0.11950789772966815
+   },
+   "roofline_ms": 0.039752472493513116,
+   "bound": "memory",
+   "s_max": 3.0063009979862176,
+   "T_shipped_ms": {
+    "group_norm": 0.03549580932738855
+   },
+   "s": 3.401177749230557,
+   "head_ms": 0.035278790164738894,
+   "hypotheses": 10,
+   "timing_workload": "group_norm",
+   "delivery": {
+    "group_norm": "replay"
+   },
+   "library_arm": {
+    "group_norm": "compiled"
+   },
+   "outcomes": {
+    "correct_slower": 9,
+    "shipped": 1,
+    "failed": 1
+   },
+   "close_rule": "the region's hypothesis budget is spent"
+  }
+ ],
+ "hypotheses": [
+  {
+   "id": "scaffold",
+   "region": "842d9a6fe74166cc",
+   "kind": "scaffold",
+   "hypothesis": "the harness's starting kernel",
+   "assoc_tag": "changing",
+   "parent": null,
+   "kernel": "r842d9a6fe74166cc_scaffold",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 3.387197914842958,
+   "library_ms": 0.13035760271919833,
+   "win_ms": -3.256827855684324,
+   "sigma_ms": 0.0027516854945640427,
+   "floor_ms": 0.04297326026081118,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "group_norm",
+   "timing_case": "group_norm"
+  },
+  {
+   "id": "reg_resident",
+   "region": "842d9a6fe74166cc",
+   "kind": "register-resident single pass per group",
+   "hypothesis": "one 1024-thread threadgroup per group (64 groups of 8192 floats); each thread loads two float4 into registers, the mean is a simd_sum plus a 32-entry threadgroup reduce, deviations stay in registers for the variance reduce, and the normalized values are written straight from registers. Input is read from device memory exactly once and output written once, so traffic is the 4 MB minimum; two-level reductions replace the scaffold's serial 8192-element loops.",
+   "assoc_tag": "changing",
+   "parent": "r842d9a6fe74166cc_scaffold",
+   "kernel": "r842d9a6fe74166cc_reg_resident",
+   "verdict": "shipped",
+   "failed_gate": null,
+   "region_ms": 0.03549580932738855,
+   "library_ms": 0.12072755687524439,
+   "win_ms": 0.08374312652524599,
+   "sigma_ms": 0.0016204479285514522,
+   "floor_ms": 0.035927834987794005,
+   "summary": "shipped: whole-model correctness and independent timing confirmation passed",
+   "target_workload": "group_norm",
+   "timing_case": "group_norm"
+  },
+  {
+   "id": "split_chunks_two_stage",
+   "region": "842d9a6fe74166cc",
+   "kind": "chunked partial stats then combine-and-apply",
+   "hypothesis": "stage 1 launches 8 threadgroups per group (512 total, so every core has many), each computing its chunk's mean and sum of squared deviations from that chunk mean into a small scratch; stage 2 is a full-grid float4 elementwise pass where each thread combines the 8 chunk stats with the parallel-variance formula and normalizes. Differs from reg_resident by spreading each group over many threadgroups for higher occupancy at the cost of reading the input twice (second read from cache).",
+   "assoc_tag": "changing",
+   "parent": "r842d9a6fe74166cc_scaffold",
+   "kernel": "r842d9a6fe74166cc_split_chunks_two_stage",
+   "verdict": "failed",
+   "failed_gate": "poison",
+   "region_ms": null,
+   "library_ms": null,
+   "win_ms": null,
+   "sigma_ms": null,
+   "floor_ms": null,
+   "summary": "failed at poison: ",
+   "target_workload": "group_norm",
+   "timing_case": "group_norm"
+  },
+  {
+   "id": "split_chunks_fix",
+   "region": "842d9a6fe74166cc",
+   "kind": "fix",
+   "hypothesis": "stage 0 launched 8x too many threadgroups (grid used in0.shape[0]*in0.shape[1]*8*256 for 512 chunks of 1024 floats) and sized its scratch 4096x2, so threadgroups past chunk 511 read past the input; launch 512 threadgroups (in0.shape[0]*in0.shape[1]*256 threads) and size the scratch 512x2. Everything else unchanged.",
+   "assoc_tag": "changing",
+   "parent": "r842d9a6fe74166cc_split_chunks_two_stage",
+   "kernel": "r842d9a6fe74166cc_split_chunks_fix",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.05077083440720225,
+   "library_ms": 0.11711560269443155,
+   "win_ms": 0.0645443857217248,
+   "sigma_ms": 0.0012731504052274595,
+   "floor_ms": 0.032242410310098654,
+   "summary": "correct_slower: slower than the installed kernel in a fresh region comparison; model timing skipped",
+   "target_workload": "group_norm",
+   "timing_case": "group_norm"
+  },
+  {
+   "id": "tg_two_pass_cache",
+   "region": "842d9a6fe74166cc",
+   "kind": "threadgroup two-pass over cached rows",
+   "hypothesis": "one 256-thread threadgroup per group loops over the 8192 elements twice through float4 loads (sum, then squared deviations, both simd-reduced) and a third time to write; relies on the 32 KB group staying in cache. Tests whether fewer, smaller threadgroups with more work per thread beat the 1024-thread register-resident layout.",
+   "assoc_tag": "changing",
+   "parent": "r842d9a6fe74166cc_scaffold",
+   "kernel": "r842d9a6fe74166cc_tg_two_pass_cache",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.03931792558763515,
+   "library_ms": 0.11734194016422739,
+   "win_ms": 0.07939901879280498,
+   "sigma_ms": 0.0011953877770724207,
+   "floor_ms": 0.03389764287555205,
+   "summary": "correct_slower: whole-model speedup unresolved",
+   "target_workload": "group_norm",
+   "timing_case": "group_norm"
+  },
+  {
+   "id": "stats_then_apply",
+   "region": "842d9a6fe74166cc",
+   "kind": "stats kernel plus separate full-grid apply",
+   "hypothesis": "stage 1: one threadgroup per group computes mean and rstd (register-resident, like reg_resident) into a 64x2 scratch; stage 2: 131072 threads each normalize one float4 across the whole tensor. Isolates the write pass to a fully occupied grid, testing whether the reg_resident design's 64-threadgroup write phase is what limits bandwidth.",
+   "assoc_tag": "changing",
+   "parent": "r842d9a6fe74166cc_scaffold",
+   "kernel": "r842d9a6fe74166cc_stats_then_apply",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.04925845348792575,
+   "library_ms": 0.11855270281332628,
+   "win_ms": 0.06833580947287454,
+   "sigma_ms": 0.001229159578714055,
+   "floor_ms": 0.03217842077172481,
+   "summary": "correct_slower: slower than the installed kernel in a fresh region comparison; model timing skipped",
+   "target_workload": "group_norm",
+   "timing_case": "group_norm"
+  },
+  {
+   "id": "fused_moments",
+   "region": "842d9a6fe74166cc",
+   "kind": "single reduction of sum and sum of squares",
+   "hypothesis": "keep reg_resident's layout (64 threadgroups of 1024 threads, two float4 per thread in registers) but reduce sum and sum of squares together in one simd_sum pair and one threadgroup round, removing the second barrier pair and the mean broadcast before the variance pass; variance = E[x^2] - mean^2 in float32, within tolerance for normally scaled activations. Expected effect: fewer barriers on the critical path of each threadgroup, shaving latency when only ~6 threadgroups per core are in flight.",
+   "assoc_tag": "changing",
+   "parent": "r842d9a6fe74166cc_reg_resident",
+   "kernel": "r842d9a6fe74166cc_fused_moments",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.03910347246952976,
+   "library_ms": 0.11914687226332413,
+   "win_ms": 0.07983515388332307,
+   "sigma_ms": 0.0016266892629003041,
+   "floor_ms": 0.031429948285222054,
+   "summary": "correct_slower: whole-model speedup unresolved",
+   "target_workload": "group_norm",
+   "timing_case": "group_norm"
+  },
+  {
+   "id": "half_threads_more_ilp",
+   "region": "842d9a6fe74166cc",
+   "kind": "512 threads holding four float4 each",
+   "hypothesis": "same single-dispatch design but 512 threads per group each holding four float4; halves the simdgroup count in the reductions (16 instead of 32) and issues more independent loads per thread for latency hiding, testing whether the 1024-thread group is limited by reduction/barrier width rather than load issue.",
+   "assoc_tag": "changing",
+   "parent": "r842d9a6fe74166cc_reg_resident",
+   "kernel": "r842d9a6fe74166cc_half_threads_more_ilp",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.03967245284002274,
+   "library_ms": 0.13016897816366207,
+   "win_ms": 0.0901449115998629,
+   "sigma_ms": 0.004852118155956769,
+   "floor_ms": 0.03382013948996448,
+   "summary": "correct_slower: whole-model speedup unresolved",
+   "target_workload": "group_norm",
+   "timing_case": "group_norm"
+  },
+  {
+   "id": "two_groups_per_tg",
+   "region": "842d9a6fe74166cc",
+   "kind": "one threadgroup normalizes two groups",
+   "hypothesis": "32 threadgroups of 1024 threads, each handling two consecutive groups with four float4 per thread and two independent reduction chains interleaved; halves dispatch count per core while doubling in-flight bytes per threadgroup, testing whether fewer, fatter threadgroups pipeline loads better.",
+   "assoc_tag": "changing",
+   "parent": "r842d9a6fe74166cc_reg_resident",
+   "kernel": "r842d9a6fe74166cc_two_groups_per_tg",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.03677989108204517,
+   "library_ms": 0.12154019508591812,
+   "win_ms": 0.08199150539914389,
+   "sigma_ms": 0.0017058987680869417,
+   "floor_ms": 0.0331553446417472,
+   "summary": "correct_slower: whole-model speedup unresolved",
+   "target_workload": "group_norm",
+   "timing_case": "group_norm"
+  },
+  {
+   "id": "adjacent_pairs",
+   "region": "842d9a6fe74166cc",
+   "kind": "each thread owns 32 contiguous bytes",
+   "hypothesis": "same 64x1024 single-dispatch register-resident design as reg_resident, but each thread loads float4 indices 2*lid and 2*lid+1 (32 contiguous bytes per thread) instead of lid and lid+1024; the two loads per thread hit the same cache line, halving the distinct lines each load instruction touches and testing whether the access pattern, not thread count or barriers, sets the small gap to the streaming floor.",
+   "assoc_tag": "changing",
+   "parent": "r842d9a6fe74166cc_reg_resident",
+   "kernel": "r842d9a6fe74166cc_adjacent_pairs",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.03668113009357625,
+   "library_ms": 0.11795196486906387,
+   "win_ms": 0.08004158735275269,
+   "sigma_ms": 0.002003167920360166,
+   "floor_ms": 0.03412370868258117,
+   "summary": "correct_slower: whole-model speedup unresolved",
+   "target_workload": "group_norm",
+   "timing_case": "group_norm"
+  },
+  {
+   "id": "quarter_threads_eight_vec",
+   "region": "842d9a6fe74166cc",
+   "kind": "256 threads holding eight float4 each",
+   "hypothesis": "64 threadgroups of 256 threads, each thread holding eight float4 (32 floats) in registers with eight independent loads in flight and only 8 simdgroups in the threadgroup reduce; tests whether a much smaller threadgroup with deep per-thread ILP schedules across the 10 cores better than 1024-thread groups.",
+   "assoc_tag": "changing",
+   "parent": "r842d9a6fe74166cc_reg_resident",
+   "kernel": "r842d9a6fe74166cc_quarter_threads_eight_vec",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.035278790164738894,
+   "library_ms": 0.12014079613671187,
+   "win_ms": 0.08562522294420388,
+   "sigma_ms": 0.0012378110370574456,
+   "floor_ms": 0.032580760245021156,
+   "summary": "correct_slower: whole-model speedup unresolved",
+   "target_workload": "group_norm",
+   "timing_case": "group_norm"
+  }
+ ],
+ "accepted": [
+  {
+   "fingerprint": "842d9a6fe74166cc",
+   "kernel": "r842d9a6fe74166cc_reg_resident",
+   "assoc_tag": "changing",
+   "target_workload": "group_norm",
+   "model_ratios": {
+    "group_norm": 0.41602276140410266
+   },
+   "model_ratio": 0.41602276140410266,
+   "model_ratio_kind": "product_of_incremental_measurements",
+   "timing_baseline": "original_model",
+   "incumbent_compiled_scopes": [],
+   "model_latency_reduction_pct": {
+    "group_norm": 58.39772385958973
+   },
+   "checks": [
+    {
+     "name": "group_norm",
+     "floor_max_abs": 0.0,
+     "max_abs": 4.76837158203125e-07,
+     "allowance": 0.005795990943908692,
+     "cosine": 1.0,
+     "passed": true,
+     "reason": "",
+     "floor_cosine": 1.0,
+     "cosine_allowance": 0.0,
+     "rule": "baseline_tolerance",
+     "failure": null
+    }
+   ],
+   "timings": {
+    "group_norm": {
+     "baseline_ms": [
+      0.1678505368795622,
+      0.16345738042402297,
+      0.16948393996753686,
+      0.1588050460810303,
+      0.15459231201371332,
+      0.15880065113562375,
+      0.15959575763741218,
+      0.16130199025752484,
+      0.16267908685797944,
+      0.17202656434148278
+     ],
+     "candidate_ms": [
+      0.07314544967845629,
+      0.07748451840064122,
+      0.06976338058556303,
+      0.06984785752405132,
+      0.06479739880086768,
+      0.06556804580272202,
+      0.06519151379465374,
+      0.06406689425844939,
+      0.06851032077240835,
+      0.06654453645417586
+     ],
+     "deltas_ms": [
+      0.0947050872011059,
+      0.08597286202338175,
+      0.09972055938197383,
+      0.08895718855697898,
+      0.08979491321284563,
+      0.09323260533290173,
+      0.09440424384275845,
+      0.09723509599907545,
+      0.09416876608557109,
+      0.10548202788730691
+     ],
+     "median_baseline_ms": 0.16199053855775214,
+     "median_delta_ms": 0.09428650496416477,
+     "spread_ms": 0.005602616891969871,
+     "sigma_ms": 0.0022204753994726563,
+     "n": 10,
+     "ratios": [
+      0.4357772756541157,
+      0.4740349943186382,
+      0.41162236728108625,
+      0.43983399298540826,
+      0.41915020195260255,
+      0.4128953208556028,
+      0.40847898941501465,
+      0.39718601212647237,
+      0.42113784934272824,
+      0.38682709678536087
+     ],
+     "median_ratio": 0.41602276140410266,
+     "stability": 0.9303698534354755
+    }
+   },
+   "nomination_timings": {
+    "group_norm": {
+     "baseline_ms": [
+      0.17442813286250203,
+      0.17200229334892758,
+      0.16866016485771046,
+      0.16670966992974964,
+      0.16714965629844217,
+      0.16423107825493047,
+      0.1684934997700428,
+      0.16478153688986913,
+      0.16418940797789927,
+      0.16495163729756113
+     ],
+     "candidate_ms": [
+      0.06779759199520863,
+      0.0682119637890078,
+      0.07471425668122844,
+      0.07521865169577506,
+      0.07211983977142003,
+      0.06413512858946663,
+      0.07340920621255806,
+      0.07849694560751866,
+      0.07398165612900202,
+      0.07156918782296531
+     ],
+     "deltas_ms": [
+      0.1066305408672934,
+      0.10379032955991978,
+      0.09394590817648202,
+      0.09149101823397458,
+      0.09502981652702214,
+      0.10009594966546384,
+      0.09508429355748474,
+      0.08628459128235047,
+      0.09020775184889725,
+      0.09338244947459581
+     ],
+     "median_baseline_ms": 0.1669296631140959,
+     "median_delta_ms": 0.09448786235175208,
+     "spread_ms": 0.006235642066936462,
+     "sigma_ms": 0.002471361165064595,
+     "n": 10,
+     "ratios": [
+      0.38868496086380755,
+      0.3965758971052295,
+      0.4429869776556951,
+      0.4511954929037512,
+      0.4314686692663704,
+      0.3905176125672864,
+      0.4356797521135578,
+      0.47636978686502773,
+      0.4505872640637107,
+      0.4338798268116584
+     ],
+     "median_ratio": 0.4347797894626081,
+     "stability": 0.8864774970804298
+    }
+   },
+   "confirmation": "fresh_fixed_size_comparison",
+   "checkpoint": "<repo>/runs/metalbench/jobs/2026-09-19_21-23-09-675242/standard-group_norm/checkpoints/accepted-0001"
+  }
+ ],
+ "pricing": [
+  {
+   "fingerprint": "842d9a6fe74166cc",
+   "ops": [
+    "array.reshape",
+    "mx.mean",
+    "array.__sub__",
+    "array.__pow__",
+    "mx.mean",
+    "array.__sub__",
+    "array.__add__",
+    "mx.rsqrt",
+    "array.__mul__"
+   ],
+   "copies": 1,
+   "p": {
+    "group_norm": 0.7097921764366031
+   },
+   "region_ms": {
+    "group_norm": 0.11950789772966815
+   },
+   "ranking_basis": "estimated_removable_share",
+   "price_stability": {
+    "group_norm": 0.9648050205375602
+   },
+   "estimate_basis": "boundary_probe_and_known_compute",
+   "compute_model_complete": true,
+   "headroom_is_estimate": true,
+   "estimated_s_max": {
+    "group_norm": 3.0063009979862176
+   },
+   "measured_compute_gflops": {
+    "group_norm": {
+     "float32": 2843.4579160392313
+    }
+   },
+   "potential_model_latency_reduction_pct": {
+    "group_norm": 47.36906759840336
+   },
+   "status": "eligible",
+   "reason": null
+  }
+ ],
+ "stranded": [],
+ "coverage": {
+  "discovery": {
+   "legal_regions": 14,
+   "supported_regions": 14,
+   "unsupported_regions": 0,
+   "never_evaluated_ops": 0
+  },
+  "step_floor": {
+   "group_norm": {
+    "bytes_mb": 4.194304,
+    "gflop": 0.003145856,
+    "launches": 8,
+    "t_mem_ms": 0.0447119136879337,
+    "t_compute_ms": 0.0011078846608448796,
+    "floor_ms": 0.0447119136879337,
+    "step_ms": 0.17647629330327752,
+    "room": 0.7466406798838667
+   }
+  },
+  "selection": {
+   "candidates": 14,
+   "waves": [
+    {
+     "wave": 1,
+     "selected": 1,
+     "deferred": 13,
+     "conflicts": {
+      "a9a7de857e737ed2": [
+       "842d9a6fe74166cc"
+      ],
+      "f57393e2daf8fde1": [
+       "842d9a6fe74166cc"
+      ],
+      "0e687cab59687999": [
+       "842d9a6fe74166cc"
+      ],
+      "c615f72d0cc60cbe": [
+       "842d9a6fe74166cc"
+      ],
+      "50d55e039faf66f6": [
+       "842d9a6fe74166cc"
+      ],
+      "a0eab93702404827": [
+       "842d9a6fe74166cc"
+      ],
+      "da9e121eeebfcf1d": [
+       "842d9a6fe74166cc"
+      ],
+      "12b610bd503f934b": [
+       "842d9a6fe74166cc"
+      ],
+      "cbee5fe10ee65bc7": [
+       "842d9a6fe74166cc"
+      ],
+      "e08eb74255c66721": [
+       "842d9a6fe74166cc"
+      ],
+      "73af81fe9eff7305": [
+       "842d9a6fe74166cc"
+      ],
+      "81b28b099a6e0e49": [
+       "842d9a6fe74166cc"
+      ],
+      "97e93986aa90e872": [
+       "842d9a6fe74166cc"
+      ]
+     }
+    }
+   ],
+   "unsearched": 0
+  },
+  "measured_atomic_share_this_wave": {
+   "group_norm": 0
+  },
+  "step_ms": {
+   "group_norm": 0.17647629330327752
+  }
+ },
+ "final": {
+  "passed": true,
+  "veto_passed": true,
+  "paired_win_confirmed": true,
+  "timings": {
+   "group_norm": {
+    "baseline_ms": [
+     0.1558866560108823,
+     0.16832549537215896,
+     0.16569992668345707,
+     0.16947266530382252,
+     0.16857339485779133,
+     0.16021827094837887,
+     0.16079721075200706,
+     0.16835264257078458,
+     0.16416914690576426,
+     0.16113474736536998
+    ],
+    "candidate_ms": [
+     0.06676338123875336,
+     0.07638780756879154,
+     0.07551280224114792,
+     0.07685933074136392,
+     0.07060951811748498,
+     0.06723222952899993,
+     0.06833218824152552,
+     0.07085053628276383,
+     0.06560684414580464,
+     0.07247075720459496
+    ],
+    "deltas_ms": [
+     0.08912327477212895,
+     0.09193768780336742,
+     0.09018712444230914,
+     0.0926133345624586,
+     0.09796387674030635,
+     0.09298604141937894,
+     0.09246502251048154,
+     0.09750210628802075,
+     0.09856230275995961,
+     0.08866399016077502
+    ],
+    "median_baseline_ms": 0.16493453679461068,
+    "median_delta_ms": 0.09253917853647006,
+    "spread_ms": 0.0036324616738134283,
+    "sigma_ms": 0.0014396472116075863,
+    "n": 10,
+    "ratios": [
+     0.4282815665382717,
+     0.4538100862255124,
+     0.45572019102581096,
+     0.4535205167368683,
+     0.41886513691588895,
+     0.4196289794605364,
+     0.4249587907772374,
+     0.4208460004004655,
+     0.399629561232136,
+     0.4497525107993554
+    ],
+    "median_ratio": 0.4266201786577546,
+    "stability": 0.9258751339063364
+   }
+  },
+  "checks": [
+   {
+    "name": "group_norm",
+    "floor_max_abs": 0.0,
+    "max_abs": 4.76837158203125e-07,
+    "allowance": 0.005795990943908692,
+    "cosine": 1.0,
+    "passed": true,
+    "reason": "",
+    "floor_cosine": 1.0,
+    "cosine_allowance": 0.0,
+    "rule": "baseline_tolerance",
+    "failure": null
+   }
+  ],
+  "delivery": {
+   "compiled_scopes": [],
+   "timings": {}
+  },
+  "sequences": {
+   "group_norm": {
+    "protocol": "whole_sequences_balanced_ab_ba",
+    "warmup_steps": 12,
+    "pairs": 8,
+    "observations": [
+     {
+      "pair": 0,
+      "arm": "baseline",
+      "elapsed_ms": 18.529833061620593
+     },
+     {
+      "pair": 0,
+      "arm": "candidate",
+      "elapsed_ms": 6.761833094060421
+     },
+     {
+      "pair": 1,
+      "arm": "candidate",
+      "elapsed_ms": 8.293542079627514
+     },
+     {
+      "pair": 1,
+      "arm": "baseline",
+      "elapsed_ms": 17.67395797651261
+     },
+     {
+      "pair": 2,
+      "arm": "baseline",
+      "elapsed_ms": 18.247124971821904
+     },
+     {
+      "pair": 2,
+      "arm": "candidate",
+      "elapsed_ms": 7.242750027216971
+     },
+     {
+      "pair": 3,
+      "arm": "candidate",
+      "elapsed_ms": 8.008708013221622
+     },
+     {
+      "pair": 3,
+      "arm": "baseline",
+      "elapsed_ms": 18.489540903829038
+     },
+     {
+      "pair": 4,
+      "arm": "baseline",
+      "elapsed_ms": 18.833458074368536
+     },
+     {
+      "pair": 4,
+      "arm": "candidate",
+      "elapsed_ms": 8.196124923415482
+     },
+     {
+      "pair": 5,
+      "arm": "candidate",
+      "elapsed_ms": 7.192375021986663
+     },
+     {
+      "pair": 5,
+      "arm": "baseline",
+      "elapsed_ms": 18.887458951212466
+     },
+     {
+      "pair": 6,
+      "arm": "baseline",
+      "elapsed_ms": 18.42983392998576
+     },
+     {
+      "pair": 6,
+      "arm": "candidate",
+      "elapsed_ms": 7.675041095353663
+     },
+     {
+      "pair": 7,
+      "arm": "candidate",
+      "elapsed_ms": 8.121917024254799
+     },
+     {
+      "pair": 7,
+      "arm": "baseline",
+      "elapsed_ms": 18.316124915145338
+     }
+    ],
+    "timing": {
+     "baseline_ms": [
+      18.529833061620593,
+      17.67395797651261,
+      18.247124971821904,
+      18.489540903829038,
+      18.833458074368536,
+      18.887458951212466,
+      18.42983392998576,
+      18.316124915145338
+     ],
+     "candidate_ms": [
+      6.761833094060421,
+      8.293542079627514,
+      7.242750027216971,
+      8.008708013221622,
+      8.196124923415482,
+      7.192375021986663,
+      7.675041095353663,
+      8.121917024254799
+     ],
+     "deltas_ms": [
+      11.767999967560172,
+      9.380415896885097,
+      11.004374944604933,
+      10.480832890607417,
+      10.637333150953054,
+      11.695083929225802,
+      10.754792834632099,
+      10.194207890890539
+     ],
+     "median_baseline_ms": 18.4596874169074,
+     "median_delta_ms": 10.696062992792577,
+     "spread_ms": 0.7803978054647911,
+     "sigma_ms": 0.34580087322447467,
+     "n": 8,
+     "ratios": [
+      0.3649160287399287,
+      0.4692521104015875,
+      0.39692554516953094,
+      0.4331480189193384,
+      0.4351895913671865,
+      0.3808016229480649,
+      0.4164465683473249,
+      0.4434298773284137
+     ],
+     "median_ratio": 0.42479729363333163,
+     "stability": 0.8825407220794053
+    },
+    "baseline_sequence_ms": 18.4596874169074,
+    "candidate_sequence_ms": 7.841874554287642,
+    "speedup": 2.354063961770813,
+    "latency_reduction_pct": 57.52027063666684,
+    "win_confirmed": true,
+    "regression_confirmed": false,
+    "steps": 109,
+    "workload_kind": "repeated_forward",
+    "prefix_copy_included": false
+   }
+  }
+ }
+}

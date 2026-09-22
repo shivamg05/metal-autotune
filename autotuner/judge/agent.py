@@ -12,7 +12,7 @@ AgentFileJudge turns judge calls into a file handshake so a live agent (a
 Claude Code session opened on this repo) can be the judge: the harness
 writes NNNN.request.json into a mailbox directory and blocks until the
 agent writes NNNN.response.json holding one JSON object that matches the
-schema carried inside the request. AGENT_JUDGE.md is the operator guide.
+schema carried inside the request. docs/judge-protocol.md is the operator guide.
 
 Both feed the same exchange loop as the API client, so malformed replies
 get the one re-ask and then JudgeBabble, identically across transports.
@@ -53,14 +53,22 @@ def _document(messages: list[dict]) -> str:
     return "\n\n".join(parts)
 
 
-def claude_argv(model: str | None = None) -> list[str]:
+JUDGE_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+DEFAULT_EFFORT = "low"
+
+
+def claude_argv(model: str | None = None, effort: str = DEFAULT_EFFORT) -> list[str]:
     """Claude Code in print mode with tools, MCP, settings, and slash commands
     off and no session persisted, so the judge sees only what the harness
-    sends. System via --system-prompt; the messages come on stdin."""
+    sends. System via --system-prompt; the messages come on stdin. The
+    thinking effort is pinned: left to the CLI, its default moved with the
+    2026-09-17 update and one reply went from 18 s (low) to 98 s."""
+    if effort not in JUDGE_EFFORTS:
+        raise ValueError(f"judge effort must be one of {JUDGE_EFFORTS}, got {effort!r}")
     return ["claude", "-p", "--output-format", "text", "--tools", "",
             "--strict-mcp-config", "--setting-sources", "",
             "--disable-slash-commands", "--no-session-persistence",
-            "--model", model or DEFAULT_MODEL, "--system-prompt", SYSTEM_TOKEN]
+            "--model", model or DEFAULT_MODEL, "--effort", effort, "--system-prompt", SYSTEM_TOKEN]
 
 
 def codex_argv(model: str | None = None) -> list[str]:
@@ -231,4 +239,4 @@ class AgentFileJudge(JsonJudge):
             time.sleep(_POLL_S)
         raise TimeoutError(
             f"no complete {path.name} after {self._timeout_s:.0f}s; "
-            f"is a judge agent watching {self._dir}? (see AGENT_JUDGE.md)")
+            f"is a judge agent watching {self._dir}? (see docs/judge-protocol.md)")

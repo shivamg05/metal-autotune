@@ -27,7 +27,7 @@ WARM_STABLE_ABS_S = 100e-6  # 1% of a ~1ms kernel is under dispatch jitter
 WARM_CAP = 60
 # Readings that must fail to improve before the ramp is called done. The GPU
 # ramps in steps, not smoothly: after a 0.75s idle the decode step sat at
-# ~19 ms for five samples before dropping to ~9 (spikes/ramp_after_idle.py).
+# ~19 ms for five samples before dropping to ~9 (tools/ramp_after_idle.py).
 # A smaller patience stops on a plateau and calls a cold machine warm.
 WARM_PATIENCE = 10
 
@@ -36,7 +36,9 @@ def time_once(fn: Callable[[], object]) -> float:
     """The one timing recipe: synchronize, run, eval outputs, synchronize.
 
     fn returns its outputs (an array or a tree of arrays); evaluating them here
-    is what defeats laziness for whatever fn computed.
+    is what defeats laziness for whatever fn computed. A closure carrying a
+    steps count (clocks.chained_steps) holds that many dependent model steps,
+    and the reading is per step.
     """
     with gpu_window():
         mx.synchronize()
@@ -44,7 +46,7 @@ def time_once(fn: Callable[[], object]) -> float:
         outs = fn()
         mx.eval(outs)
         mx.synchronize()
-        return time.perf_counter() - t0
+        return (time.perf_counter() - t0) / getattr(fn, "steps", 1)
 
 
 def _until_flat(timed, fn, rtol: float, abs_s: float, cap: int, patience: int) -> list[float]:
@@ -107,8 +109,9 @@ class Session:
     def timed(self, fn: Callable[[], object]) -> float:
         self.wait_ready()
         t = time_once(fn)
-        self._debt_s += t
-        self.work_s += t
+        work = t * getattr(fn, "steps", 1)  # the debt is the whole sample's GPU work
+        self._debt_s += work
+        self.work_s += work
         return t
 
     def off_clock(self, fn: Callable[[], object], *, defer_cooling: bool = False):

@@ -140,6 +140,12 @@ def test_planted_win_job_ships(tmp_path, combined_start):
     runner = JobRunner(manifest, tmp_path / "work", judge_factory=factory, clock_pairs=8,
                        session=Session())
     report = runner.run()
+    # shipped against eager, and still measured against mx.compile at the end
+    assert report.step_ms["main"]["speedup_vs_compiled"] > 0
+    assert [r for r in runner.log.rows() if r["kind"] == "baseline_comparison" and r["against"] == "compiled"]
+    # the final run of consecutive steps is never shorter than one timed sample
+    chain = report.step_ms["main"]["steps_per_sample"]
+    assert report.final["sequences"]["main"]["steps"] == max(runner.manifest.final_benchmark.steps, chain)
 
     # the judge edits a named parent, so every next call must carry the
     # lineage sources and the head id (a live run starved this),
@@ -151,7 +157,7 @@ def test_planted_win_job_ships(tmp_path, combined_start):
         assert "queue" in meta and "verdicts" in meta and "budget" in meta
         assert "history" in meta and "lessons" in meta and "regions_done" in meta
         assert meta["launch_grammar"] and meta["menu"] and meta["laws"] and meta["legend"]
-        assert meta["directions"] and meta["widening"]["openers"] >= 1
+        assert "directions" not in meta and meta["widening"]["openers"] == 4
     # writing_for names the front ready item and is null once nothing is
     # queued; the judge's yields are refused until the region's budget is spent
     assert [m["writing_for"]["id"] for m in next_payloads if m["writing_for"]] == ([] if combined_start else ["h1"])
@@ -219,6 +225,10 @@ def test_compiled_baseline_refuses_a_fusion_compile_already_does(tmp_path):
     assert report.step_ms["main"]["before"] == clocks["compiled"]
     rows = [r for r in runner.log.rows() if r["kind"] == "step_clock" and r["phase"] == "before"]
     assert rows and rows[0]["baseline"] == "compiled" and "plain_ms" in rows[0]
+    # the final model against eager, measured paired at the end rather than derived
+    step = report.step_ms["main"]
+    assert step["speedup_vs_plain"] > 0 and isinstance(step["plain_win_confirmed"], bool)
+    assert [r for r in runner.log.rows() if r["kind"] == "baseline_comparison" and r["against"] == "plain"]
     require_healthy_gpu()  # the verdicts below are measured; the fields above are not
     assert not [r for r in report.regions if r.get("s")], report.regions
     assert not runner.installed
@@ -451,3 +461,95 @@ def test_the_whole_model_decides_every_ship(tmp_path):
     else:
         # nothing shipped is a real answer here: the whole model refused it
         assert runner.model_ratio == 1.0 and not runner.installed
+
+
+def test_hand_written_norm_scaffold_is_checked_within_tolerance(tmp_path):
+    """A naive lowering of a mean adds in its own order. Held to bitwise it
+    failed the smoke gate on every such region, and the judge's one repair was
+    held to the same rule; tagged changing, it passes and the search begins."""
+    manifest = write_manifest(tmp_path, "hand_norm.py", (64, 1024))
+    runner = JobRunner(manifest, tmp_path / "work", judge_factory=yielding_judge, clock_pairs=8,
+                       session=Session(sleep=lambda s: None))
+    runner.run()
+    rows = runner.log.rows()
+    kinds = [r["kind"] for r in rows if r["kind"] in ("scaffold_ok", "scaffold_failed")]
+    assert kinds and "scaffold_failed" not in kinds
+    scaffolds = [r for r in rows if r["kind"] == "ladder_result" and r["kernel"].endswith("scaffold")]
+    changing = [r for r in scaffolds if r["assoc_tag"] == "changing"]
+    assert changing, scaffolds
+    assert all(r["result"]["detail"].get("correctness_rule") == "tolerance" for r in changing), changing
+
+
+def test_a_small_step_is_chained_to_fill_a_timed_sample(tmp_path):
+    """A step of a few hundred microseconds called on its own leaves the GPU
+    idle between samples and reads several times slow; the runner sizes a
+    chain of dependent steps once per workload and every whole-model arm
+    carries it."""
+    from autotuner.measure.clocks import CLOCK_TARGET_MS
+    from autotuner.measure.session import time_once
+    manifest = write_manifest(tmp_path, "planted_win.py", (4, 1024))
+    runner = JobRunner(manifest, tmp_path / "work", judge_factory=yielding_judge,
+                       session=Session(sleep=lambda s: None))
+    runner.load_model()
+    runner.trace_workloads()
+    try:
+        tensors = runner.tensors["main"]
+        k = runner._chain(tensors)
+        assert k > 1
+        step = runner._step_fn(runner.baseline_model, tensors)
+        assert step.steps == k
+        sample_ms = min(time_once(step) for _ in range(5)) * k * 1e3
+        assert CLOCK_TARGET_MS / 4 < sample_ms < CLOCK_TARGET_MS * 4
+        assert runner._step_fn(runner.model, tensors, "compiled").steps == k
+    finally:
+        runner.tracer.uninstall()  # a job does this itself once tracing is done
+
+
+def test_a_constant_built_in_forward_runs_as_a_job(tmp_path):
+    """The recorded creation call has to survive everything after the trace:
+    region building, the identity wrappers delivery certifies, the ladder's
+    replays, and the final check."""
+    manifest = write_manifest(tmp_path, "const_scale.py", (256, 64))
+    runner = JobRunner(manifest, tmp_path / "work", judge_factory=yielding_judge, clock_pairs=8,
+                       session=Session(sleep=lambda s: None))
+    report = runner.run()
+    assert any(n.op == "mx.array" for n in runner.traces["main"].nodes)
+    assert report.session["status"] == "search_complete" and report.final["passed"]
+    kinds = [r["kind"] for r in runner.log.rows()]
+    assert "job_failed" not in kinds and "region_open" in kinds
+
+
+def test_a_statically_refused_kernel_is_asked_again_without_costing_an_attempt(tmp_path):
+    """A kernel the static checks reject never reaches the GPU. The judge hears
+    why under the refusal rule and its next kernel takes the attempt; 14 of 140
+    MetalBench attempts were lost to a fallback predicate that was true on the
+    workload being optimized."""
+    manifest = write_manifest(tmp_path, "planted_win.py", ("L", 1024),
+                              "sweep: {L: [7, 4096]}\n        primary: {L: 4096}\n"
+                              "        baseline: plain")
+    good = {"source": FUSED_CHAIN_SOURCE, "parent_kernel_id": "scaffold",
+            "grid": ["in0.shape[0] * in0.shape[1]", "1", "1"],
+            "threadgroup": ["min(in0.shape[0] * in0.shape[1], 256)", "1", "1"],
+            "output_shapes": [["in0.shape[0]", "in0.shape[1]"]]}
+    bad = dict(good, fallback_predicate="in0.shape[0] != 7")  # true at the primary size
+
+    def factory(region):
+        if len(region.ops) != 8:
+            return yielding_judge(region)
+        return ScriptedJudge([
+            {"queue": [{"id": "h1", "kind": "on-chip", "assoc_tag": "preserving",
+                        "hypothesis": "keep the chain's intermediates in registers"}]},
+            {"mutations": [], "kernel": bad},
+            {"mutations": [], "kernel": good},
+            {"mutations": [], "kernel": None},
+        ])
+
+    runner = JobRunner(manifest, tmp_path / "work", judge_factory=factory, clock_pairs=8,
+                       session=Session(sleep=lambda s: None))
+    runner.run()
+    rows = runner.log.rows()
+    refused = [r for r in rows if r["kind"] == "plan_refused" and "fallback_on_primary" in r["reason"]]
+    assert len(refused) == 1
+    h1 = [r for r in rows if r["kind"] == "verdict" and r["hypothesis"] == "h1"]
+    assert len(h1) == 1 and h1[0]["outcome"] != "failed", h1  # the good kernel took the attempt
+    assert not [r for r in rows if r["kind"] == "verdict" and r.get("gate") == "static"]

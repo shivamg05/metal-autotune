@@ -194,13 +194,69 @@ def test_data_branch_records_only_taken_path():
 def test_unwrapped_entry_point_aborts_naming_the_call():
     tr = tracer()
 
+    from autotuner.trace.optable import resolve
+    raw_exp = resolve("mx.exp")  # the pre-patch original: a call the recorder never sees
+
     class Sneaky:
         def __call__(self, x):
-            c = mx.array([1.0, 1.0, 1.0, 1.0])  # unpatchable constructor
-            return x[:1] + c
+            return x[:1] + raw_exp(x[:1])
 
     with pytest.raises(TraceIncomplete, match="array.__add__"):
         tr.trace(Sneaky(), [mx.random.normal((4, 4), key=mx.random.key(0))])
+
+
+def test_a_small_constant_built_in_forward_records_as_a_creation_call():
+    """mx.array(...) is the array class and cannot be wrapped. A small finite
+    array made from host data records as that creation call, so the trace has
+    its producer, replay rebuilds it with its dtype, and nothing is frozen
+    that was computed from the inputs."""
+    from autotuner.trace.replay import replay
+    tr = tracer()
+
+    class Scaled:
+        def __call__(self, x):
+            d = x.shape[-1]
+            return x / mx.sqrt(mx.array(float(d), dtype=mx.float16))
+
+    x = mx.random.normal((4, 16), key=mx.random.key(0))
+    trace, out = tr.trace(Scaled(), [x])
+    made = [n for n in trace.nodes if n.op == "mx.array"]
+    assert len(made) == 1 and made[0].in_arrays == ()
+    assert made[0].scalar_args["args"] == (16.0,) and made[0].scalar_args["kwargs"] == {"dtype": mx.float16}
+    sqrt = next(n for n in trace.nodes if n.op == "mx.sqrt")
+    assert sqrt.in_arrays == made[0].out_arrays
+    (inp,) = trace.inputs
+    again = replay(trace.nodes, {inp: x}, trace.step_outputs)[trace.step_outputs[0]]
+    assert again.dtype == out.dtype and mx.array_equal(again, out).item()
+
+
+@pytest.mark.parametrize("constant", [
+    lambda x: mx.array([float("nan")] * 4),          # not finite
+    lambda x: mx.array([1.0] * 2048).reshape(-1, 4)[:1],  # too large to carry as a literal
+])
+def test_a_constant_that_cannot_be_carried_still_aborts(constant):
+    tr = tracer()
+
+    class Model:
+        def __call__(self, x):
+            return x[:1] + constant(x)
+
+    with pytest.raises(TraceIncomplete):
+        tr.trace(Model(), [mx.random.normal((4, 4), key=mx.random.key(0))])
+
+
+def test_after_an_in_pass_evaluation_no_constant_is_trusted():
+    """Once the model has evaluated arrays, a computed value and host data
+    look the same from outside, so the recorder records neither."""
+    tr = tracer()
+
+    class Peeks:
+        def __call__(self, x):
+            scale = 2.0 if x.sum().item() > 0 else 3.0
+            return x * mx.array(scale)
+
+    with pytest.raises(TraceIncomplete, match="array.__mul__"):
+        tr.trace(Peeks(), [mx.random.normal((4, 4), key=mx.random.key(0))])
 
 
 def test_step_output_also_intermediate():

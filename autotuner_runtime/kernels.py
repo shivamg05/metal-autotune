@@ -51,6 +51,7 @@ class KernelSpec:
     input_signature: list | None = None  # harness-owned exact shape/dtype specialization
     reference_sequence: dict | None = None  # original mixed sequence; a starter, never an optimized artifact
     stages: tuple[KernelStage, ...] = ()  # explicit array dataflow; empty keeps the single-dispatch path
+    reassociates: bool = False  # adds in its own order (a naive sum, mean, norm or matmul): checked within tolerance, never bitwise
 
     def to_json(self) -> str:
         d = {k: getattr(self, k) for k in self.__dataclass_fields__}

@@ -7,7 +7,7 @@ import pytest
 
 from autotuner import manifest as manifest_mod
 from metalbench.bridge import problems, write_job
-from metalbench.run import fast_p, score
+from metalbench.run import render, fast_p, score
 
 
 def test_every_registered_problem_has_a_module_and_shapes():
@@ -24,6 +24,9 @@ def test_a_problem_becomes_a_job_that_builds_and_runs(tmp_path, name):
     loaded = manifest_mod.load(manifest)
     assert [tuple(int(d) for d in i.shape) for i in loaded.workloads[0].inputs] == list(problem.input_shapes)
     assert loaded.tolerances is not None and loaded.baseline == "compiled"
+    assert loaded.final_benchmark.pairs == 8  # four repeats cannot confirm a win under ~20% on steps this small
+    eager = manifest_mod.load(write_job(problem, 2, 2, out=tmp_path / "eager", baseline="plain"))
+    assert eager.baseline == "plain"  # the bar the other kernel benchmarks use
     import importlib.util
     spec = importlib.util.spec_from_file_location("job_model", manifest.parent / "model.py")
     module = importlib.util.module_from_spec(spec)
@@ -35,22 +38,39 @@ def test_a_problem_becomes_a_job_that_builds_and_runs(tmp_path, name):
     assert isinstance(out, mx.array)
 
 
-def test_scores_read_both_baselines_and_count_strict_wins():
-    report = {"session": {"status": "ok"},
-              "baseline": {"choice": "compiled", "clocks_ms": {"p": {"plain": 3.0, "compiled": 2.0}}},
-              "step_ms": {"p": {"speedup": 1.25, "win_confirmed": True}},
-              "regions": [{"s": 1.3}, {}]}
+def test_scores_are_the_measured_numbers_and_the_best_kernel_is_reported():
+    base = {"choice": "compiled", "clocks_ms": {"p": {"plain": 3.0, "compiled": 2.0}}}
+    regions = [{"fingerprint": "big", "ops": ["array.__matmul__"], "p": {"p": 0.8}},
+               {"fingerprint": "small", "ops": ["mx.mean", "mx.rsqrt"], "p": {"p": 0.1}, "s": 1.3}]
+    hypotheses = [{"region": "big", "verdict": "correct_slower", "region_ms": 2.0, "library_ms": 1.0},
+                  {"region": "big", "verdict": "correct_slower", "region_ms": 1.6, "library_ms": 1.0},
+                  {"region": "big", "verdict": "failed", "region_ms": 0.1, "library_ms": 1.0},
+                  {"region": "small", "verdict": "shipped", "region_ms": 0.5, "library_ms": 1.0}]
+    report = {"session": {"status": "complete"}, "baseline": base, "regions": regions, "hypotheses": hypotheses,
+              "step_ms": {"p": {"speedup": 1.05, "win_confirmed": False, "speedup_vs_plain": 1.6}}}
     row = score(report, "p")
-    assert row["vs_compiled"] == 1.25 and row["vs_eager"] == pytest.approx(1.875) and row["shipped_regions"] == 1
-    nothing = score({"session": {"status": "ok"}, "baseline": {"choice": "compiled", "clocks_ms": {"p": {"plain": 3.0, "compiled": 2.0}}},
-                     "step_ms": {"p": {"speedup": 1.4, "win_confirmed": False}}}, "p")
-    assert nothing["vs_compiled"] == 1.0 and nothing["vs_eager"] == pytest.approx(1.5)
+    # a kernel is installed: the finished model's measured numbers, confirmed or not
+    assert row["vs_compiled"] == 1.05 and row["vs_eager"] == 1.6 and row["shipped_regions"] == 1
+    # every searched part, costliest first: the win came from the small part, while the big part's kernel
+    # lost and was not installed; a failed kernel never counts
+    assert row["regions"] == [{"ops": "matmul", "share": 0.8, "speedup": pytest.approx(1 / 1.6), "installed": False},
+                              {"ops": "mean+rsqrt", "share": 0.1, "speedup": 2.0, "installed": True}]
+    # nothing installed: the finished model is the baseline, whatever noise its final clock read
+    nothing = score({"session": {"status": "complete"}, "baseline": base, "regions": regions[:1], "hypotheses": hypotheses[:2],
+                     "step_ms": {"p": {"speedup": 1.01, "speedup_vs_plain": 0.95}}}, "p")
+    assert nothing["vs_compiled"] == 1.0 and nothing["vs_eager"] == 0.95 and nothing["shipped_regions"] == 0
+    # shipped against eager: both columns are still measured
+    eager = score({"session": {"status": "complete"}, "baseline": {"choice": "plain", "clocks_ms": {"p": {"plain": 3.0}}},
+                   "regions": regions, "hypotheses": hypotheses,
+                   "step_ms": {"p": {"speedup": 1.3, "speedup_vs_compiled": 0.9}}}, "p")
+    assert eager["vs_eager"] == 1.3 and eager["vs_compiled"] == 0.9
     failed = score({"session": {"status": "failed"}}, "p")
-    assert failed["vs_eager"] == 1.0 and failed["vs_compiled"] is None
-    rows = [row, nothing, {"vs_compiled": 1.0, "vs_eager": 1.0}]
-    fp = fast_p(rows, "vs_compiled")
-    assert fp["fast_1"] == pytest.approx(1 / 3) and fp["fast_1.25"] == 0.0
-    assert fast_p(rows, "vs_eager")["fast_1.25"] == pytest.approx(2 / 3)
+    assert failed["vs_compiled"] is None and failed["vs_eager"] is None and failed["regions"] == []
+    rows = [row, nothing, failed]
+    assert fast_p(rows, "vs_compiled")["fast_1"] == pytest.approx(1 / 3)  # a failed job counts in the denominator
+    assert fast_p(rows, "vs_eager")["fast_1.5"] == pytest.approx(1 / 3)
+    text = render({"chip": "test", "problems": {"a": {**row, "set": "standard"}, "b": {**failed, "set": "standard"}}})
+    assert "matmul 0.62x (80% of the step); mean+rsqrt 2.00x (10% of the step, installed)" in text and "| n/a | n/a | n/a |" in text
 
 
 def test_a_problem_runs_inside_a_swappable_child_scope(tmp_path):

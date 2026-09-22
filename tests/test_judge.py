@@ -410,8 +410,8 @@ def test_prompt_is_structurally_sealed():
     assert set(params) == {"region", "io_specs", "ops", "kernels", "head", "shipped",
                            "head_ms", "shipped_ms", "head_floor_ms", "shipped_floor_ms",
                            "assoc_tag", "queue", "last_verdict", "writing_for", "chip", "budget",
-                           "history", "lessons", "regions_done", "default_target_workload",
-                           "head_workload", "shipped_workload", "directions", "widening"}
+                           "history", "lessons", "regions_done", "default_target_workload", "scaffold",
+                           "head_workload", "shipped_workload", "widening"}
     assert all(p.kind is inspect.Parameter.KEYWORD_ONLY for p in params.values())
 
 

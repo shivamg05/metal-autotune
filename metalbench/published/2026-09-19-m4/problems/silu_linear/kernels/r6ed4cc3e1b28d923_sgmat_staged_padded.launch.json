@@ -1,0 +1,55 @@
+{
+ "kernel_id": "r6ed4cc3e1b28d923_sgmat_staged_padded",
+ "name": "at_r6ed4cc3e1b28d923_sgmat_staged_padded",
+ "input_names": [
+  "in0",
+  "in1"
+ ],
+ "output_names": [
+  "out0"
+ ],
+ "header": "#include <metal_stdlib>\n#include <metal_simdgroup_matrix>\nusing namespace metal;\n",
+ "grid": [
+  "ceil_div(in1.shape[1], 128) * 256",
+  "ceil_div(in0.shape[0], 64)",
+  "1"
+ ],
+ "threadgroup": [
+  "256",
+  "1",
+  "1"
+ ],
+ "output_shapes": [
+  [
+   "in0.shape[0]",
+   "in1.shape[1]"
+  ]
+ ],
+ "output_dtypes": [
+  "float32"
+ ],
+ "template": [],
+ "fallback_predicate": "in0.ndim != 2 or in1.ndim != 2 or in0.shape[0] % 64 != 0 or in1.shape[1] % 128 != 0 or in0.shape[1] % 16 != 0",
+ "ensure_row_contiguous": true,
+ "atomic_outputs": false,
+ "native_call": null,
+ "input_signature": [
+  [
+   [
+    1024,
+    1024
+   ],
+   "float32"
+  ],
+  [
+   [
+    1024,
+    1024
+   ],
+   "float32"
+  ]
+ ],
+ "reference_sequence": null,
+ "stages": [],
+ "reassociates": false
+}

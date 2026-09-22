@@ -1,0 +1,12 @@
+model: model.py
+workloads:
+  - name: residual_add
+    inputs:
+      - shape: [1024, 1024]
+        dtype: float32
+      - shape: [1024, 1024]
+        dtype: float32
+tolerances: {rtol: 1e-05, atol: 1e-06}
+budget: {per_region: 10, total: 30}
+final_benchmark: {pairs: 8}
+baseline: compiled

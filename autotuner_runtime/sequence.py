@@ -8,30 +8,50 @@ from dataclasses import asdict
 from typing import Callable
 
 import mlx.core as mx
+from mlx.utils import tree_flatten
 
 from .stats import comparison_from_samples
 
 
 def make_sequence(step, inputs, steps: int):
-    """A run of consecutive model calls on the same inputs. Every call's
-    output is evaluated before the next, so a discarded lazy output cannot
+    """A run of consecutive model calls on the same inputs, as one graph. Each
+    call's smallest input carries a zero taken from the previous call's first
+    output, so no call can start before the last one ends and the GPU runs
+    the whole run back to back; calls evaluated one at a time leave it idle
+    between them, and a step of a millisecond never reaches full clock that
+    way. Every call's outputs are returned, so a discarded output cannot
     turn into missing GPU work."""
     if isinstance(steps, bool) or not isinstance(steps, int) or steps < 1:
         raise ValueError("sequence steps must be a positive integer")
+    carriers = [i for i, a in enumerate(inputs) if isinstance(a, mx.array) and a.dtype != mx.bool_]
+    link_at = min(carriers, key=lambda i: inputs[i].nbytes) if carriers else None
 
     def run():
-        result = None
+        outs, link = [], None
         for _ in range(steps):
-            result = step(*inputs)
-            mx.eval(result)
-        return result
+            args = list(inputs)
+            if link is not None:
+                args[link_at] = inputs[link_at] + link
+            out = step(*args)
+            outs.append(out)
+            first = next((a for _, a in tree_flatten(out) if isinstance(a, mx.array)), None)
+            if link_at is not None and first is not None:
+                link = (first.reshape(-1)[0] * 0).astype(inputs[link_at].dtype)
+        return outs
 
     return run
 
 
+# A run shorter than this heats nothing, the same chunk size the harness session paces by.
+PACING_CHUNK_S = 0.25
+
+
 def compare_sequences(session, baseline, candidate, warm_baseline, warm_candidate,
                       *, pairs=4, warmup_steps=3, label="sequence"):
-    """Cool between complete sequences and balance AB / BA order.
+    """Balance AB / BA order, and cool between complete sequences that are long
+    enough to heat the chip. A short run is not cooled after: the idle would
+    put the next run on ramped-down clocks the warm-up does not fully recover
+    (a 6.3 ms run read 8.9 ms, and a 1.4x faster kernel read slower).
 
     Calibrate the clock ramp once per arm, then use the larger warmup count
     for *both* arms before each sequence. This avoids a fixed short warmup
@@ -42,10 +62,14 @@ def compare_sequences(session, baseline, candidate, warm_baseline, warm_candidat
     session.settle()
     warm_count = warmup_steps
     for warm in (warm_baseline, warm_candidate):
+        work_s = None
         try:
-            warm_count = max(warm_count, len(session.warm_until_stable(warm)) + 1)
+            times = session.warm_until_stable(warm)
+            warm_count = max(warm_count, len(times) + 1)
+            work_s = sum(times) * getattr(warm, "steps", 1)
         finally:
-            session.settle()
+            if work_s is None or work_s >= PACING_CHUNK_S:  # a short calibration is not cooled either
+                session.settle()
     base, cand, observations = [], [], []
     for pair in range(pairs):
         order = ("baseline", "candidate") if pair % 2 == 0 else ("candidate", "baseline")
@@ -54,6 +78,7 @@ def compare_sequences(session, baseline, candidate, warm_baseline, warm_candidat
                          else (warm_candidate, candidate))
             session.log("sequence_start", workload=label, pair=pair, arm=arm,
                         warmup_steps=warm_count)
+            elapsed_ms = None
             try:
                 for _ in range(warm_count):
                     session.timed(warm)
@@ -62,7 +87,9 @@ def compare_sequences(session, baseline, candidate, warm_baseline, warm_candidat
                 observations.append({"pair": pair, "arm": arm, "elapsed_ms": elapsed_ms})
                 session.log("sequence_done", workload=label, **observations[-1])
             finally:
-                session.settle()
+                if elapsed_ms is None or elapsed_ms >= PACING_CHUNK_S * 1000:
+                    session.settle()
+    session.settle()
     comparison = comparison_from_samples(base, cand)
     return {
         "protocol": "whole_sequences_balanced_ab_ba",

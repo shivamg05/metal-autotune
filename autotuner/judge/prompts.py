@@ -75,7 +75,7 @@ LEGEND = {
                    "arithmetic cost when known and larger; neither is a guaranteed physical minimum",
     "s_max": "estimated speedup opportunity for one copy: T_rep_ms over roofline_ms; a ranking hint",
     "floor_ms": "in a verdict: the boundary-streaming probe clocked beside the kernel; advisory only",
-    "head_ms": "one copy's time for head, the kernel being edited; null until it is clocked",
+    "head_ms": "one copy's time for head, the best correct version so far; null until it is clocked",
     "shipped_ms": "one copy's time for the installed kernel; null when none is installed",
     "library_ms": "the library's time measured beside a kernel in the same clock",
     "win_ms": "library_ms minus the kernel's time; a region win nominates the kernel. "
@@ -93,21 +93,17 @@ LEGEND = {
     "writing_for": "the queue item your kernel is for; after your mutations it must be the front ready item",
     "budget": "attempts left for this region and for the whole job; a yield is refused while any remain, "
               "and after one free re-ask every reply with nothing to evaluate costs an attempt",
-    "history": "every attempt on this region so far, in order, each with its one-line outcome; the "
-               "sources you may edit are in kernels",
-    "lessons": "what you wrote down for later regions of this job, oldest first; write one (the "
-               "optional lesson field of a reply) when a verdict taught something the next region "
-               "should know",
-    "regions_done": "the regions this job already closed: what shipped there and how many attempts it took",
+    "history": "compact history including opening approaches, failures and recent work; "
+               "experience_archive contains every attempt and candidate, including their source references",
+    "lessons": "relevant notes from this job, linked to evaluated candidates and their parents; "
+               "these are interpretations of evidence, not acceptance rules. Full notes are in experience_archive",
+    "regions_done": "recently closed regions: what shipped there and how many attempts it took; "
+                    "experience_archive retains the full list",
     "plan_refused": "in a verdict: your last reply was refused for this reason and nothing was evaluated; "
                     "the rest of the verdict is unchanged from the call before",
-    "directions": "what the widening round opens from: hardware facts that can pay under this "
-                  "region's bound, in no particular order. Each names a structure, what it trades, "
-                  "and the bounds it pays under; its kind is the label to use. Add a direction of "
-                  "your own when none fits",
     "widening": "the region's first attempts are openers: each written against the scaffold, under "
-                "a kind no earlier opener used (a direction's kind, or your own), its hypothesis "
-                "stating in one sentence how the work maps onto threads. A repair of a kernel that "
+                "a kind no earlier opener used, its hypothesis "
+                "explaining the mechanism, expected benefit and difference from other designs. A repair of a kernel that "
                 "failed is allowed meanwhile; any other parent is refused until left reaches 0. "
                 "openers: how many the round holds; opened: the kinds already opened",
     "chip": "this machine: gpu_cores, bandwidth_gbps (billions of bytes the whole chip moves per second), "
@@ -147,7 +143,7 @@ def render_region_state(
     default_target_workload: str | None = None,
     head_workload: str | None = None,
     shipped_workload: str | None = None,
-    directions: Sequence[Mapping] = (),
+    scaffold: str | None = None,
     widening: Mapping | None = None,
 ) -> dict:
     """The one prompt contract, rendered per call. io_specs maps workload ->
@@ -184,6 +180,7 @@ def render_region_state(
             "head_minus_roofline_ms": _distance(head_ms, head_floor_ms, roofline),
             "shipped_minus_roofline_ms": _distance(shipped_ms, shipped_floor_ms, roofline),
         },
+        "scaffold": scaffold,
         "head": head,
         "shipped": shipped,
         "kernels": {k: dict(v) for k, v in kernels.items()},
@@ -199,7 +196,6 @@ def render_region_state(
         "chip": dict(chip or {}),
         "menu": dict(MENU),
         "moves": list(MOVES),
-        "directions": [dict(d) for d in directions],
         "widening": dict(widening or {}),
         "laws": list(LAWS),
         "launch_grammar": LAUNCH_GRAMMAR_DOC,

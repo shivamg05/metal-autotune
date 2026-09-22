@@ -213,3 +213,75 @@ def test_failed_starter_keeps_original_sequence_available_for_search(tmp_path, m
         assert any(row['kind'] == 'scaffold_reference_fallback' for row in runner.log.rows())
     finally:
         runner.tracer.uninstall()
+
+
+def test_json_search_retrieves_old_parent_and_validates_it_on_gpu(tmp_path, monkeypatch):
+    from autotuner.judge.client import JsonJudge
+
+    runner, region = runner_for(tmp_path)
+    runner.manifest = replace(runner.manifest, budget_per_region=5, budget_total=5)
+    _, spec = candidate(runner, region)
+    evaluate = runner._evaluate_kernel
+    # Test real correctness workers, without making claims from noisy timing.
+    monkeypatch.setattr(runner, '_evaluate_kernel',
+                        lambda r, k, tag, run_clock=True: evaluate(r, k, tag, run_clock=False))
+
+    class Judge(JsonJudge):
+        proposals = 0
+        lookups = 0
+
+        def _ask(self, system, messages):
+            meta = json.loads(messages[0]['content'])['region_state']
+            assert 'directions' not in meta and 'techniques_reference' in meta
+            if self.proposals == 4:
+                assert meta['inspiration']['kernel_id'] not in meta['kernels']
+                if self.lookups == 0:
+                    self.old_id = next(row['kernel'] for row in meta['history'] if row['id'] == 'h2')
+                    assert self.old_id not in meta['kernels']
+                    self.archive_id = meta['experience_archive']['source_id']
+                    query = {'id': self.archive_id, 'find': json.dumps(self.old_id) + ': {'}
+                else:
+                    read = json.loads(messages[-1]['content'])['source_reads'][0]
+                    if self.lookups == 1:
+                        query = {'id': self.archive_id, 'start': read['matches'][0]['offset'], 'length': 8000}
+                    elif self.lookups == 2:
+                        entry = json.JSONDecoder().raw_decode(read['text'].split(':', 1)[1].lstrip())[0]
+                        query = {'id': entry['source']['source_id']}
+                    else:
+                        assert read['text'] == spec.source
+                        self.proposals += 1
+                        return self.propose(read['text'], self.old_id)
+                self.lookups += 1
+                return json.dumps({'read_source': [query]})
+            self.proposals += 1
+            return self.propose(spec.source, 'scaffold')
+
+        def propose(self, source, parent):
+            return json.dumps({
+                'mutations': [{'op': 'insert', 'item': {
+                    'id': f'h{i}', 'kind': f'design{i}', 'assoc_tag': 'preserving',
+                    'hypothesis': 'Exercise parent selection with a known correct kernel.'}}
+                    for i in range(1, 6)] if self.proposals == 1 else [],
+                'kernel': {'source': source, 'parent_kernel_id': parent,
+                           'item_id': f'h{self.proposals}', 'grid': list(spec.grid),
+                           'threadgroup': list(spec.threadgroup),
+                           'output_shapes': [list(s) for s in spec.output_shapes]},
+                'lesson': 'The previous candidate passed correctness; no timing claim.'
+                          if self.proposals > 1 else None,
+            })
+
+    judge = Judge()
+    try:
+        run = runner.open_region(region, judge)
+        runner.hypothesis_cycle(run, judge)
+        assert judge.proposals == run.hypotheses == runner.total_hypotheses == 5
+        assert judge.lookups == 3  # lookups did not consume candidate attempts
+        assert len(run.openers) == 4
+        results = {r['hypothesis_id']: r for r in run.attempts.values()}
+        assert results['h5']['parent'] == results['h2']['kernel_id']
+        assert all(results[f'h{i}']['failed_gate'] is None for i in range(1, 6))
+        assert len(runner.lessons) == 4
+        assert runner.lessons[-1]['evidence'][0] == results['h4']['kernel_id']
+        assert not runner.installed  # correctness and archive access never imply a win
+    finally:
+        runner.tracer.uninstall()

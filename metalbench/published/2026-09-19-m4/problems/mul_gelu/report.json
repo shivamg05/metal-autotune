@@ -1,0 +1,1432 @@
+{
+ "legend": {
+  "target_workload": "the workload nominated before timing; its whole-model win must repeat before installation",
+  "timing_case": "the captured input case behind this hypothesis's local kernel timings",
+  "timing_workload": "the workload behind a region's recorded shipped-kernel speedup",
+  "model_ratios": "per-workload products of incremental model ratios; diagnostic estimates, not final measurements",
+  "p": "share of one step this region costs, all copies together, per workload",
+  "T_orig_ms": "library time for all copies, per workload, from pricing",
+  "T_rep_ms": "library time for one copy, per workload, from pricing",
+  "roofline_ms": "estimated ideal cost of one copy from boundary traffic and arithmetic",
+  "s_max": "optimistic headroom estimate: library time divided by estimated ideal cost",
+  "bound": "estimated limiting resource: memory, known compute, or launch; custom arithmetic may be unknown",
+  "s": "speedup shipped: the library's time over the shipped kernel's, both from the kernel's own ship clock",
+  "region_ms": "the kernel's time for one pass of one copy, from the ship clock",
+  "library_ms": "the library's time for the same pass, measured beside it",
+  "win_ms": "library_ms minus region_ms; positive means the kernel is faster",
+  "sigma_ms": "uncertainty of win_ms; a ship needs a win past three of these",
+  "stranded": "regions dropped before the search, grouped by reason",
+  "steps_per_sample": "dependent model steps in one timed sample of the step clock; more than one when a step is too short to bring the GPU clock up on its own",
+  "min_win_ms": "the least a region win had to save per step on this workload: 1% of the step, at most constants.min_win_ms; the three-sigma rule decides the rest",
+  "speedup_vs_plain": "under the compiled baseline: the finished model against plain eager MLX, paired in one window at the end of the job; compile's own gain is included, since the model runs compiled",
+  "speedup_vs_compiled": "under the plain baseline: the finished model (eager plus its kernels) against the untouched model under mx.compile, measured the same way; under 1 means compile alone is faster",
+  "plain_win_confirmed": "whether that comparison resolved a win past three sigma (compiled_win_confirmed likewise)",
+  "plain_loss_confirmed": "whether it resolved a loss (compiled_loss_confirmed likewise)",
+  "measured_compute_gflops": "the plain-matmul rate per dtype clocked in the region's own pricing window; the compute term of its estimated limit divides the region's flops by it",
+  "close_rule": "why a region's search ended: its budget or the job's is spent, the operator asked to finish, or no discernible headroom (launch-bound, head unmoved by the last two attempts, the last three kernels each within one sigma of the launch floor clocked beside them)",
+  "constants.openers_per_region": "how many attempts a region's widening round holds at most, each an opener written against the scaffold from a different agent-generated direction; limited by the remaining attempt budget",
+  "delivery": "how a kernel installs at the region's scope, per workload: direct, graph (the scope compiled with the cut inserted) or replay",
+  "library_arm": "what the region's clocks ran the library as, per workload: plain ops, or one compiled graph where graph delivery compiles the scope",
+  "baseline.clocks_ms.compiled": "under library inference: the model with its outermost compilable scopes compiled and empty, the baseline unless the manifest asks for plain",
+  "final.delivery": "under a plain baseline: the untouched model against the installed scopes compiled with no kernel, and that against the patched model"
+ },
+ "written_at": "2026-09-20T03:14:52-0700",
+ "machine": {
+  "chip": "Apple M4",
+  "memory_bytes": 25769803776,
+  "os": "macOS-26.6.2-arm64-arm-64bit",
+  "python": "3.12.13",
+  "mlx": "0.32.2"
+ },
+ "env": {
+  "MLX_MAX_OPS_PER_BUFFER": null,
+  "MLX_MAX_MB_PER_BUFFER": null,
+  "MTL_SHADER_VALIDATION": null,
+  "MTL_SHADER_VALIDATION_REPORT_TO_STDERR": null,
+  "MTL_CAPTURE_ENABLED": null
+ },
+ "manifest": "<repo>/runs/metalbench/jobs/2026-09-19_21-23-09-675242/generated/standard/mul_gelu/manifest.yaml",
+ "constants": {
+  "min_win_ms": 0.03,
+  "min_win_share": 0.01,
+  "budget_per_region": 10,
+  "budget_total": 30,
+  "seed": 1296389185,
+  "openers_per_region": 4,
+  "clock_pairs": 32,
+  "price_pairs": 8,
+  "ship_pairs": 20,
+  "model_min_gain_pct": 0.0,
+  "model_confidence_sigma": 3.0,
+  "model_confirmation_comparisons": 1,
+  "final_benchmark": {
+   "steps": 10,
+   "pairs": 8,
+   "warmup_steps": 3
+  },
+  "numeric_policy": "exact_preserving_baseline_tolerance_changing",
+  "tolerances": [
+   0.0001,
+   0.0001
+  ],
+  "tolerance_defaults": {
+   "float32": [
+    1e-05,
+    1e-06
+   ],
+   "float16": [
+    0.01,
+    0.02
+   ],
+   "bfloat16": [
+    0.02,
+    0.04
+   ]
+  },
+  "duty_idle_factor": 3.0,
+  "gpu_evaluation_timeout_s": 5.0,
+  "single_group_element_limit": 1048576,
+  "single_group_scaffold_work_limit": 16777216,
+  "defaulted": [
+   "use_library_inference",
+   "final_benchmark.steps",
+   "final_benchmark.warmup_steps",
+   "seed"
+  ],
+  "use_library_inference": false,
+  "measurement": {
+   "kind": "forward",
+   "generated_tokens": null,
+   "baseline": "compiled"
+  },
+  "checkpoint_pins": []
+ },
+ "baseline": {
+  "requested": "compiled",
+  "choice": "compiled",
+  "compiled_available": true,
+  "reason": null,
+  "clocks_ms": {
+   "mul_gelu": {
+    "plain": 0.031683789031793835,
+    "compiled": 0.011774635990786422
+   }
+  }
+ },
+ "peaks": {
+  "bandwidth_gbps": 92.4735968788515,
+  "flops_gflops": {
+   "float32": 2851.812724330864,
+   "float16": 3354.79132708113,
+   "bfloat16": 3379.545972716998
+  },
+  "launch_us": 7.960449238453293
+ },
+ "session": {
+  "status": "complete",
+  "stage": "checking final model timings",
+  "gpu_utilization_at_start_pct": 79.0,
+  "aa_floor_sigma_ms": 0.019101951922819122,
+  "aa_control": {
+   "passed": true,
+   "attempts": 1
+  },
+  "idled_s": 224.2,
+  "artifact": null,
+  "outcome": "no_improvement"
+ },
+ "step_ms": {
+  "mul_gelu": {
+   "before": 0.011774635990786422,
+   "steps_per_sample": 915,
+   "min_win_ms": 0.00011774635990786422,
+   "after": 0.014272393134570188,
+   "baseline_at_end": 0.013805794258617232,
+   "speedup": 0.9988868980226705,
+   "stability": 0.917249711116938,
+   "win_confirmed": false,
+   "plain_at_end": 0.031226650554727498,
+   "speedup_vs_plain": 2.5112569894071846,
+   "plain_win_confirmed": true,
+   "plain_loss_confirmed": false
+  }
+ },
+ "regions": [
+  {
+   "fingerprint": "7a3124d9d5ee482d",
+   "ops": [
+    "array.__mul__",
+    "array.__rmul__",
+    "array.__rmul__",
+    "array.__mul__",
+    "array.__mul__",
+    "array.__add__",
+    "array.__rmul__",
+    "mx.tanh",
+    "array.__radd__",
+    "array.__mul__"
+   ],
+   "copies": 1,
+   "workloads": [
+    "mul_gelu"
+   ],
+   "p": {
+    "mul_gelu": 0.22196363404829678
+   },
+   "T_orig_ms": {
+    "mul_gelu": 0.0026840399230076443
+   },
+   "T_rep_ms": {
+    "mul_gelu": 0.0026840399230076443
+   },
+   "roofline_ms": 0.0038070042467089793,
+   "bound": "launch",
+   "s_max": 0.7050267740909146,
+   "T_shipped_ms": null,
+   "s": null,
+   "head_ms": 0.005080972937552055,
+   "hypotheses": 10,
+   "timing_workload": null,
+   "delivery": {
+    "mul_gelu": "direct"
+   },
+   "library_arm": {
+    "mul_gelu": "compiled"
+   },
+   "outcomes": {
+    "correct_slower": 11
+   },
+   "close_rule": "the region's hypothesis budget is spent"
+  },
+  {
+   "fingerprint": "9109ec5c435546df",
+   "ops": [
+    "array.__mul__",
+    "array.__rmul__",
+    "array.__rmul__",
+    "array.__mul__",
+    "array.__mul__",
+    "array.__add__",
+    "array.__rmul__",
+    "mx.tanh",
+    "array.__radd__"
+   ],
+   "copies": 1,
+   "workloads": [
+    "mul_gelu"
+   ],
+   "p": {
+    "mul_gelu": 0.4932060701592351
+   },
+   "T_orig_ms": {
+    "mul_gelu": 0.006012482629654911
+   },
+   "T_rep_ms": {
+    "mul_gelu": 0.006012482629654911
+   },
+   "roofline_ms": 0.004683937852026838,
+   "bound": "launch",
+   "s_max": 1.2836384297996575,
+   "T_shipped_ms": null,
+   "s": null,
+   "head_ms": 0.00554289814642177,
+   "hypotheses": 10,
+   "timing_workload": null,
+   "delivery": {
+    "mul_gelu": "graph"
+   },
+   "library_arm": {
+    "mul_gelu": "compiled"
+   },
+   "outcomes": {
+    "correct_slower": 9,
+    "failed": 2
+   },
+   "close_rule": "the region's hypothesis budget is spent"
+  },
+  {
+   "fingerprint": "04d94ef06a69df05",
+   "ops": [
+    "array.__mul__",
+    "array.__rmul__",
+    "array.__rmul__",
+    "array.__mul__",
+    "array.__mul__",
+    "array.__add__",
+    "array.__rmul__",
+    "mx.tanh"
+   ],
+   "copies": 1,
+   "workloads": [
+    "mul_gelu"
+   ],
+   "p": {
+    "mul_gelu": 0.48599449867879463
+   },
+   "T_orig_ms": {
+    "mul_gelu": 0.0059723969295575425
+   },
+   "T_rep_ms": {
+    "mul_gelu": 0.0059723969295575425
+   },
+   "roofline_ms": 0.004542347413980195,
+   "bound": "launch",
+   "s_max": 1.3148260987647085,
+   "T_shipped_ms": null,
+   "s": null,
+   "head_ms": 0.005822006086991341,
+   "hypotheses": 5,
+   "timing_workload": null,
+   "delivery": {
+    "mul_gelu": "graph"
+   },
+   "library_arm": {
+    "mul_gelu": "compiled"
+   },
+   "outcomes": {
+    "correct_slower": 6
+   },
+   "close_rule": "no discernible headroom: the region is launch-bound, the last two attempts did not move head, and the last three kernels each sat within one sigma of the launch floor clocked beside them"
+  },
+  {
+   "fingerprint": "1cb01eff852e302d",
+   "ops": [
+    "array.__mul__",
+    "array.__rmul__",
+    "array.__rmul__",
+    "array.__mul__",
+    "array.__mul__",
+    "array.__add__",
+    "array.__rmul__"
+   ],
+   "copies": 1,
+   "workloads": [
+    "mul_gelu"
+   ],
+   "p": {
+    "mul_gelu": 0.4862277295529333
+   },
+   "T_orig_ms": {
+    "mul_gelu": 0.006036370397251432
+   },
+   "T_rep_ms": {
+    "mul_gelu": 0.006036370397251432
+   },
+   "roofline_ms": 0.004631395810314581,
+   "bound": "launch",
+   "s_max": 1.3033587809117573,
+   "T_shipped_ms": null,
+   "s": null,
+   "head_ms": 0.005548581163790347,
+   "hypotheses": 5,
+   "timing_workload": null,
+   "delivery": {
+    "mul_gelu": "graph"
+   },
+   "library_arm": {
+    "mul_gelu": "compiled"
+   },
+   "outcomes": {
+    "correct_slower": 6
+   },
+   "close_rule": "the job budget is spent"
+  }
+ ],
+ "hypotheses": [
+  {
+   "id": "scaffold",
+   "region": "7a3124d9d5ee482d",
+   "kind": "scaffold",
+   "hypothesis": "the harness's starting kernel",
+   "assoc_tag": "preserving",
+   "parent": null,
+   "kernel": "r7a3124d9d5ee482d_scaffold",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.03591571168275019,
+   "library_ms": 0.003048435225738064,
+   "win_ms": -0.032911280470800525,
+   "sigma_ms": 0.00010926207445909209,
+   "floor_ms": 0.003997591702831837,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "mul_gelu",
+   "timing_case": "mul_gelu"
+  },
+  {
+   "id": "fused_elem",
+   "region": "7a3124d9d5ee482d",
+   "kind": "single-pass one thread per element",
+   "hypothesis": "Replace the ten staged passes through nine scratch buffers with one dispatch where each thread loads in0/in1 once, carries the whole chain in registers in the recorded op order (separate multiply then add, bitcast to block FMA contraction, precise tanh) and writes out0 once. Removes the launch/scratch overhead that dominates a 4096-element launch-bound region; 4096 threads in 256-wide groups spread across cores.",
+   "assoc_tag": "preserving",
+   "parent": "r7a3124d9d5ee482d_scaffold",
+   "kernel": "r7a3124d9d5ee482d_fused_elem",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.004882281660676121,
+   "library_ms": 0.003924610996661176,
+   "win_ms": -0.0008842156534144003,
+   "sigma_ms": 0.00017042839372314128,
+   "floor_ms": 0.004354202159992982,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "mul_gelu",
+   "timing_case": "mul_gelu"
+  },
+  {
+   "id": "fused_vec4",
+   "region": "7a3124d9d5ee482d",
+   "kind": "float4 vectorized lanes",
+   "hypothesis": "Same register chain but each thread handles four contiguous elements via float4 loads/stores (1024 threads), cutting instruction count and memory transactions per element; differs from fused_elem in memory access width and thread count.",
+   "assoc_tag": "preserving",
+   "parent": "r7a3124d9d5ee482d_scaffold",
+   "kernel": "r7a3124d9d5ee482d_fused_vec4",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.00564142813537649,
+   "library_ms": 0.0037320739951703973,
+   "win_ms": -0.0017871083102920966,
+   "sigma_ms": 0.0011913434467497475,
+   "floor_ms": 0.004436319261732642,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "mul_gelu",
+   "timing_case": "mul_gelu"
+  },
+  {
+   "id": "fused_smallgrid",
+   "region": "7a3124d9d5ee482d",
+   "kind": "few wide threadgroups with grid-stride loop",
+   "hypothesis": "Use a small number of threadgroups (e.g. 4 groups of 256) with a grid-stride loop of 4 elements per thread, testing whether fewer threadgroups reduce dispatch scheduling cost for such a tiny problem versus flooding all cores.",
+   "assoc_tag": "preserving",
+   "parent": "r7a3124d9d5ee482d_scaffold",
+   "kernel": "r7a3124d9d5ee482d_fused_smallgrid",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.005820262400840265,
+   "library_ms": 0.003311632387160277,
+   "win_ms": -0.00243230598081793,
+   "sigma_ms": 0.00010844709323543051,
+   "floor_ms": 0.003815263626486745,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "mul_gelu",
+   "timing_case": "mul_gelu"
+  },
+  {
+   "id": "fused_unroll8",
+   "region": "7a3124d9d5ee482d",
+   "kind": "eight elements per thread unrolled",
+   "hypothesis": "512 threads each process 8 strided elements with the loop fully unrolled so independent tanh evaluations overlap in the pipeline; tests ILP within a thread as opposed to width (vec4) or thread count (elem).",
+   "assoc_tag": "preserving",
+   "parent": "r7a3124d9d5ee482d_scaffold",
+   "kernel": "r7a3124d9d5ee482d_fused_unroll8",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.006832695583065575,
+   "library_ms": 0.002842949722704689,
+   "win_ms": -0.004102626083992263,
+   "sigma_ms": 0.00036332355550421953,
+   "floor_ms": 0.0036204923312854968,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "mul_gelu",
+   "timing_case": "mul_gelu"
+  },
+  {
+   "id": "lean_abi",
+   "region": "7a3124d9d5ee482d",
+   "kind": "drop shape buffer, exact grid",
+   "hypothesis": "fused_elem references in0_shape, which makes the harness bind an extra shape buffer per launch; on a launch-bound 4096-element region every bound argument costs encoder time. Launch exactly in0.shape[0] threads so no bounds check or shape buffer is needed, keep the same exact register chain, and use 128-wide groups (32 groups) to spread across the 10 cores.",
+   "assoc_tag": "preserving",
+   "parent": "r7a3124d9d5ee482d_fused_elem",
+   "kernel": "r7a3124d9d5ee482d_lean_abi",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.005080972937552055,
+   "library_ms": 0.0043545307148208055,
+   "win_ms": -0.0008369386719808557,
+   "sigma_ms": 0.0001323955059225876,
+   "floor_ms": 0.004597032541648527,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "mul_gelu",
+   "timing_case": "mul_gelu"
+  },
+  {
+   "id": "fma_chain",
+   "region": "7a3124d9d5ee482d",
+   "kind": "contracted FMA chain",
+   "hypothesis": "Allow the compiler to contract x + 0.044715*x^3 and 0.5x*(1+t) into fma ops (changing tag, within tolerance), trimming ALU latency per thread in the lean ABI layout; tests whether the per-thread chain length rather than launch overhead is what keeps us above library_ms.",
+   "assoc_tag": "changing",
+   "parent": "r7a3124d9d5ee482d_lean_abi",
+   "kernel": "r7a3124d9d5ee482d_fma_chain",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.004737998360474079,
+   "library_ms": 0.0035733142955273658,
+   "win_ms": -0.001166438694195147,
+   "sigma_ms": 0.0002215037092434881,
+   "floor_ms": 0.004209590571028364,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "mul_gelu",
+   "timing_case": "mul_gelu"
+  },
+  {
+   "id": "lean_tg1024",
+   "region": "7a3124d9d5ee482d",
+   "kind": "single 1024-wide groups",
+   "hypothesis": "Same lean ABI but 4 groups of 1024 threads, testing whether fewer, maximal threadgroups reduce scheduling cost for a tiny grid (opposite of the 128-wide layout).",
+   "assoc_tag": "preserving",
+   "parent": "r7a3124d9d5ee482d_lean_abi",
+   "kernel": "r7a3124d9d5ee482d_lean_tg1024",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.00511388643317557,
+   "library_ms": 0.003910530355281001,
+   "win_ms": -0.0015570956977014126,
+   "sigma_ms": 0.00011599398464264517,
+   "floor_ms": 0.004502418341728669,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "mul_gelu",
+   "timing_case": "mul_gelu"
+  },
+  {
+   "id": "lean_float2",
+   "region": "7a3124d9d5ee482d",
+   "kind": "float2 lanes, lean ABI",
+   "hypothesis": "2048 threads each handling a float2 pair with no shape buffer; halves thread count relative to lean_abi while keeping loads narrower than the float4 opener that showed high variance.",
+   "assoc_tag": "preserving",
+   "parent": "r7a3124d9d5ee482d_lean_abi",
+   "kernel": "r7a3124d9d5ee482d_lean_float2",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.0048716244895771615,
+   "library_ms": 0.0034085504547835674,
+   "win_ms": -0.0014540690531859636,
+   "sigma_ms": 0.00035390351607604906,
+   "floor_ms": 0.0039816529716521385,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "mul_gelu",
+   "timing_case": "mul_gelu"
+  },
+  {
+   "id": "no_template",
+   "region": "7a3124d9d5ee482d",
+   "kind": "drop template parameter",
+   "hypothesis": "Every single-dispatch variant sits ~1 us above library_ms regardless of grid, width, or ALU chain, so the residual is per-launch overhead of the custom kernel path itself. The inherited template [T=in0] may force a per-call specialization/lookup; supply an empty template and reference only fixed float buffers to see whether the harness dispatch gets cheaper. Same exact register chain as lean_abi.",
+   "assoc_tag": "preserving",
+   "parent": "r7a3124d9d5ee482d_lean_abi",
+   "kernel": "r7a3124d9d5ee482d_no_template",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.004839639309527469,
+   "library_ms": 0.0035868364272977436,
+   "win_ms": -0.0012573804873388444,
+   "sigma_ms": 0.00013198377271179512,
+   "floor_ms": 0.004154323142662961,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "mul_gelu",
+   "timing_case": "mul_gelu"
+  },
+  {
+   "id": "fma_float2_notemplate",
+   "region": "7a3124d9d5ee482d",
+   "kind": "combined fma float2 lean",
+   "hypothesis": "Combine the two smallest measured times (fma_chain and lean_float2) with no template: 2048 float2 threads, contracted FMA for x+0.044715*x^3 and 0.5x*(1+t), within tolerance; tests whether the individually within-sigma gains stack.",
+   "assoc_tag": "changing",
+   "parent": "r7a3124d9d5ee482d_no_template",
+   "kernel": "r7a3124d9d5ee482d_fma_float2_notemplate",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.005221521403632967,
+   "library_ms": 0.0039776123446364445,
+   "win_ms": -0.0013335020280835805,
+   "sigma_ms": 0.00013812776538140234,
+   "floor_ms": 0.004597455323062419,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "mul_gelu",
+   "timing_case": "mul_gelu"
+  },
+  {
+   "id": "scaffold",
+   "region": "9109ec5c435546df",
+   "kind": "scaffold",
+   "hypothesis": "the harness's starting kernel",
+   "assoc_tag": "preserving",
+   "parent": null,
+   "kernel": "r9109ec5c435546df_scaffold",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.03275456619483972,
+   "library_ms": 0.006903407336352743,
+   "win_ms": -0.025926292300595434,
+   "sigma_ms": 0.0001144749114651749,
+   "floor_ms": 0.005029973331523737,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "mul_gelu",
+   "timing_case": "mul_gelu"
+  },
+  {
+   "id": "fused_elem",
+   "region": "9109ec5c435546df",
+   "kind": "single-dispatch elementwise fusion",
+   "hypothesis": "one thread per element computes both outputs in registers in the exact recorded op order (t0=x*y, 0.5*t0, 0.044715*t0, *t0, *t0, t0+t4, c*t5, precise tanh, 1+t7); removes the scaffold's 7 scratch round-trips and 8 device barriers, replacing 9 library launches with one dispatch of 4096 threads",
+   "assoc_tag": "preserving",
+   "parent": "r9109ec5c435546df_scaffold",
+   "kernel": "r9109ec5c435546df_fused_elem",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.005882292568285751,
+   "library_ms": 0.008175612623846239,
+   "win_ms": 0.00231765854361807,
+   "sigma_ms": 0.00028825785113532074,
+   "floor_ms": 0.005605584099901065,
+   "summary": "correct_slower: whole-model speedup unresolved",
+   "target_workload": "mul_gelu",
+   "timing_case": "mul_gelu"
+  },
+  {
+   "id": "fused_float4",
+   "region": "9109ec5c435546df",
+   "kind": "float4 vectorized fusion",
+   "hypothesis": "same exact chain but each thread loads a float4 of x and y and stores float4 to both outputs; 1024 threads, 4x fewer memory instructions per element, differs from fused_elem by vector width and thread count",
+   "assoc_tag": "preserving",
+   "parent": "r9109ec5c435546df_scaffold",
+   "kernel": "r9109ec5c435546df_fused_float4",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.005808124297907233,
+   "library_ms": 0.007344518369323881,
+   "win_ms": 0.0007505008662067477,
+   "sigma_ms": 0.001200173006300009,
+   "floor_ms": 0.004839385188491651,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "mul_gelu",
+   "timing_case": "mul_gelu"
+  },
+  {
+   "id": "fma_reassoc",
+   "region": "9109ec5c435546df",
+   "kind": "FMA reassociated polynomial",
+   "hypothesis": "tolerance-rule variant: inner = c*fma(0.044715*t0*t0, t0, t0), shortening the dependent ALU chain with explicit fma; tests whether chain length matters at all here versus dispatch cost",
+   "assoc_tag": "changing",
+   "parent": "r9109ec5c435546df_scaffold",
+   "kernel": "r9109ec5c435546df_fma_reassoc",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.005712667753725848,
+   "library_ms": 0.007610502983226612,
+   "win_ms": 0.001954737971884426,
+   "sigma_ms": 0.00045565865806550016,
+   "floor_ms": 0.006013712140195297,
+   "summary": "correct_slower: whole-model speedup unresolved",
+   "target_workload": "mul_gelu",
+   "timing_case": "mul_gelu"
+  },
+  {
+   "id": "tanh_via_exp",
+   "region": "9109ec5c435546df",
+   "kind": "tanh expressed through precise exp",
+   "hypothesis": "tolerance-rule variant: out1 = 2 - 2/(exp(2z)+1) using metal::precise::exp instead of precise::tanh, a cheaper exact-math transcendental with different rounding; tests whether the tanh call is the per-thread bottleneck",
+   "assoc_tag": "changing",
+   "parent": "r9109ec5c435546df_scaffold",
+   "kernel": "r9109ec5c435546df_tanh_via_exp",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.00554289814642177,
+   "library_ms": 0.00887585165096814,
+   "win_ms": 0.003307008705548527,
+   "sigma_ms": 0.00020940702015807353,
+   "floor_ms": 0.006202013741617808,
+   "summary": "correct_slower: whole-model speedup unresolved",
+   "target_workload": "mul_gelu",
+   "timing_case": "mul_gelu"
+  },
+  {
+   "id": "fixed_shape_lit",
+   "region": "9109ec5c435546df",
+   "kind": "shape-literal launch without shape buffers",
+   "hypothesis": "the in-model gap (~2 us) looks like dispatch overhead rather than per-thread work; this variant hardcodes 4096 in the launch grammar and body (no inN_shape/strides buffers, no template use), uses the exp-based tanh, and guards with fallback_predicate in0.shape[0] != 4096; tests whether shape-environment and buffer-binding cost moves the in-model time",
+   "assoc_tag": "changing",
+   "parent": "r9109ec5c435546df_tanh_via_exp",
+   "kernel": "r9109ec5c435546df_fixed_shape_lit",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.005302436750571874,
+   "library_ms": 0.006238537869525512,
+   "win_ms": 0.0009672471985373715,
+   "sigma_ms": 0.0009774891306674443,
+   "floor_ms": 0.004685643964540609,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "mul_gelu",
+   "timing_case": "mul_gelu"
+  },
+  {
+   "id": "one_group_float4",
+   "region": "9109ec5c435546df",
+   "kind": "single 1024-thread threadgroup float4",
+   "hypothesis": "one threadgroup of 1024 threads each handling a float4 covers all 4096 elements: a single-threadgroup dispatch may reduce scheduling overhead compared with 16 groups of 256 scalar threads; differs from fused_float4 by putting everything in one group",
+   "assoc_tag": "changing",
+   "parent": "r9109ec5c435546df_fused_float4",
+   "kernel": "r9109ec5c435546df_one_group_float4",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.006221340318863812,
+   "library_ms": 0.006774596517042535,
+   "win_ms": 0.0006265137774299303,
+   "sigma_ms": 0.0008437358461694548,
+   "floor_ms": 0.004546411295241008,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "mul_gelu",
+   "timing_case": "mul_gelu"
+  },
+  {
+   "id": "branchless_exp",
+   "region": "9109ec5c435546df",
+   "kind": "branchless rational tanh with clamp",
+   "hypothesis": "replace the INFINITY branch with a clamp on 2z before exp (min(2z, 80)) so no divergent branch exists; tests whether the branch costs anything at all in-model",
+   "assoc_tag": "changing",
+   "parent": "r9109ec5c435546df_tanh_via_exp",
+   "kernel": "r9109ec5c435546df_branchless_exp",
+   "verdict": "failed",
+   "failed_gate": "smoke",
+   "region_ms": null,
+   "library_ms": null,
+   "win_ms": null,
+   "sigma_ms": null,
+   "floor_ms": null,
+   "summary": "failed at smoke: nonfinite; regime; nonfinite_pattern; 2 elements break the non-finite pattern",
+   "target_workload": "mul_gelu",
+   "timing_case": "mul_gelu"
+  },
+  {
+   "id": "branchless_fix",
+   "region": "9109ec5c435546df",
+   "kind": "NaN-preserving clamp repair",
+   "hypothesis": "metal::min(NaN, 80) returns 80, so NaN inputs became finite; keep the clamp but route NaN through unchanged (a = z!=z ? z : min(2z,80)), keeping the branch-free fast path while matching the non-finite pattern",
+   "assoc_tag": "changing",
+   "parent": "r9109ec5c435546df_branchless_exp",
+   "kernel": "r9109ec5c435546df_branchless_fix",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.005414043090804205,
+   "library_ms": 0.006128963311071146,
+   "win_ms": 0.0008024447157639041,
+   "sigma_ms": 0.0006243924775217626,
+   "floor_ms": 0.005250683178224991,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "mul_gelu",
+   "timing_case": "mul_gelu"
+  },
+  {
+   "id": "lean_float4_fixed_judge_babble1",
+   "region": "9109ec5c435546df",
+   "kind": "fixed-shape float4 with small threadgroups",
+   "hypothesis": "combine the shape-literal launch (no shape buffers bound) with float4 loads/stores and 64-thread groups so 16 groups spread across the 10 cores; tests whether fewer bound buffers plus wide memory ops together shave the in-model dispatch cost",
+   "assoc_tag": null,
+   "parent": null,
+   "kernel": null,
+   "verdict": "failed",
+   "failed_gate": "judge_babble",
+   "region_ms": null,
+   "library_ms": null,
+   "win_ms": null,
+   "sigma_ms": null,
+   "floor_ms": null,
+   "summary": "failed at judge_babble: ",
+   "target_workload": null,
+   "timing_case": null
+  },
+  {
+   "id": "lean_float4_fixed",
+   "region": "9109ec5c435546df",
+   "kind": "fixed-shape float4 with small threadgroups",
+   "hypothesis": "combine the shape-literal launch (no shape buffers bound) with float4 loads/stores and 64-thread groups so 16 groups spread across the 10 cores; tests whether fewer bound buffers plus wide memory ops together shave the in-model dispatch cost",
+   "assoc_tag": "changing",
+   "parent": "r9109ec5c435546df_fused_float4",
+   "kernel": "r9109ec5c435546df_lean_float4_fixed",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.0052946123333973555,
+   "library_ms": 0.006892973430838965,
+   "win_ms": 0.0011163056065338593,
+   "sigma_ms": 0.0007796212175553985,
+   "floor_ms": 0.004734688470600672,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "mul_gelu",
+   "timing_case": "mul_gelu"
+  },
+  {
+   "id": "scaffold",
+   "region": "04d94ef06a69df05",
+   "kind": "scaffold",
+   "hypothesis": "the harness's starting kernel",
+   "assoc_tag": "preserving",
+   "parent": null,
+   "kernel": "r04d94ef06a69df05_scaffold",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.029091695584926983,
+   "library_ms": 0.00613903029676096,
+   "win_ms": -0.0230126561229529,
+   "sigma_ms": 0.00012368494752207303,
+   "floor_ms": 0.004479705457429902,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "mul_gelu",
+   "timing_case": "mul_gelu"
+  },
+  {
+   "id": "fused_elem",
+   "region": "04d94ef06a69df05",
+   "kind": "register chain one thread per element",
+   "hypothesis": "replace the 8 scaffold stages and 6 scratch buffers with one thread per element that carries the chain in registers in the recorded order; bitcast barriers keep multiply and add separate so no fma contraction changes bits. Cuts 6 scratch writes/reads and all device barriers; expected to land near library_ms since the region is launch-bound.",
+   "assoc_tag": "preserving",
+   "parent": "r04d94ef06a69df05_scaffold",
+   "kernel": "r04d94ef06a69df05_fused_elem",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.005822006086991341,
+   "library_ms": 0.007509012184864669,
+   "win_ms": 0.0020227855485346587,
+   "sigma_ms": 0.0002732563183083451,
+   "floor_ms": 0.005966218843780182,
+   "summary": "correct_slower: whole-model speedup unresolved",
+   "target_workload": "mul_gelu",
+   "timing_case": "mul_gelu"
+  },
+  {
+   "id": "fused_float4",
+   "region": "04d94ef06a69df05",
+   "kind": "float4 vectorized chain",
+   "hypothesis": "1024 threads each load a float4 of in0/in1 and store float4 outputs, quartering thread count and load/store instructions; tests whether wider memory ops beat scalar threads on this small launch-bound region.",
+   "assoc_tag": "preserving",
+   "parent": "r04d94ef06a69df05_scaffold",
+   "kernel": "r04d94ef06a69df05_fused_float4",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.0069965554600172255,
+   "library_ms": 0.007713908087151521,
+   "win_ms": 0.0006558274039140943,
+   "sigma_ms": 0.00034980734965504406,
+   "floor_ms": 0.005877689068240098,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "mul_gelu",
+   "timing_case": "mul_gelu"
+  },
+  {
+   "id": "fma_chain",
+   "region": "04d94ef06a69df05",
+   "kind": "fma-contracted chain under tolerance",
+   "hypothesis": "same one-thread-per-element fusion but letting t0 + t4 contract into a single fma and folding the constants into 0.7978845608*t0*(1+0.044715*t0*t0): fewer ALU ops per element; measured under the tolerance rule instead of bit-exactness.",
+   "assoc_tag": "changing",
+   "parent": "r04d94ef06a69df05_scaffold",
+   "kernel": "r04d94ef06a69df05_fma_chain",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.005622782732527225,
+   "library_ms": 0.00708181051334414,
+   "win_ms": 0.0006915464510735218,
+   "sigma_ms": 0.0007845925652099916,
+   "floor_ms": 0.005140398011113016,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "mul_gelu",
+   "timing_case": "mul_gelu"
+  },
+  {
+   "id": "tanh_via_exp",
+   "region": "04d94ef06a69df05",
+   "kind": "tanh from precise exp",
+   "hypothesis": "compute tanh(z) as 1 - 2/(exp(2z)+1) with metal::precise::exp, passing NaN through and saturating large |z|; tests whether the library tanh path is costlier than one exp plus a divide on this chip.",
+   "assoc_tag": "changing",
+   "parent": "r04d94ef06a69df05_scaffold",
+   "kernel": "r04d94ef06a69df05_tanh_via_exp",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.006579226984675708,
+   "library_ms": 0.008036572870588605,
+   "win_ms": 0.001287416895278371,
+   "sigma_ms": 0.0012194229513053335,
+   "floor_ms": 0.006844809432040674,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "mul_gelu",
+   "timing_case": "mul_gelu"
+  },
+  {
+   "id": "no_shape_bind",
+   "region": "04d94ef06a69df05",
+   "kind": "drop shape buffer bindings",
+   "hypothesis": "the fused_elem body names in0_shape, which makes the harness bind an extra shape buffer per dispatch; since in-model losses look like dispatch/binding overhead (~3 us) rather than math, remove every inN_shape reference and rely on the exact grid size for bounds, keeping the bit-exact register chain. Tests whether argument binding is the in-model cost.",
+   "assoc_tag": "preserving",
+   "parent": "r04d94ef06a69df05_fused_elem",
+   "kernel": "r04d94ef06a69df05_no_shape_bind",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.005276282575758397,
+   "library_ms": 0.006620258160261943,
+   "win_ms": 0.000993093398511005,
+   "sigma_ms": 0.0009179871987598659,
+   "floor_ms": 0.004844018289788991,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "mul_gelu",
+   "timing_case": "mul_gelu"
+  },
+  {
+   "id": "scaffold",
+   "region": "1cb01eff852e302d",
+   "kind": "scaffold",
+   "hypothesis": "the harness's starting kernel",
+   "assoc_tag": "preserving",
+   "parent": null,
+   "kernel": "r1cb01eff852e302d_scaffold",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.022929735661458946,
+   "library_ms": 0.0065912821859866935,
+   "win_ms": -0.016422323604862017,
+   "sigma_ms": 0.000361079889235526,
+   "floor_ms": 0.004716488789538138,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "mul_gelu",
+   "timing_case": "mul_gelu"
+  },
+  {
+   "id": "fused_elem",
+   "region": "1cb01eff852e302d",
+   "kind": "fused one-thread-per-element",
+   "hypothesis": "one dispatch of 4096 threads computes t0=in0*in1 once in a register and writes out0=0.5*t0 and out1=0.7978845608*(t0+((0.044715*t0)*t0)*t0) in the original op order; removes five scratch round-trips and the seven serialized loops of the scaffold, and replaces seven library launches with one.",
+   "assoc_tag": "preserving",
+   "parent": "r1cb01eff852e302d_scaffold",
+   "kernel": "r1cb01eff852e302d_fused_elem",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.005453480186649229,
+   "library_ms": 0.007902962670512203,
+   "win_ms": 0.002457599586115562,
+   "sigma_ms": 0.0005396572727520099,
+   "floor_ms": 0.005849980604235621,
+   "summary": "correct_slower: whole-model regression",
+   "target_workload": "mul_gelu",
+   "timing_case": "mul_gelu"
+  },
+  {
+   "id": "strided_multi",
+   "region": "1cb01eff852e302d",
+   "kind": "few threadgroups, strided elements per thread",
+   "hypothesis": "launch only 256 threads (two threadgroups) each looping over 16 strided elements, testing whether a smaller dispatch footprint lowers the fixed launch cost for this launch-bound 4096-element region compared with a full-width grid.",
+   "assoc_tag": "preserving",
+   "parent": "r1cb01eff852e302d_scaffold",
+   "kernel": "r1cb01eff852e302d_strided_multi",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.011933001863353915,
+   "library_ms": 0.009339369878742017,
+   "win_ms": -0.0025988004868262157,
+   "sigma_ms": 0.0010182127952130685,
+   "floor_ms": 0.006092434694327301,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "mul_gelu",
+   "timing_case": "mul_gelu"
+  },
+  {
+   "id": "two_stage_split",
+   "region": "1cb01eff852e302d",
+   "kind": "two-stage split outputs",
+   "hypothesis": "stage A computes out0 and stage B computes out1 independently from in0/in1 as two small dispatches that MLX may overlap; tests whether output-independent stages schedule better than one dispatch writing two buffers.",
+   "assoc_tag": "preserving",
+   "parent": "r1cb01eff852e302d_scaffold",
+   "kernel": "r1cb01eff852e302d_two_stage_split",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.00906671398154432,
+   "library_ms": 0.007852040601338327,
+   "win_ms": -0.0010743185929918625,
+   "sigma_ms": 0.0003076387054607073,
+   "floor_ms": 0.005863966182182218,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "mul_gelu",
+   "timing_case": "mul_gelu"
+  },
+  {
+   "id": "vec4_wide_tg",
+   "region": "1cb01eff852e302d",
+   "kind": "float4 packed loads with 1024-wide threadgroups",
+   "hypothesis": "1024 threads each load one float4 of in0/in1 via device float4 reinterpretation and write float4 to both outputs, in four 1024-wide threadgroups; tests whether fewer, wider memory transactions and fewer threadgroups cut dispatch time below fused_elem's 4096 scalar threads.",
+   "assoc_tag": "preserving",
+   "parent": "r1cb01eff852e302d_scaffold",
+   "kernel": "r1cb01eff852e302d_vec4_wide_tg",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.005801471561426297,
+   "library_ms": 0.006493254295492079,
+   "win_ms": 0.000639518111711368,
+   "sigma_ms": 0.0007279713431083276,
+   "floor_ms": 0.0046849868522258475,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "mul_gelu",
+   "timing_case": "mul_gelu"
+  },
+  {
+   "id": "tg64_spread",
+   "region": "1cb01eff852e302d",
+   "kind": "small threadgroups spread across cores",
+   "hypothesis": "keep fused_elem's single 4096-thread dispatch and identical math order, but launch it as 64 threadgroups of 64 threads instead of 16 of 256; more, smaller threadgroups can be distributed across all 10 cores at once, which may shave the in-model tail that made fused_elem lose by ~3 us despite its isolated win. Differs from vec4_wide_tg (fewer, wider groups) and strided_multi (two groups) by going the opposite direction in group count.",
+   "assoc_tag": "preserving",
+   "parent": "r1cb01eff852e302d_fused_elem",
+   "kernel": "r1cb01eff852e302d_tg64_spread",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.005548581163790347,
+   "library_ms": 0.008129981870297343,
+   "win_ms": 0.0026282681231521937,
+   "sigma_ms": 0.0003711204094553438,
+   "floor_ms": 0.005959397463627376,
+   "summary": "correct_slower: whole-model speedup unresolved",
+   "target_workload": "mul_gelu",
+   "timing_case": "mul_gelu"
+  }
+ ],
+ "accepted": [],
+ "pricing": [
+  {
+   "fingerprint": "9109ec5c435546df",
+   "ops": [
+    "array.__mul__",
+    "array.__rmul__",
+    "array.__rmul__",
+    "array.__mul__",
+    "array.__mul__",
+    "array.__add__",
+    "array.__rmul__",
+    "mx.tanh",
+    "array.__radd__"
+   ],
+   "copies": 1,
+   "p": {
+    "mul_gelu": 0.4932060701592351
+   },
+   "region_ms": {
+    "mul_gelu": 0.006012482629654911
+   },
+   "ranking_basis": "estimated_removable_share",
+   "price_stability": {
+    "mul_gelu": 0.9663664499484367
+   },
+   "estimate_basis": "boundary_probe_and_known_compute",
+   "compute_model_complete": true,
+   "headroom_is_estimate": true,
+   "estimated_s_max": {
+    "mul_gelu": 1.2836384297996575
+   },
+   "measured_compute_gflops": {
+    "mul_gelu": {
+     "float32": 2872.7276718078965
+    }
+   },
+   "potential_model_latency_reduction_pct": {
+    "mul_gelu": 10.898099656416383
+   },
+   "status": "eligible",
+   "reason": null
+  },
+  {
+   "fingerprint": "1cb01eff852e302d",
+   "ops": [
+    "array.__mul__",
+    "array.__rmul__",
+    "array.__rmul__",
+    "array.__mul__",
+    "array.__mul__",
+    "array.__add__",
+    "array.__rmul__"
+   ],
+   "copies": 1,
+   "p": {
+    "mul_gelu": 0.4862277295529333
+   },
+   "region_ms": {
+    "mul_gelu": 0.006036370397251432
+   },
+   "ranking_basis": "estimated_removable_share",
+   "price_stability": {
+    "mul_gelu": 0.9924725825585583
+   },
+   "estimate_basis": "boundary_probe_and_known_compute",
+   "compute_model_complete": true,
+   "headroom_is_estimate": true,
+   "estimated_s_max": {
+    "mul_gelu": 1.3033587809117573
+   },
+   "measured_compute_gflops": {
+    "mul_gelu": {
+     "float32": 2877.093886051828
+    }
+   },
+   "potential_model_latency_reduction_pct": {
+    "mul_gelu": 11.317025936594806
+   },
+   "status": "eligible",
+   "reason": null
+  },
+  {
+   "fingerprint": "04d94ef06a69df05",
+   "ops": [
+    "array.__mul__",
+    "array.__rmul__",
+    "array.__rmul__",
+    "array.__mul__",
+    "array.__mul__",
+    "array.__add__",
+    "array.__rmul__",
+    "mx.tanh"
+   ],
+   "copies": 1,
+   "p": {
+    "mul_gelu": 0.48599449867879463
+   },
+   "region_ms": {
+    "mul_gelu": 0.0059723969295575425
+   },
+   "ranking_basis": "estimated_removable_share",
+   "price_stability": {
+    "mul_gelu": 0.7517667732661508
+   },
+   "estimate_basis": "boundary_probe_and_known_compute",
+   "compute_model_complete": true,
+   "headroom_is_estimate": true,
+   "estimated_s_max": {
+    "mul_gelu": 1.3148260987647085
+   },
+   "measured_compute_gflops": {
+    "mul_gelu": {
+     "float32": 2874.9548582004263
+    }
+   },
+   "potential_model_latency_reduction_pct": {
+    "mul_gelu": 11.63680521583072
+   },
+   "status": "eligible",
+   "reason": null
+  },
+  {
+   "fingerprint": "7a3124d9d5ee482d",
+   "ops": [
+    "array.__mul__",
+    "array.__rmul__",
+    "array.__rmul__",
+    "array.__mul__",
+    "array.__mul__",
+    "array.__add__",
+    "array.__rmul__",
+    "mx.tanh",
+    "array.__radd__",
+    "array.__mul__"
+   ],
+   "copies": 1,
+   "p": {
+    "mul_gelu": 0.22196363404829678
+   },
+   "region_ms": {
+    "mul_gelu": 0.0026840399230076443
+   },
+   "ranking_basis": "estimated_removable_share",
+   "price_stability": {
+    "mul_gelu": 0.9557009297908619
+   },
+   "estimate_basis": "boundary_probe_and_known_compute",
+   "compute_model_complete": true,
+   "headroom_is_estimate": true,
+   "estimated_s_max": {
+    "mul_gelu": 0.7050267740909146
+   },
+   "measured_compute_gflops": {
+    "mul_gelu": {
+     "float32": 2851.8854234782575
+    }
+   },
+   "potential_model_latency_reduction_pct": {
+    "mul_gelu": 0.0
+   },
+   "status": "eligible",
+   "reason": null
+  },
+  {
+   "fingerprint": "c8dc8601db4896da",
+   "ops": [
+    "array.__radd__"
+   ],
+   "copies": 1,
+   "p": {
+    "mul_gelu": 0.16138946222348693
+   },
+   "region_ms": {
+    "mul_gelu": 0.001982960807724559
+   },
+   "ranking_basis": "estimated_removable_share",
+   "price_stability": {
+    "mul_gelu": 0.7413156815739138
+   },
+   "estimate_basis": "boundary_probe_and_known_compute",
+   "compute_model_complete": true,
+   "headroom_is_estimate": true,
+   "estimated_s_max": {
+    "mul_gelu": 0.549306735230723
+   },
+   "measured_compute_gflops": {
+    "mul_gelu": {
+     "float32": 2874.9548582004263
+    }
+   },
+   "potential_model_latency_reduction_pct": {
+    "mul_gelu": 0.0
+   },
+   "status": "eligible",
+   "reason": null
+  },
+  {
+   "fingerprint": "95fabc3bac2e86e6",
+   "ops": [
+    "mx.tanh"
+   ],
+   "copies": 1,
+   "p": {
+    "mul_gelu": 0.1410092624252651
+   },
+   "region_ms": {
+    "mul_gelu": 0.0017237481135798757
+   },
+   "ranking_basis": "estimated_removable_share",
+   "price_stability": {
+    "mul_gelu": 0.885819208962084
+   },
+   "estimate_basis": "boundary_probe_and_known_compute",
+   "compute_model_complete": true,
+   "headroom_is_estimate": true,
+   "estimated_s_max": {
+    "mul_gelu": 0.4968713898028152
+   },
+   "measured_compute_gflops": {
+    "mul_gelu": {
+     "float32": 2877.093886051828
+    }
+   },
+   "potential_model_latency_reduction_pct": {
+    "mul_gelu": 0.0
+   },
+   "status": "eligible",
+   "reason": null
+  }
+ ],
+ "stranded": [],
+ "coverage": {
+  "discovery": {
+   "legal_regions": 16,
+   "supported_regions": 16,
+   "unsupported_regions": 0,
+   "never_evaluated_ops": 0
+  },
+  "step_floor": {
+   "mul_gelu": {
+    "bytes_mb": 0.049152,
+    "gflop": 4.096e-05,
+    "launches": 10,
+    "t_mem_ms": 0.0005315246909276539,
+    "t_compute_ms": 1.4362794460709429e-05,
+    "floor_ms": 0.0005315246909276539,
+    "step_ms": 0.011774635990786422,
+    "room": 0.9548585033674444
+   }
+  },
+  "selection": {
+   "candidates": 16,
+   "waves": [
+    {
+     "wave": 1,
+     "selected": 1,
+     "deferred": 15,
+     "conflicts": {
+      "9109ec5c435546df": [
+       "7a3124d9d5ee482d"
+      ],
+      "04d94ef06a69df05": [
+       "7a3124d9d5ee482d"
+      ],
+      "1cb01eff852e302d": [
+       "7a3124d9d5ee482d"
+      ],
+      "8e659078344305e4": [
+       "7a3124d9d5ee482d"
+      ],
+      "841bc09c1f99b489": [
+       "7a3124d9d5ee482d"
+      ],
+      "ec46ea64d554e1df": [
+       "7a3124d9d5ee482d"
+      ],
+      "418ad1b99857ae07": [
+       "7a3124d9d5ee482d"
+      ],
+      "e400766e6f3b634c": [
+       "7a3124d9d5ee482d"
+      ],
+      "5f4da76c370277de": [
+       "7a3124d9d5ee482d"
+      ],
+      "38348ba1dc46deb8": [
+       "7a3124d9d5ee482d"
+      ],
+      "42bedbf13278790d": [
+       "7a3124d9d5ee482d"
+      ],
+      "6bb5d39f83858186": [
+       "7a3124d9d5ee482d"
+      ],
+      "95fabc3bac2e86e6": [
+       "7a3124d9d5ee482d"
+      ],
+      "c8dc8601db4896da": [
+       "7a3124d9d5ee482d"
+      ],
+      "cb2040a04ab6faa9": [
+       "7a3124d9d5ee482d"
+      ]
+     }
+    },
+    {
+     "wave": 2,
+     "selected": 1,
+     "deferred": 14,
+     "conflicts": {
+      "04d94ef06a69df05": [
+       "9109ec5c435546df"
+      ],
+      "1cb01eff852e302d": [
+       "9109ec5c435546df"
+      ],
+      "8e659078344305e4": [
+       "9109ec5c435546df"
+      ],
+      "841bc09c1f99b489": [
+       "9109ec5c435546df"
+      ],
+      "ec46ea64d554e1df": [
+       "9109ec5c435546df"
+      ],
+      "418ad1b99857ae07": [
+       "9109ec5c435546df"
+      ],
+      "e400766e6f3b634c": [
+       "9109ec5c435546df"
+      ],
+      "5f4da76c370277de": [
+       "9109ec5c435546df"
+      ],
+      "38348ba1dc46deb8": [
+       "9109ec5c435546df"
+      ],
+      "42bedbf13278790d": [
+       "9109ec5c435546df"
+      ],
+      "6bb5d39f83858186": [
+       "9109ec5c435546df"
+      ],
+      "95fabc3bac2e86e6": [
+       "9109ec5c435546df"
+      ],
+      "c8dc8601db4896da": [
+       "9109ec5c435546df"
+      ],
+      "cb2040a04ab6faa9": [
+       "9109ec5c435546df"
+      ]
+     }
+    },
+    {
+     "wave": 3,
+     "selected": 2,
+     "deferred": 12,
+     "conflicts": {
+      "1cb01eff852e302d": [
+       "04d94ef06a69df05"
+      ],
+      "8e659078344305e4": [
+       "04d94ef06a69df05"
+      ],
+      "841bc09c1f99b489": [
+       "04d94ef06a69df05"
+      ],
+      "ec46ea64d554e1df": [
+       "04d94ef06a69df05"
+      ],
+      "418ad1b99857ae07": [
+       "04d94ef06a69df05"
+      ],
+      "e400766e6f3b634c": [
+       "04d94ef06a69df05"
+      ],
+      "5f4da76c370277de": [
+       "04d94ef06a69df05"
+      ],
+      "38348ba1dc46deb8": [
+       "04d94ef06a69df05"
+      ],
+      "42bedbf13278790d": [
+       "04d94ef06a69df05"
+      ],
+      "6bb5d39f83858186": [
+       "04d94ef06a69df05"
+      ],
+      "95fabc3bac2e86e6": [
+       "04d94ef06a69df05"
+      ],
+      "cb2040a04ab6faa9": [
+       "04d94ef06a69df05"
+      ]
+     }
+    },
+    {
+     "wave": 4,
+     "selected": 2,
+     "deferred": 10,
+     "conflicts": {
+      "8e659078344305e4": [
+       "1cb01eff852e302d"
+      ],
+      "841bc09c1f99b489": [
+       "1cb01eff852e302d"
+      ],
+      "ec46ea64d554e1df": [
+       "1cb01eff852e302d"
+      ],
+      "418ad1b99857ae07": [
+       "1cb01eff852e302d"
+      ],
+      "e400766e6f3b634c": [
+       "1cb01eff852e302d"
+      ],
+      "5f4da76c370277de": [
+       "1cb01eff852e302d"
+      ],
+      "38348ba1dc46deb8": [
+       "1cb01eff852e302d"
+      ],
+      "42bedbf13278790d": [
+       "1cb01eff852e302d"
+      ],
+      "6bb5d39f83858186": [
+       "1cb01eff852e302d"
+      ],
+      "cb2040a04ab6faa9": [
+       "1cb01eff852e302d"
+      ]
+     }
+    }
+   ],
+   "unsearched": 12
+  },
+  "measured_atomic_share_this_wave": {
+   "mul_gelu": 0.1410092624252651
+  },
+  "step_ms": {
+   "mul_gelu": 0.011774635990786422
+  }
+ },
+ "final": {
+  "passed": true,
+  "reason": "no replacements installed"
+ }
+}

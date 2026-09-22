@@ -1,0 +1,44 @@
+{
+ "kernel_id": "r3043907d897f3fcb_h2_simd_row_vec4",
+ "name": "at_r3043907d897f3fcb_h2_simd_row_vec4",
+ "input_names": [
+  "in0",
+  "in1"
+ ],
+ "output_names": [
+  "out0"
+ ],
+ "header": "",
+ "grid": [
+  "in0.shape[0] * 32",
+  "1",
+  "1"
+ ],
+ "threadgroup": [
+  "256",
+  "1",
+  "1"
+ ],
+ "output_shapes": [
+  [
+   "in0.shape[0]"
+  ]
+ ],
+ "output_dtypes": [
+  "float32"
+ ],
+ "template": [
+  [
+   "T",
+   "in0"
+  ]
+ ],
+ "fallback_predicate": "in0.shape[1] != 1024",
+ "ensure_row_contiguous": true,
+ "atomic_outputs": false,
+ "native_call": null,
+ "input_signature": null,
+ "reference_sequence": null,
+ "stages": [],
+ "reassociates": false
+}

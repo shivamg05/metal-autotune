@@ -361,7 +361,7 @@ def stitch_qmm_chain(
     the library does per materialized op, so fp16 overflow to inf/nan happens
     at the same elements; the matmul bits are the library's own, and the
     chain is tolerance-level (library sigmoid differs from the precise::exp
-    composition by 1 ulp, PLATFORM.md).
+    composition by 1 ulp).
     Operands may be the running value, the matmul's own output, a python
     scalar, or a region input that is scalar-shaped, row-aligned (leading
     dims 1, last dim N), or exactly output-shaped. Every region output must

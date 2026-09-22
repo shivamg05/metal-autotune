@@ -10,7 +10,7 @@ from dataclasses import replace
 from types import SimpleNamespace
 
 from autotuner.judge import prompts
-from autotuner.judge.directions import DIRECTIONS, OPENERS, directions_for
+from autotuner.judge.directions import DIRECTIONS, OPENERS
 from autotuner.judge.scripted import ScriptedJudge
 from autotuner.ladder.gates import LadderResult
 from autotuner.loop import JobRunner, PromotionResult, RegionRun
@@ -50,6 +50,7 @@ def bare(tmp_path, budget=8, failing=()):
         else LadderResult("correct_slower", None, {}, 1., 2., 1., .01))
     runner.kernel_dir = tmp_path
     runner._kernel_from_proposal = lambda run, region, proposal, name: replace(SEED, kernel_id=name)
+    runner._static_refusal = lambda *a: None  # this bare runner has no traces to build a contract from
 
     def record(run, hyp_id, kind, text, tag, kernel, parent, result, outcome=None, **rest):
         if kernel is not None:  # the verdict the repair exception reads
@@ -58,37 +59,27 @@ def bare(tmp_path, budget=8, failing=()):
     return runner
 
 
-def opening(bound="memory"):
-    return RegionRun(region("r", 0, 2), scaffold=SEED, head=SEED, kernels={"seed": SEED},
-                     directions=directions_for(bound, 0, "r"))
+def opening():
+    return RegionRun(region("r", 0, 2), scaffold=SEED, head=SEED, kernels={"seed": SEED})
 
 
-def test_directions_are_masked_by_bound_and_ordered_by_seed():
-    for bound in ("memory", "compute", "launch"):
-        offered = directions_for(bound, 0, "r")
-        assert offered and all(bound in d["pays"] for d in offered)
-        assert offered == directions_for(bound, 0, "r")  # same seed, same order
-    assert len(directions_for(None, 0, "r")) == len(DIRECTIONS)
-    orders = {tuple(d["kind"] for d in directions_for("memory", seed, "r")) for seed in range(6)}
-    assert len(orders) > 1
-    launch = {d["kind"] for d in directions_for("launch", 0, "r")}
-    assert "compile-time-shapes" in launch and "simdgroup-matrix" not in launch
-
-
-def test_the_briefing_carries_directions_and_the_round():
-    state = fixed_state()
-    widening = {"openers": 3, "opened": ["one-dispatch"], "left": 2}
-    rendered = prompts.render_region_state(**state, directions=directions_for("memory", 0, "fp"),
-                                           widening=widening)
-    assert rendered["widening"] == widening
-    assert {d["kind"] for d in rendered["directions"]} == {d["kind"] for d in directions_for("memory", 0, "fp")}
-    assert "directions" in rendered["legend"] and "widening" in rendered["legend"]
+def test_the_briefing_offers_examples_only_on_request():
+    import json
+    from autotuner.judge.source_context import SourceContext
+    widening = {"openers": 4, "opened": ["custom-design"], "left": 3}
+    rendered = prompts.render_region_state(**fixed_state(), widening=widening)
+    context = SourceContext()
+    brief = context.focus(rendered)
+    assert brief["widening"] == widening
+    assert not {"directions", "menu", "moves"}.intersection(brief)
+    reference = context.sources[brief["techniques_reference"]["source_id"]]
+    assert len(json.loads(reference)["examples"]) == len(DIRECTIONS)
 
 
 def test_openers_are_written_against_the_scaffold_under_new_kinds(tmp_path):
     runner = bare(tmp_path)
     run = opening()
-    assert runner._openers(run) == OPENERS
+    assert runner._openers(run) == OPENERS == 4
     judge = ScriptedJudge([
         {"queue": [item("h1", "one-dispatch"), item("h2", "simdgroup-per-row"),
                    item("h3", "one-dispatch"), item("h4", "wide-loads"),
@@ -98,20 +89,21 @@ def test_openers_are_written_against_the_scaffold_under_new_kinds(tmp_path):
         proposal("h1", "h2"),         # refused again, charged
         proposal("scaffold", "h2"),
         proposal("scaffold", "h3"),   # a kind the round already opened
-        proposal("scaffold", "h4"),
-        proposal("scaffold", "h5"),   # the fourth opener closes the round
+        proposal("scaffold", "h4"),   # third opener
+        proposal("scaffold", "h5"),   # fourth opener closes the round
         proposal("head", "h6"),       # an edit of head is legal again
     ])
     runner.hypothesis_cycle(run, judge)
     assert run.openers == ["one-dispatch", "simdgroup-per-row", "wide-loads", "persistent"]
     assert [r.rsplit(";", 1)[0] for r in runner.refusals[:3]] == [
         "the widening round has 3 opener(s) left, so 'head' is refused as a parent: write against "
-        "the scaffold under a kind no earlier opener used (see directions), or repair a kernel that failed",
+        "the scaffold under a kind no earlier opener used, or repair a kernel that failed",
         "the widening round has 3 opener(s) left, so 'h1' is refused as a parent: write against "
-        "the scaffold under a kind no earlier opener used (see directions), or repair a kernel that failed",
+        "the scaffold under a kind no earlier opener used, or repair a kernel that failed",
         "the widening round already opened 'one-dispatch'; an opener needs a kind no earlier "
         "opener used (opened: one-dispatch, simdgroup-per-row)",
     ]
+    assert run.attempts["h5"]["parent"] == "seed"
     assert run.attempts["h6"]["parent"] == "h1"
     assert run.close_rule == "the region's hypothesis budget is spent"
 
@@ -133,17 +125,18 @@ def test_a_repair_of_a_failed_opener_is_allowed_in_the_round(tmp_path):
     assert runner.refusals[0].startswith("the widening round has 3 opener(s) left, so 'h1_fix' is refused")
 
 
-def test_a_region_without_directions_has_no_round(tmp_path):
+def test_four_designs_do_not_depend_on_a_catalogue(tmp_path):
     runner = bare(tmp_path, budget=2)
     run = RegionRun(region("r", 0, 2), scaffold=SEED, head=SEED, kernels={"seed": SEED})
-    judge = ScriptedJudge([{"queue": [item("h1", "retile"), item("h2", "retile")]},
-                           proposal("scaffold", "h1"), proposal("head", "h2")])
+    judge = ScriptedJudge([{"queue": [item("h1", "retile"), item("h2", "new-algorithm")]},
+                           proposal("scaffold", "h1"), proposal("scaffold", "h2")])
     runner.hypothesis_cycle(run, judge)
-    assert not runner.refusals and run.attempts["h2"]["parent"] == "h1"
+    assert not runner.refusals and run.attempts["h2"]["parent"] == "seed"
+    assert runner._openers(run) == 4
 
 
 def launch_bound(age=2, streak=3, bound="launch"):
-    run = RegionRun(region("r", 0, 0), head_age=age, floor_streak=streak)
+    run = RegionRun(region("r", 0, 0), head_age=age, floor_streak=streak, openers=["a", "b", "c", "d"])
     run.region.roofline = Roofline(t_mem_ms=0.001, t_compute_ms=0.0005, t_launch_ms=0.0068,
                                    t_roofline_ms=0.0068, bound=bound, s_max=2.0)
     return run
@@ -184,3 +177,43 @@ def test_head_age_and_the_floor_streak_follow_the_verdicts(tmp_path):
     assert (run.head_age, run.floor_streak) == (2, 0)      # 0.1 above the floor at sigma 0.01
     runner._apply_verdict(run, verdict, replace(SEED, kernel_id="k5"), clock(1.5, 1.6))
     assert (run.head_age, run.floor_streak) == (3, 1)      # below the floor counts as at it
+
+
+def test_floor_stop_waits_for_all_four_opening_designs(tmp_path):
+    runner = bare(tmp_path)
+    run = launch_bound()
+    run.openers = ['a', 'b', 'c']
+    assert runner._close_rule(run) is None
+    run.openers.append('d')
+    assert runner._close_rule(run).startswith('no discernible headroom')
+
+
+def test_after_opening_the_agent_can_revisit_or_start_fresh(tmp_path):
+    runner = bare(tmp_path, budget=7, failing={'h3'})
+    run = opening()
+    judge = ScriptedJudge([
+        {'queue': [item(f'h{i}', f'design{i}') for i in range(1, 8)]},
+        *[proposal('scaffold', f'h{i}') for i in range(1, 5)],
+        proposal('h2', 'h5'),       # a correct candidate that never became head
+        proposal('h3', 'h6'),       # repair an older failure
+        proposal('scaffold', 'h7'), # new design after the opening round
+    ])
+    runner.hypothesis_cycle(run, judge)
+    assert not runner.refusals
+    assert len(run.openers) == 4
+    assert run.attempts['h5']['parent'] == 'h2'
+    assert run.attempts['h6']['parent'] == 'h3'
+    assert run.attempts['h7']['parent'] == 'seed'
+    assert runner.total_hypotheses == run.hypotheses == 7
+
+
+def test_budget_can_end_before_four_designs(tmp_path):
+    runner = bare(tmp_path, budget=2)
+    run = opening()
+    judge = ScriptedJudge([
+        {'queue': [item(f'h{i}', f'design{i}') for i in range(1, 5)]},
+        proposal('scaffold', 'h1'), proposal('scaffold', 'h2'),
+    ])
+    runner.hypothesis_cycle(run, judge)
+    assert len(run.openers) == runner.total_hypotheses == 2
+    assert run.close_rule == "the region's hypothesis budget is spent"

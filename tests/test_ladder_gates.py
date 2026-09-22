@@ -184,6 +184,28 @@ def make_job(ctx, spec, *, tag="preserving", tol=FP32_TOL, contract_over=None,
     )
 
 
+def test_a_library_replay_starter_passes_the_layout_variant(tr, tmp_path_factory):
+    """MLX's own sum gives different bits for the same values laid out
+    transposed in memory, so a starter that replays the library's ops cannot
+    match the contiguous reference on the sweep's transposed variant; it is
+    compared with the library on that same layout. Held to the contiguous
+    reference, the fallback starter of every rolled-back reduction scaffold
+    died here and closed its region (MetalBench rms_norm_linear, 2026-09-16)."""
+    from autotuner.scaffold.native import reference_sequence_seed
+    x = cheats.reduction_input_f32(320)
+    laid_out = mx.transpose(mx.contiguous(mx.transpose(x)))
+    assert mx.array_equal(x, laid_out).item()
+    assert not mx.array_equal(cheats.reduction_model(x), cheats.reduction_model(laid_out)).item()  # the premise
+
+    store = BoundaryStore(tmp_path_factory.mktemp("red32_replay_store"))
+    ctx, trace, span = build_ctx(
+        tr, store, "red32replay", cheats.reduction_model,
+        [cheats.reduction_input_f32(320 + j) for j in range(3)], ("in0",), ("out0",))
+    seed = reference_sequence_seed(trace, span)
+    r = run_ladder(make_job(ctx, seed, contract_over={"input_signature": seed.input_signature}))
+    assert r.failed_gate is None and "sweep" in r.gates_passed, r
+
+
 # -- the cheat zoo: every cheat dies at its intended gate ---------------------
 # Toy shaders fuse floating evaluation (including division) and are not
 # bit-identical to MLX. Mark changing where a test needs to reach later gates;
@@ -269,6 +291,9 @@ def test_fallback_on_secondary_workload_returns_failure_instead_of_crashing(toy)
     assert "fallback_on_workload" in result.detail["reason"]
 
 
+@pytest.mark.xfail(strict=True, reason="known hole since 2026-09-17: the scaled-up regime was the only gate "
+                   "that caught a half-precision accumulator, and it was removed because its fixed atol "
+                   "at 1000x failed honest reordered sums; the outlier regime does not catch this cheat")
 def test_fp16_sloppy_accumulation_dies_at_smoke_regimes(red16):
     from dataclasses import replace
     spec, _ = cheats.fp16_sloppy_accumulation()
@@ -285,7 +310,7 @@ if (lane == 0) { y[r] = (half)total; }
     r = run_ladder(make_job(red16, spec, tag="changing", tol=FP16_TOL))
     assert (r.outcome, r.failed_gate) == ("failed", "smoke"), r
     assert r.detail["kind"] == "regime"
-    assert r.detail["regime"] in ("scaled_up", "outliers")
+    assert r.detail["regime"] == "outliers"
 
 
 def test_atomic_racy_dies_at_determinism(red32):
@@ -305,11 +330,11 @@ y[i] = (half)(sq * 20.0f);
 
 
 def test_stress_magnitude_steps_down_until_the_library_stays_finite(overflow16):
-    """Multiplying every input by a thousand overflows this fp16 region's own
-    library output, and no kernel can be written to match an overflowed
-    reference. The regime must step down to the largest magnitude the library
-    survives, and skip a regime it never survives, instead of failing a
-    correct kernel (five regions died this way in the 2254 run)."""
+    """Injected outliers overflow this fp16 region's own library output at
+    every magnitude tried, and no kernel can be written to match an
+    overflowed reference. The regime steps down and, when the library never
+    survives, is skipped instead of failing a correct kernel (five regions
+    died this way in the 2254 run)."""
     spec = KernelSpec(
         kernel_id="ovf_ok", name="ovf_ok", input_names=("x",), output_names=("y",),
         source=OVF_CORRECT, grid=("in0.shape[0] * in0.shape[1]", "1", "1"),
@@ -318,7 +343,6 @@ def test_stress_magnitude_steps_down_until_the_library_stays_finite(overflow16):
     )
     r = run_ladder(make_job(overflow16, spec, tol=FP16_TOL))
     assert r.outcome == "correct_slower" and r.failed_gate is None, r.detail
-    assert r.detail["regime_magnitude"]["scaled_up"] == 10.0
     assert "outliers" in r.detail["regime_skipped"]
 
 
@@ -333,11 +357,11 @@ def test_reordered_reduction_fails_the_preserving_gate(red16):
     assert r.detail["reason"] == "exact"
 
 
-@pytest.mark.parametrize("tol, passes", [(FP16_TOL, False), ((0.02, 0.2), True)])
+@pytest.mark.parametrize("tol, passes", [((1e-6, 1e-6), False), (FP16_TOL, True), ((0.02, 0.2), True)])
 def test_reordered_reduction_respects_the_configured_tolerance(red16, tol, passes):
-    # This adversarial cancellation case differs from MLX beyond the default
-    # atol, even though the old FP32-relative rule accepted it. User policy
-    # now decides the acceptable deviation from original behavior.
+    # An fp32 accumulator over an fp16 sum differs from MLX by its rounding.
+    # User policy decides the acceptable deviation: a tolerance tighter than
+    # that rounding fails it on the recorded values, the default passes it.
     spec, _ = cheats.fp16_fp32_accumulation()
     r = run_ladder(make_job(red16, spec, tag="changing", tol=tol))
     if not passes:

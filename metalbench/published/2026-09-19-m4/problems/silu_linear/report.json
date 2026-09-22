@@ -1,0 +1,866 @@
+{
+ "legend": {
+  "target_workload": "the workload nominated before timing; its whole-model win must repeat before installation",
+  "timing_case": "the captured input case behind this hypothesis's local kernel timings",
+  "timing_workload": "the workload behind a region's recorded shipped-kernel speedup",
+  "model_ratios": "per-workload products of incremental model ratios; diagnostic estimates, not final measurements",
+  "p": "share of one step this region costs, all copies together, per workload",
+  "T_orig_ms": "library time for all copies, per workload, from pricing",
+  "T_rep_ms": "library time for one copy, per workload, from pricing",
+  "roofline_ms": "estimated ideal cost of one copy from boundary traffic and arithmetic",
+  "s_max": "optimistic headroom estimate: library time divided by estimated ideal cost",
+  "bound": "estimated limiting resource: memory, known compute, or launch; custom arithmetic may be unknown",
+  "s": "speedup shipped: the library's time over the shipped kernel's, both from the kernel's own ship clock",
+  "region_ms": "the kernel's time for one pass of one copy, from the ship clock",
+  "library_ms": "the library's time for the same pass, measured beside it",
+  "win_ms": "library_ms minus region_ms; positive means the kernel is faster",
+  "sigma_ms": "uncertainty of win_ms; a ship needs a win past three of these",
+  "stranded": "regions dropped before the search, grouped by reason",
+  "steps_per_sample": "dependent model steps in one timed sample of the step clock; more than one when a step is too short to bring the GPU clock up on its own",
+  "min_win_ms": "the least a region win had to save per step on this workload: 1% of the step, at most constants.min_win_ms; the three-sigma rule decides the rest",
+  "speedup_vs_plain": "under the compiled baseline: the finished model against plain eager MLX, paired in one window at the end of the job; compile's own gain is included, since the model runs compiled",
+  "speedup_vs_compiled": "under the plain baseline: the finished model (eager plus its kernels) against the untouched model under mx.compile, measured the same way; under 1 means compile alone is faster",
+  "plain_win_confirmed": "whether that comparison resolved a win past three sigma (compiled_win_confirmed likewise)",
+  "plain_loss_confirmed": "whether it resolved a loss (compiled_loss_confirmed likewise)",
+  "measured_compute_gflops": "the plain-matmul rate per dtype clocked in the region's own pricing window; the compute term of its estimated limit divides the region's flops by it",
+  "close_rule": "why a region's search ended: its budget or the job's is spent, the operator asked to finish, or no discernible headroom (launch-bound, head unmoved by the last two attempts, the last three kernels each within one sigma of the launch floor clocked beside them)",
+  "constants.openers_per_region": "how many attempts a region's widening round holds at most, each an opener written against the scaffold from a different agent-generated direction; limited by the remaining attempt budget",
+  "delivery": "how a kernel installs at the region's scope, per workload: direct, graph (the scope compiled with the cut inserted) or replay",
+  "library_arm": "what the region's clocks ran the library as, per workload: plain ops, or one compiled graph where graph delivery compiles the scope",
+  "baseline.clocks_ms.compiled": "under library inference: the model with its outermost compilable scopes compiled and empty, the baseline unless the manifest asks for plain",
+  "final.delivery": "under a plain baseline: the untouched model against the installed scopes compiled with no kernel, and that against the patched model"
+ },
+ "written_at": "2026-09-19T22:00:45-0700",
+ "machine": {
+  "chip": "Apple M4",
+  "memory_bytes": 25769803776,
+  "os": "macOS-26.6.2-arm64-arm-64bit",
+  "python": "3.12.13",
+  "mlx": "0.32.2"
+ },
+ "env": {
+  "MLX_MAX_OPS_PER_BUFFER": null,
+  "MLX_MAX_MB_PER_BUFFER": null,
+  "MTL_SHADER_VALIDATION": null,
+  "MTL_SHADER_VALIDATION_REPORT_TO_STDERR": null,
+  "MTL_CAPTURE_ENABLED": null
+ },
+ "manifest": "<repo>/runs/metalbench/jobs/2026-09-19_21-23-09-675242/generated/standard/silu_linear/manifest.yaml",
+ "constants": {
+  "min_win_ms": 0.03,
+  "min_win_share": 0.01,
+  "budget_per_region": 10,
+  "budget_total": 30,
+  "seed": 1296389185,
+  "openers_per_region": 4,
+  "clock_pairs": 32,
+  "price_pairs": 8,
+  "ship_pairs": 20,
+  "model_min_gain_pct": 0.0,
+  "model_confidence_sigma": 3.0,
+  "model_confirmation_comparisons": 1,
+  "final_benchmark": {
+   "steps": 10,
+   "pairs": 8,
+   "warmup_steps": 3
+  },
+  "numeric_policy": "exact_preserving_baseline_tolerance_changing",
+  "tolerances": [
+   0.001,
+   0.001
+  ],
+  "tolerance_defaults": {
+   "float32": [
+    1e-05,
+    1e-06
+   ],
+   "float16": [
+    0.01,
+    0.02
+   ],
+   "bfloat16": [
+    0.02,
+    0.04
+   ]
+  },
+  "duty_idle_factor": 3.0,
+  "gpu_evaluation_timeout_s": 5.0,
+  "single_group_element_limit": 1048576,
+  "single_group_scaffold_work_limit": 16777216,
+  "defaulted": [
+   "use_library_inference",
+   "final_benchmark.steps",
+   "final_benchmark.warmup_steps",
+   "seed"
+  ],
+  "use_library_inference": false,
+  "measurement": {
+   "kind": "forward",
+   "generated_tokens": null,
+   "baseline": "compiled"
+  },
+  "checkpoint_pins": []
+ },
+ "baseline": {
+  "requested": "compiled",
+  "choice": "compiled",
+  "compiled_available": true,
+  "reason": null,
+  "clocks_ms": {
+   "silu_linear": {
+    "plain": 0.9610270499251783,
+    "compiled": 0.9740333480294794
+   }
+  }
+ },
+ "peaks": {
+  "bandwidth_gbps": 91.17987251994943,
+  "flops_gflops": {
+   "float32": 2768.8843546424587,
+   "float16": 3409.860375116441,
+   "bfloat16": 3414.4309075084834
+  },
+  "launch_us": 6.751464752596803
+ },
+ "session": {
+  "status": "complete",
+  "stage": "exporting and checking artifact",
+  "gpu_utilization_at_start_pct": 70.0,
+  "aa_floor_sigma_ms": 0.1336375323927323,
+  "aa_control": {
+   "passed": true,
+   "attempts": 1
+  },
+  "idled_s": 111.0,
+  "artifact": "<repo>/runs/metalbench/jobs/2026-09-19_21-23-09-675242/standard-silu_linear/artifact"
+ },
+ "step_ms": {
+  "silu_linear": {
+   "before": 0.9740333480294794,
+   "steps_per_sample": 20,
+   "min_win_ms": 0.009740333480294794,
+   "after": 0.9680937509983778,
+   "baseline_at_end": 0.9955843619536608,
+   "speedup": 1.0292774875473323,
+   "stability": 0.9781883185456681,
+   "win_confirmed": true,
+   "sequence_win_confirmed": true,
+   "sequence_speedup": 1.042575768717505,
+   "plain_at_end": 0.9954677123459987,
+   "speedup_vs_plain": 1.0288008857463367,
+   "plain_win_confirmed": true,
+   "plain_loss_confirmed": false
+  }
+ },
+ "regions": [
+  {
+   "fingerprint": "6ed4cc3e1b28d923",
+   "ops": [
+    "array.__matmul__"
+   ],
+   "copies": 1,
+   "workloads": [
+    "silu_linear"
+   ],
+   "p": {
+    "silu_linear": 0.7708025568892061
+   },
+   "T_orig_ms": {
+    "silu_linear": 0.775577226401462
+   },
+   "T_rep_ms": {
+    "silu_linear": 0.775577226401462
+   },
+   "roofline_ms": 0.7921959686427725,
+   "bound": "compute",
+   "s_max": 0.9790219303062315,
+   "T_shipped_ms": {
+    "silu_linear": 0.7502926256909797
+   },
+   "s": 1.0206258009919982,
+   "head_ms": 0.7502926256909797,
+   "hypotheses": 10,
+   "timing_workload": "silu_linear",
+   "delivery": {
+    "silu_linear": "graph"
+   },
+   "library_arm": {
+    "silu_linear": "compiled"
+   },
+   "outcomes": {
+    "correct_slower": 9,
+    "failed": 1,
+    "shipped": 1
+   },
+   "close_rule": "the region's hypothesis budget is spent"
+  }
+ ],
+ "hypotheses": [
+  {
+   "id": "scaffold",
+   "region": "6ed4cc3e1b28d923",
+   "kind": "scaffold",
+   "hypothesis": "the harness's starting kernel",
+   "assoc_tag": "preserving",
+   "parent": null,
+   "kernel": "r6ed4cc3e1b28d923_scaffold",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": null,
+   "library_ms": null,
+   "win_ms": null,
+   "sigma_ms": null,
+   "floor_ms": null,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "silu_linear",
+   "timing_case": "silu_linear"
+  },
+  {
+   "id": "sgmat_tile64",
+   "region": "6ed4cc3e1b28d923",
+   "kind": "simdgroup matrix tiled GEMM",
+   "hypothesis": "64x64 C tile per threadgroup, 32-wide K slab staged in threadgroup memory as float4 loads; four simdgroups each own a 32x32 sub-tile computed with 16 simdgroup_float8x8 accumulators via simdgroup_multiply_accumulate. Uses the hardware matrix units, so it should approach the library's compute-bound rate; differs from the SIMT designs by using matrix fragments instead of scalar FMAs.",
+   "assoc_tag": "changing",
+   "parent": "r6ed4cc3e1b28d923_scaffold",
+   "kernel": "r6ed4cc3e1b28d923_sgmat_tile64",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 4.17560820804081,
+   "library_ms": 0.7973935151110507,
+   "win_ms": -3.3739716535718696,
+   "sigma_ms": 0.013607236551452932,
+   "floor_ms": 0.7921959686427725,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "silu_linear",
+   "timing_case": "silu_linear"
+  },
+  {
+   "id": "simt_regblock",
+   "region": "6ed4cc3e1b28d923",
+   "kind": "register-blocked SIMT GEMM",
+   "hypothesis": "64x64 tile, 256 threads each computing a 4x4 register block from threadgroup-staged A/B slabs with float4 loads and scalar fma; no matrix units, tests whether plain FMA throughput with high register reuse can match, and is a different accumulation structure than fragments.",
+   "assoc_tag": "changing",
+   "parent": "r6ed4cc3e1b28d923_scaffold",
+   "kernel": "r6ed4cc3e1b28d923_simt_regblock",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 1.3520856922365385,
+   "library_ms": 0.7747703401202506,
+   "win_ms": -0.5746325808683073,
+   "sigma_ms": 0.0024469942082913677,
+   "floor_ms": 0.7921959686427725,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "silu_linear",
+   "timing_case": "silu_linear"
+  },
+  {
+   "id": "l1_outer_product",
+   "region": "6ed4cc3e1b28d923",
+   "kind": "cache-streamed outer product without shared memory",
+   "hypothesis": "each thread computes an 8x4 block reading float4 from A rows and B rows directly from device memory with no threadgroup memory or barriers, relying on L1/L2 reuse within a threadgroup ordered so neighboring threads share rows; tests whether removing barrier/staging overhead beats explicit tiling.",
+   "assoc_tag": "changing",
+   "parent": "r6ed4cc3e1b28d923_scaffold",
+   "kernel": "r6ed4cc3e1b28d923_l1_outer_product",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 3.0900097180468338,
+   "library_ms": 0.7807791524101049,
+   "win_ms": -2.298037480795756,
+   "sigma_ms": 0.007720847485473999,
+   "floor_ms": 0.7921959686427725,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "silu_linear",
+   "timing_case": "silu_linear"
+  },
+  {
+   "id": "pipelined_128tile",
+   "region": "6ed4cc3e1b28d923",
+   "kind": "software-pipelined 128x128 tile with 8x8 register blocks",
+   "hypothesis": "128x128 C tile, BK=8, 256 threads each owning an 8x8 register block (64 accumulators) so each threadgroup-memory float4 read feeds 16 FMAs instead of 4; the next K slab's global loads are issued into registers before the current slab's FMA loop (software pipelining) so memory latency overlaps compute and only one barrier pair per slab remains. Tests whether register reuse plus load/compute overlap, rather than occupancy, closes the gap to the library.",
+   "assoc_tag": "changing",
+   "parent": "r6ed4cc3e1b28d923_scaffold",
+   "kernel": "r6ed4cc3e1b28d923_pipelined_128tile",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 6.087947922819497,
+   "library_ms": 0.7719297832606927,
+   "win_ms": -5.317677109775579,
+   "sigma_ms": 0.006197679830075898,
+   "floor_ms": 0.7921959686427725,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "silu_linear",
+   "timing_case": "silu_linear"
+  },
+  {
+   "id": "regblock_4x8_bn128",
+   "region": "6ed4cc3e1b28d923",
+   "kind": "wider 4x8 register block from head",
+   "hypothesis": "edit simt_regblock to a 64x128 C tile with 256 threads each owning 4 rows x 8 cols (32 accumulators, explicit fma without dynamic-indexed arrays that likely spilled in the 8x8 design); each threadgroup-memory float4 read now feeds 8 or 4 FMAs rather than 4, halving shared-memory traffic per flop while staying under the register cliff. Tests whether moderate register reuse recovers part of the 1.35 vs 0.77 ms gap.",
+   "assoc_tag": "changing",
+   "parent": "r6ed4cc3e1b28d923_simt_regblock",
+   "kernel": "r6ed4cc3e1b28d923_regblock_4x8_bn128",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 1.4142391049641776,
+   "library_ms": 0.7727594890060242,
+   "win_ms": -0.6427547156239268,
+   "sigma_ms": 0.0025024152345118054,
+   "floor_ms": 0.7921959686427725,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "silu_linear",
+   "timing_case": "silu_linear"
+  },
+  {
+   "id": "sgmat_direct_device",
+   "region": "6ed4cc3e1b28d923",
+   "kind": "simdgroup matrix fragments loaded straight from device memory",
+   "hypothesis": "drop threadgroup staging entirely: 4 simdgroups per 64x64 tile, each owning a 32x32 sub-tile as 16 simdgroup_float8x8 accumulators, and each k-step of 8 does 4 simdgroup_load from A rows and 4 from B rows directly from device memory then 16 multiply_accumulate. No barriers, no bank conflicts; tests whether sgmat_tile64's 4.18 ms came from the staging structure (lesson_1) rather than the matrix units, since matrix-unit fma density is the only route to the library's roofline pace.",
+   "assoc_tag": "changing",
+   "parent": "r6ed4cc3e1b28d923_simt_regblock",
+   "kernel": "r6ed4cc3e1b28d923_sgmat_direct_device",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.8145662961231375,
+   "library_ms": 0.7865412044338882,
+   "win_ms": -0.030402453954924247,
+   "sigma_ms": 0.006112972866752477,
+   "floor_ms": 0.7921959686427725,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "silu_linear",
+   "timing_case": "silu_linear"
+  },
+  {
+   "id": "sgmat_direct_32x64",
+   "region": "6ed4cc3e1b28d923",
+   "kind": "taller per-simdgroup fragment block to raise MMA per load",
+   "hypothesis": "head is 3.5% off library with 8 fragment loads per 16 MMAs; give each simdgroup a 32x64 sub-tile (128x64 threadgroup tile, 32 accumulators = 64 regs/thread) so each k-step does 4 A + 8 B loads for 32 MMAs, cutting device-load traffic per flop by a third while staying below the register cliff and keeping the no-staging structure that worked.",
+   "assoc_tag": "changing",
+   "parent": "r6ed4cc3e1b28d923_sgmat_direct_device",
+   "kernel": "r6ed4cc3e1b28d923_sgmat_direct_32x64",
+   "verdict": "failed",
+   "failed_gate": "watchdog",
+   "region_ms": null,
+   "library_ms": null,
+   "win_ms": null,
+   "sigma_ms": null,
+   "floor_ms": null,
+   "summary": "failed at watchdog: ",
+   "target_workload": "silu_linear",
+   "timing_case": "silu_linear"
+  },
+  {
+   "id": "sgmat_32x64_unrolled",
+   "region": "6ed4cc3e1b28d923",
+   "kind": "explicitly unrolled taller fragment block",
+   "hypothesis": "sgmat_direct_32x64 hit the watchdog (118 ms) most likely because simdgroup_float8x8 arrays indexed inside loops were placed in stack memory (same cliff as lesson_4); rewrite the 32x64 per-simdgroup block with named fragments and fully explicit multiply_accumulate calls so all 32 accumulators stay in registers, keeping the 12 loads per 32 MMAs ratio that should shave the 3.5% gap to library.",
+   "assoc_tag": "changing",
+   "parent": "r6ed4cc3e1b28d923_sgmat_direct_32x64",
+   "kernel": "r6ed4cc3e1b28d923_sgmat_32x64_unrolled",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.8263967849250713,
+   "library_ms": 0.7719886343693361,
+   "win_ms": -0.05432717973070056,
+   "sigma_ms": 0.0025283141321552024,
+   "floor_ms": 0.7921959686427725,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "silu_linear",
+   "timing_case": "silu_linear"
+  },
+  {
+   "id": "sgmat_staged_padded",
+   "region": "6ed4cc3e1b28d923",
+   "kind": "simdgroup matrix with padded threadgroup staging and 256 threads",
+   "hypothesis": "if direct device loads are cache-limited, stage a 64x64xBK=16 slab with 256 threads using coalesced float4 loads and padded strides so simdgroup_load from threadgroup memory is conflict-free.",
+   "assoc_tag": "changing",
+   "parent": "r6ed4cc3e1b28d923_sgmat_direct_device",
+   "kernel": "r6ed4cc3e1b28d923_sgmat_staged_padded",
+   "verdict": "shipped",
+   "failed_gate": null,
+   "region_ms": 0.7502926256909797,
+   "library_ms": 0.7657680120742456,
+   "win_ms": 0.017359373900531383,
+   "sigma_ms": 0.002723602961907757,
+   "floor_ms": 0.7921959686427725,
+   "summary": "shipped: whole-model correctness and independent timing confirmation passed",
+   "target_workload": "silu_linear",
+   "timing_case": "silu_linear"
+  },
+  {
+   "id": "sgmat_staged_bk32",
+   "region": "6ed4cc3e1b28d923",
+   "kind": "deeper K slab to halve barriers per MMA",
+   "hypothesis": "head stages BK=16 with two barriers per 32 MMAs per simdgroup; doubling the slab to BK=32 (As 64x36, Bs 32x132, ~26 KB) halves barrier/sync overhead per MMA and issues 2 A + 4 B float4 loads per thread per iteration, giving the memory system more outstanding loads to hide latency; accumulation order changes only in K grouping.",
+   "assoc_tag": "changing",
+   "parent": "r6ed4cc3e1b28d923_sgmat_staged_padded",
+   "kernel": "r6ed4cc3e1b28d923_sgmat_staged_bk32",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.7743808699002408,
+   "library_ms": 0.7745113271875712,
+   "win_ms": -0.00553122726673988,
+   "sigma_ms": 0.0049528987840801045,
+   "floor_ms": 0.7921959686427725,
+   "summary": "correct_slower: slower than the installed kernel in a fresh region comparison; model timing skipped",
+   "target_workload": "silu_linear",
+   "timing_case": "silu_linear"
+  }
+ ],
+ "accepted": [
+  {
+   "fingerprint": "6ed4cc3e1b28d923",
+   "kernel": "r6ed4cc3e1b28d923_sgmat_staged_padded",
+   "assoc_tag": "changing",
+   "target_workload": "silu_linear",
+   "model_ratios": {
+    "silu_linear": 0.9753776752982837
+   },
+   "model_ratio": 0.9753776752982837,
+   "model_ratio_kind": "product_of_incremental_measurements",
+   "timing_baseline": "original_model",
+   "incumbent_compiled_scopes": [],
+   "model_latency_reduction_pct": {
+    "silu_linear": 2.4622324701716325
+   },
+   "checks": [
+    {
+     "name": "silu_linear",
+     "floor_max_abs": 0.0,
+     "max_abs": 0.0,
+     "allowance": 0.1568673553466797,
+     "cosine": 1.0,
+     "passed": true,
+     "reason": "",
+     "floor_cosine": 1.0,
+     "cosine_allowance": 0.0,
+     "rule": "baseline_tolerance",
+     "failure": null
+    }
+   ],
+   "timings": {
+    "silu_linear": {
+     "baseline_ms": [
+      1.0093864751979709,
+      1.021532274899073,
+      1.0051041492260993,
+      0.9881864505587146,
+      0.9839427249971777,
+      1.0014957981184125,
+      0.9928916755598038,
+      0.9965427248971537,
+      0.9999218746088445,
+      0.983242699294351
+     ],
+     "candidate_ms": [
+      0.9802552289329469,
+      0.9938718751072884,
+      0.9730448015034199,
+      0.9703312272904441,
+      0.9800812491448596,
+      0.9651312488131225,
+      0.981212523765862,
+      0.9744520764797926,
+      0.9691198007203639,
+      0.9776020742719993
+     ],
+     "deltas_ms": [
+      0.029131246265023947,
+      0.027660399791784585,
+      0.03205934772267938,
+      0.017855223268270493,
+      0.003861475852318108,
+      0.036364549305289984,
+      0.011679151793941855,
+      0.02209064841736108,
+      0.030802073888480663,
+      0.005640625022351742
+     ],
+     "median_baseline_ms": 0.9982322997529991,
+     "median_delta_ms": 0.024875524104572833,
+     "spread_ms": 0.011486365414283403,
+     "sigma_ms": 0.004552371208591109,
+     "n": 10,
+     "ratios": [
+      0.9711396506879979,
+      0.9729226374227702,
+      0.9681034569926269,
+      0.98193132150499,
+      0.9960755074922383,
+      0.9636897634781785,
+      0.9882372346536625,
+      0.977832713173797,
+      0.9691955194994308,
+      0.9942632424055629
+     ],
+     "median_ratio": 0.9753776752982837,
+     "stability": 0.9790993218810591
+    }
+   },
+   "nomination_timings": {
+    "silu_linear": {
+     "baseline_ms": [
+      1.022107299650088,
+      0.990821875166148,
+      0.991842697840184,
+      1.011274999473244,
+      1.0081250016810372,
+      0.98897707357537,
+      1.015320824808441,
+      0.992748947464861,
+      1.0040489520179108,
+      0.9990229271352291
+     ],
+     "candidate_ms": [
+      0.9748073003720492,
+      0.9620229015126824,
+      0.9742031019413844,
+      0.9767968760570511,
+      0.972454174188897,
+      0.9668145707109943,
+      0.9481833520112559,
+      0.9652270993683487,
+      0.9505499736405909,
+      0.9633291745558381
+     ],
+     "deltas_ms": [
+      0.04729999927803874,
+      0.02879897365346551,
+      0.017639595898799598,
+      0.03447812341619283,
+      0.035670827492140234,
+      0.02216250286437571,
+      0.06713747279718518,
+      0.027521848096512258,
+      0.05349897837731987,
+      0.035693752579391
+     ],
+     "median_baseline_ms": 1.00153593957657,
+     "median_delta_ms": 0.03507447545416653,
+     "spread_ms": 0.015086690928393024,
+     "sigma_ms": 0.005979281951967554,
+     "n": 10,
+     "ratios": [
+      0.9537230589251915,
+      0.9709342573319384,
+      0.9822153291674061,
+      0.9659062832225143,
+      0.9646166621870705,
+      0.9775904786303555,
+      0.9338756074368396,
+      0.9722771319306924,
+      0.946716762893085,
+      0.9642713379143906
+     ],
+     "median_ratio": 0.9652614727047923,
+     "stability": 0.9780787483129083
+    }
+   },
+   "confirmation": "fresh_fixed_size_comparison",
+   "checkpoint": "<repo>/runs/metalbench/jobs/2026-09-19_21-23-09-675242/standard-silu_linear/checkpoints/accepted-0001"
+  }
+ ],
+ "pricing": [
+  {
+   "fingerprint": "6ed4cc3e1b28d923",
+   "ops": [
+    "array.__matmul__"
+   ],
+   "copies": 1,
+   "p": {
+    "silu_linear": 0.7708025568892061
+   },
+   "region_ms": {
+    "silu_linear": 0.775577226401462
+   },
+   "ranking_basis": "estimated_removable_share",
+   "price_stability": {
+    "silu_linear": 0.9793260667137494
+   },
+   "estimate_basis": "boundary_probe_and_known_compute",
+   "compute_model_complete": true,
+   "headroom_is_estimate": true,
+   "estimated_s_max": {
+    "silu_linear": 0.9790219303062315
+   },
+   "measured_compute_gflops": {
+    "silu_linear": {
+     "float32": 2710.7985056767834
+    }
+   },
+   "potential_model_latency_reduction_pct": {
+    "silu_linear": 0.0
+   },
+   "status": "eligible",
+   "reason": null
+  }
+ ],
+ "stranded": [],
+ "coverage": {
+  "discovery": {
+   "legal_regions": 1,
+   "supported_regions": 1,
+   "unsupported_regions": 0,
+   "never_evaluated_ops": 0
+  },
+  "step_floor": {
+   "silu_linear": {
+    "bytes_mb": 12.582912,
+    "gflop": 2.148532224,
+    "launches": 2,
+    "t_mem_ms": 0.13800098258798243,
+    "t_compute_ms": 0.7903994204392362,
+    "floor_ms": 0.7903994204392362,
+    "step_ms": 0.9740333480294794,
+    "room": 0.18852940503704962
+   }
+  },
+  "selection": {
+   "candidates": 1,
+   "waves": [
+    {
+     "wave": 1,
+     "selected": 1,
+     "deferred": 0,
+     "conflicts": {}
+    }
+   ],
+   "unsearched": 0
+  },
+  "measured_atomic_share_this_wave": {
+   "silu_linear": 0.7708025568892061
+  },
+  "step_ms": {
+   "silu_linear": 0.9740333480294794
+  }
+ },
+ "final": {
+  "passed": true,
+  "veto_passed": true,
+  "paired_win_confirmed": true,
+  "timings": {
+   "silu_linear": {
+    "baseline_ms": [
+     0.954078123322688,
+     0.9685479250038043,
+     1.000036476762034,
+     1.0077323007863015,
+     0.9929583233315498,
+     0.9982104005757719,
+     1.0270906233927235,
+     0.9906875027809292,
+     0.9832687472226098,
+     1.0088395734783262
+    ],
+    "candidate_ms": [
+     0.927359375054948,
+     0.9359781251987442,
+     0.9809614741243422,
+     0.9612895722966641,
+     0.976862502284348,
+     0.972640624968335,
+     0.9656843787524849,
+     0.962071874528192,
+     0.9750854020239785,
+     0.9705031232442707
+    ],
+    "deltas_ms": [
+     0.02671874826774001,
+     0.03256979980506003,
+     0.019075002637691796,
+     0.046442728489637375,
+     0.016095821047201753,
+     0.025569775607436895,
+     0.06140624464023858,
+     0.028615628252737224,
+     0.008183345198631287,
+     0.03833645023405552
+    ],
+    "median_baseline_ms": 0.9955843619536608,
+    "median_delta_ms": 0.027667188260238618,
+    "spread_ms": 0.015466328386926301,
+    "sigma_ms": 0.006129743005015762,
+    "n": 10,
+    "ratios": [
+     0.9719952196632611,
+     0.9663725470219431,
+     0.9809256931312608,
+     0.9539136252222941,
+     0.9837900336106782,
+     0.9743843826985893,
+     0.9402134113176895,
+     0.9711153838395951,
+     0.9916774074008288,
+     0.9619994583461102
+    ],
+    "median_ratio": 0.971555301751428,
+    "stability": 0.9781883185456681
+   }
+  },
+  "checks": [
+   {
+    "name": "silu_linear",
+    "floor_max_abs": 0.0,
+    "max_abs": 0.0,
+    "allowance": 0.1568673553466797,
+    "cosine": 1.0,
+    "passed": true,
+    "reason": "",
+    "floor_cosine": 1.0,
+    "cosine_allowance": 0.0,
+    "rule": "baseline_tolerance",
+    "failure": null
+   }
+  ],
+  "delivery": {
+   "compiled_scopes": [],
+   "timings": {}
+  },
+  "sequences": {
+   "silu_linear": {
+    "protocol": "whole_sequences_balanced_ab_ba",
+    "warmup_steps": 12,
+    "pairs": 8,
+    "observations": [
+     {
+      "pair": 0,
+      "arm": "baseline",
+      "elapsed_ms": 20.013917004689574
+     },
+     {
+      "pair": 0,
+      "arm": "candidate",
+      "elapsed_ms": 19.65866598766297
+     },
+     {
+      "pair": 1,
+      "arm": "candidate",
+      "elapsed_ms": 18.929249956272542
+     },
+     {
+      "pair": 1,
+      "arm": "baseline",
+      "elapsed_ms": 19.872708013281226
+     },
+     {
+      "pair": 2,
+      "arm": "baseline",
+      "elapsed_ms": 20.30324994120747
+     },
+     {
+      "pair": 2,
+      "arm": "candidate",
+      "elapsed_ms": 20.060624927282333
+     },
+     {
+      "pair": 3,
+      "arm": "candidate",
+      "elapsed_ms": 19.54445894807577
+     },
+     {
+      "pair": 3,
+      "arm": "baseline",
+      "elapsed_ms": 20.402375026606023
+     },
+     {
+      "pair": 4,
+      "arm": "baseline",
+      "elapsed_ms": 19.70387506298721
+     },
+     {
+      "pair": 4,
+      "arm": "candidate",
+      "elapsed_ms": 19.502707989886403
+     },
+     {
+      "pair": 5,
+      "arm": "candidate",
+      "elapsed_ms": 19.122958998195827
+     },
+     {
+      "pair": 5,
+      "arm": "baseline",
+      "elapsed_ms": 19.911958021111786
+     },
+     {
+      "pair": 6,
+      "arm": "baseline",
+      "elapsed_ms": 20.383541006594896
+     },
+     {
+      "pair": 6,
+      "arm": "candidate",
+      "elapsed_ms": 19.190749968402088
+     },
+     {
+      "pair": 7,
+      "arm": "candidate",
+      "elapsed_ms": 19.09158402122557
+     },
+     {
+      "pair": 7,
+      "arm": "baseline",
+      "elapsed_ms": 20.116540952585638
+     }
+    ],
+    "timing": {
+     "baseline_ms": [
+      20.013917004689574,
+      19.872708013281226,
+      20.30324994120747,
+      20.402375026606023,
+      19.70387506298721,
+      19.911958021111786,
+      20.383541006594896,
+      20.116540952585638
+     ],
+     "candidate_ms": [
+      19.65866598766297,
+      18.929249956272542,
+      20.060624927282333,
+      19.54445894807577,
+      19.502707989886403,
+      19.122958998195827,
+      19.190749968402088,
+      19.09158402122557
+     ],
+     "deltas_ms": [
+      0.3552510170266032,
+      0.9434580570086837,
+      0.24262501392513514,
+      0.857916078530252,
+      0.20116707310080528,
+      0.7889990229159594,
+      1.1927910381928086,
+      1.024956931360066
+     ],
+     "median_baseline_ms": 20.065228978637606,
+     "median_delta_ms": 0.8234575507231057,
+     "spread_ms": 0.38124640819896316,
+     "sigma_ms": 0.16893351050670521,
+     "n": 8,
+     "ratios": [
+      0.9822498006290642,
+      0.9525249373976533,
+      0.9880499420226955,
+      0.9579501858282934,
+      0.9897904816967354,
+      0.9603756184058133,
+      0.9414826384774415,
+      0.9490490470615265
+     ],
+     "median_ratio": 0.9591629021170534,
+     "stability": 0.9631650560121978
+    },
+    "baseline_sequence_ms": 20.065228978637606,
+    "candidate_sequence_ms": 19.346728979144245,
+    "speedup": 1.042575768717505,
+    "latency_reduction_pct": 4.083709788294665,
+    "win_confirmed": true,
+    "regression_confirmed": false,
+    "steps": 20,
+    "workload_kind": "repeated_forward",
+    "prefix_copy_included": false
+   }
+  }
+ }
+}

@@ -1,0 +1,45 @@
+{
+ "kernel_id": "r6ed4cc3e1b28d923_splitk_tile32x16",
+ "name": "at_r6ed4cc3e1b28d923_splitk_tile32x16",
+ "input_names": [
+  "in0",
+  "in1"
+ ],
+ "output_names": [
+  "out0"
+ ],
+ "header": "#include <metal_stdlib>\n#include <metal_simdgroup_matrix>\n",
+ "grid": [
+  "ceil_div(in1.shape[1], 16) * 256",
+  "ceil_div(in0.shape[0], 32)",
+  "1"
+ ],
+ "threadgroup": [
+  "256",
+  "1",
+  "1"
+ ],
+ "output_shapes": [
+  [
+   "in0.shape[0]",
+   "in1.shape[1]"
+  ]
+ ],
+ "output_dtypes": [
+  "float32"
+ ],
+ "template": [
+  [
+   "T",
+   "in0"
+  ]
+ ],
+ "fallback_predicate": "not (in0.shape[0] % 32 == 0 and in0.shape[1] % 64 == 0 and in1.shape[1] % 16 == 0)",
+ "ensure_row_contiguous": true,
+ "atomic_outputs": false,
+ "native_call": null,
+ "input_signature": null,
+ "reference_sequence": null,
+ "stages": [],
+ "reassociates": false
+}

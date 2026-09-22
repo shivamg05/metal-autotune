@@ -1,0 +1,44 @@
+{
+ "kernel_id": "r1f7b5b5e5b42426f_tg1024_4rows",
+ "name": "at_r1f7b5b5e5b42426f_tg1024_4rows",
+ "input_names": [
+  "in0",
+  "in1"
+ ],
+ "output_names": [
+  "out0"
+ ],
+ "header": "",
+ "grid": [
+  "ceil_div(in0.shape[0], 4) * 1024",
+  "1",
+  "1"
+ ],
+ "threadgroup": [
+  "1024",
+  "1",
+  "1"
+ ],
+ "output_shapes": [
+  [
+   "in0.shape[0]"
+  ]
+ ],
+ "output_dtypes": [
+  "float32"
+ ],
+ "template": [
+  [
+   "T",
+   "in0"
+  ]
+ ],
+ "fallback_predicate": null,
+ "ensure_row_contiguous": true,
+ "atomic_outputs": false,
+ "native_call": null,
+ "input_signature": null,
+ "reference_sequence": null,
+ "stages": [],
+ "reassociates": false
+}

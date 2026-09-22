@@ -28,16 +28,16 @@ from .bind.emit import (EmittedWrapper, NotReplayable, Splice, compose_scope_var
 from .bind.swap import install as swap_install, uninstall as swap_uninstall
 from .bind.verify import verify_retrace
 from .e2e import E2EResult, _flatten_params, preserving_check, run_e2e, share_weights
-from .judge.directions import OPENERS, directions_for
+from .judge.directions import OPENERS
 from .judge.prompts import ENVELOPE_KEYS, render_region_state
 from .judge.queue import Queue, QueueError
 from .judge.schema import JudgeBabble
 from .ladder.gates import EvalSet, LadderJob, LadderResult, run_ladder
-from .ladder.static_checks import RegionContract, SINGLE_GROUP_ELEMENT_LIMIT
+from .ladder.static_checks import RegionContract, SINGLE_GROUP_ELEMENT_LIMIT, check as static_check
 from .artifact.bundle import ModelBundle
 from .artifact.emit import check_apply_many, emit_artifact, write_kernel
 from .log import RunLog, TextLog, wall_now
-from .measure.clocks import compare, comparison_from_samples, step_clock
+from .measure.clocks import chained_steps, compare, comparison_from_samples, loop_iterations, step_clock
 from autotuner_runtime.graph import GraphWrapper
 from .measure.controls import aa_null
 from .measure.peaks import (BUSY_GPU_PERCENT, gpu_core_count, gpu_utilization,
@@ -70,10 +70,10 @@ from autotuner_runtime.sequence import make_sequence
 from autotuner_runtime.state import ContextSequence, context_step
 from autotuner_runtime.stats import workload_win
 
-MIN_WIN_MS = 0.030  # a win must save a few tens of microseconds per step across copies
+MIN_WIN_MS = 0.030   # the most a win must save per step across copies: a few tens of microseconds
+MIN_WIN_SHARE = 0.01  # or 1% of the step when that is less (2026-09-18: 18 resolved wins of 5-16% of a
+                      # 20-300 us MetalBench step sat under the fixed floor; unchanged for steps over 3 ms)
 CLOCK_PAIRS = 32    # ABBA pairs behind the ship clock and the headline
-LESSONS_KEPT = 24   # the judge's newest lessons travel with every call
-LESSON_CONTEXT_CHARS = 400  # full notes remain in the log; prompts carry excerpts
 # Each comparison has ten ABBA blocks (forty forward calls). Resolved wins
 # receive one fresh comparison before installation; inconclusive results stop.
 SHIP_PAIRS = 20
@@ -116,7 +116,6 @@ class RegionRun:
     head_sigma_ms: float | None = None     # uncertainty of head's win, same clock
     head_age: int = 0                      # evaluated kernels since head last moved
     floor_streak: int = 0                  # consecutive kernels within one sigma of the floor beside them
-    directions: list[dict] = field(default_factory=list)  # what the widening round opens from
     openers: list[str] = field(default_factory=list)      # kinds the widening round opened
     head_tag: str = "preserving"      # assoc tag of the edit that produced head
     head_workload: str | None = None
@@ -159,7 +158,8 @@ class JobRunner:
         self.kernel_dir = self.work_dir / "kernels"
         self.report = Report(manifest_path=str(manifest_path))
         self.report.constants = {
-            "min_win_ms": MIN_WIN_MS, "budget_per_region": self.manifest.budget_per_region,
+            "min_win_ms": MIN_WIN_MS, "min_win_share": MIN_WIN_SHARE,
+            "budget_per_region": self.manifest.budget_per_region,
             "budget_total": self.manifest.budget_total, "seed": self.manifest.seed,
             "openers_per_region": OPENERS,
             "clock_pairs": self.clock_pairs, "price_pairs": PRICE_PAIRS,
@@ -185,6 +185,7 @@ class JobRunner:
         self.sweep_tensors: dict[str, list[mx.array]] = {}
         self.sweep_spans: dict[tuple[str, str], Stretch] = {}
         self.step_ms: dict[str, float] = {}
+        self.step_chain: dict[str, int] = {}  # dependent steps per timed sample, per workload
         self.peaks = None  # measured by measure_machine, after the step clock
         self.gpu_busy_at_start = gpu_utilization()  # the counter trails: read before any GPU work of ours
         self.total_hypotheses = 0
@@ -556,16 +557,37 @@ class JobRunner:
                 self.store.save(r.fingerprint, label, 0, "outputs", outs)
 
     def _step_fn(self, model, tensors: list[mx.array], baseline: str | None = None):
-        """One step of the model as the baseline runs it. Compiled means a
-        fresh mx.compile closure, built here and never reused across a swap:
+        """One step of the model as the baseline runs it, chained into one
+        timed sample when the step is small (_chain). Compiled means a fresh
+        mx.compile closure, built here and never reused across a swap:
         compile caches on the callable, so an old closure keeps the old graph."""
         if self.use_library_inference:
             return lambda: model(*tensors)
+        call = lambda *t: model(*t)
         if (baseline or self.baseline) == "compiled":
-            compiled = mx.compile(lambda *t: model(*t))
-            self.session.timed(lambda: compiled(*tensors))  # compile now; account for cooling debt
-            return lambda: compiled(*tensors)
-        return lambda: model(*tensors)
+            call = mx.compile(call)
+            self.session.timed(lambda: call(*tensors))  # compile now; account for cooling debt
+        return chained_steps(call, tensors, self._chain(tensors))
+
+    def _chain(self, tensors: list[mx.array]) -> int:
+        """How many dependent steps one timed sample of this workload holds:
+        one for a step of CLOCK_TARGET_MS or more, enough to fill that for a
+        small model, whose lone call leaves the GPU idle between samples and
+        never brings its clock up (see tools/ramp_after_idle.py). Sized once per
+        workload on the arm the baseline runs; a step over the model's own
+        cache or a library generation is never chained."""
+        name = next((n for n, t in self.tensors.items() if t is tensors), None)
+        if name is None or self.context is not None or self.use_library_inference:
+            return 1
+        if name not in self.step_chain:
+            call = lambda *t: self.baseline_model(*t)
+            if self.baseline == "compiled":
+                call = mx.compile(call)
+            self.step_chain[name] = loop_iterations(
+                lambda fn: self.session.timed(fn) * fn.steps,
+                lambda n: chained_steps(call, tensors, n))
+            self.log.append("step_chain", workload=name, steps=self.step_chain[name])
+        return self.step_chain[name]
 
     def _baseline_arm(self):
         """What every whole-model number is measured against: the untouched
@@ -739,7 +761,8 @@ class JobRunner:
             for w in self.manifest.workloads:
                 clock = step_clock(self.session, self._step_fn(self.baseline_model, self.tensors[w.name]))
                 self.step_ms[w.name] = clock.median_ms
-                self.report.step_ms[w.name] = {"before": clock.median_ms}
+                self.report.step_ms[w.name] = {"before": clock.median_ms, "steps_per_sample": 1,
+                                               "min_win_ms": self._min_win_ms(w.name)}
                 self.report.baseline["clocks_ms"][w.name] = {"plain": clock.median_ms, "compiled": None}
                 self.log.append("step_clock", workload=w.name, phase="before", baseline="library_generation",
                                 median_ms=clock.median_ms, generated_tokens=self.manifest.final_benchmark.steps)
@@ -770,7 +793,9 @@ class JobRunner:
                 self._assert_survived_compile(w.name, tensors, before)
             self.report.baseline["clocks_ms"][w.name] = clocks
             self.step_ms[w.name] = clocks[self.baseline]
-            self.report.step_ms[w.name] = {"before": clocks[self.baseline]}
+            self.report.step_ms[w.name] = {"before": clocks[self.baseline],
+                                           "steps_per_sample": self.step_chain.get(w.name, 1),
+                                           "min_win_ms": self._min_win_ms(w.name)}
             self.log.append("step_clock", workload=w.name, phase="before", baseline=self.baseline,
                             median_ms=clocks[self.baseline], plain_ms=clocks["plain"],
                             compiled_ms=clocks["compiled"])
@@ -1015,6 +1040,13 @@ class JobRunner:
         return min(region.workloads, key=lambda w: (
             -region.removable_p.get(w, 0.0), -region.p.get(w, 0.0), w))
 
+    def _min_win_ms(self, workload: str) -> float:
+        """The least a region win may save per step: 1% of the workload's step,
+        never more than MIN_WIN_MS. The three-sigma rule guards noise; this
+        floor only keeps trivial wins from an install and a final check."""
+        step = getattr(self, "step_ms", {}).get(workload)
+        return min(MIN_WIN_MS, MIN_WIN_SHARE * step) if step else MIN_WIN_MS
+
     def _ladder_job(self, region: Region, kernel: KernelSpec, assoc_tag: str,
                     run_clock: bool, target_workload: str | None = None) -> LadderJob:
         target = self._target_workload(region, target_workload)
@@ -1038,7 +1070,7 @@ class JobRunner:
             output_ids=rep.output_ids,
             eval_sets=eval_sets,
             tolerances=self.manifest.tolerances,
-            min_win_ms=MIN_WIN_MS / max(copies, 1),
+            min_win_ms=self._min_win_ms(target) / max(copies, 1),
             run_clock=run_clock,
             clock_pairs=self.clock_pairs,
             # the timing child runs a few hundred passes under pacing; a region
@@ -1074,8 +1106,6 @@ class JobRunner:
         from .scaffold import NoScaffold
 
         run = RegionRun(region=region)
-        run.directions = directions_for(region.roofline.bound if region.roofline else None,
-                                        self.manifest.seed, region.fingerprint)
         for m in region.members:
             if region.t_orig_ms.get(m.workload) is None:
                 run.close_rule = f"workload {m.workload!r} was never priced for this region"
@@ -1098,7 +1128,8 @@ class JobRunner:
         scaffold = self._rename(scaffold, region, "scaffold")
         run.kernels[scaffold.kernel_id] = scaffold
         write_kernel(self.kernel_dir, scaffold)
-        result = self._evaluate_kernel(region, scaffold, "preserving", run_clock=scaffold.reference_sequence is None)
+        tag = _tag(scaffold)
+        result = self._evaluate_kernel(region, scaffold, tag, run_clock=scaffold.reference_sequence is None)
         if (result.outcome == "failed" and scaffold.reference_sequence is None
                 and result.failed_gate not in ("static", "compile")):
             # A generated starter can change rounding before search even begins.
@@ -1115,30 +1146,30 @@ class JobRunner:
                 if original_result.outcome != "failed":
                     self.log.append("scaffold_reference_fallback", fingerprint=region.fingerprint,
                                     failed_gate=result.failed_gate, detail=result.detail)
-                    scaffold, result = original, original_result
+                    scaffold, result, tag = original, original_result, _tag(original)
                     run.kernels[scaffold.kernel_id] = scaffold
                     write_kernel(self.kernel_dir, scaffold)
                 else:
                     self.scaffold_overrides.pop(region.fingerprint, None)
         if result.outcome == "failed":
             self._record_attempt(run, "scaffold", "scaffold", "the harness's starting kernel",
-                                 "preserving", scaffold, None, result)
+                                 tag, scaffold, None, result)
             self.log.append("scaffold_failed", fingerprint=region.fingerprint,
                             gate=result.failed_gate, detail=result.detail)
             # one judge fix attempt, per the spec
-            fixed = self._judge_fix(run, judge, scaffold, result)
+            fixed = self._judge_fix(run, judge, scaffold, result, tag)
             if fixed is None:
                 run.close_rule = f"scaffold failed {result.failed_gate} (the one judge fix attempt did not produce a passing kernel)"
                 return run
             scaffold, result = fixed
         run.scaffold = scaffold
-        self._set_head(run, scaffold, result, "preserving")
+        self._set_head(run, scaffold, result, tag)
         self.log.append("scaffold_ok", fingerprint=region.fingerprint,
                         kernel=scaffold.kernel_id, region_ms=result.region_ms,
                         library_ms=result.library_ms)
         # the starting kernel is judged on the whole model like any edit; a
         # naive scaffold rarely wins, but a stitched one at library parity can
-        promotion = self._bind_and_promote(run, scaffold, result)
+        promotion = self._bind_and_promote(run, scaffold, result, assoc_tag=tag)
         _promotion_feedback(result, promotion)
         if promotion:
             run.shipped, run.shipped_ms, run.shipped_ratio = scaffold, result.region_ms, _ratio(result)
@@ -1185,7 +1216,7 @@ class JobRunner:
         self._record_attempt(
             run, "scafix" if repaired else "scaffold", "fix" if repaired else "scaffold",
             "the judge's one fix of the starting kernel" if repaired else "the harness's starting kernel",
-            "preserving", scaffold, None, result, outcome=outcome)
+            tag, scaffold, None, result, outcome=outcome)
         return run
 
     def _build_scaffold(self, region: Region):
@@ -1220,16 +1251,17 @@ class JobRunner:
         d["name"] = f"at_{kid}"
         return KernelSpec(**d)
 
-    def _judge_fix(self, run: RegionRun, judge, scaffold, result):
+    def _judge_fix(self, run: RegionRun, judge, scaffold, result, tag: str):
         """The spec's one repair attempt on a starting kernel that failed its
-        own checks. Returns (kernel, ladder result) or None."""
+        own checks, held to the same rule (tag) as the starter. Returns
+        (kernel, ladder result) or None."""
         if self._close_rule(run) is not None:
             return None
         self._spend(run)
         region = run.region
         run.head, run.last_kernel = scaffold, scaffold.kernel_id
         verdict = _verdict_payload("scaffold", scaffold.kernel_id, "failed", result)
-        writing_for = {"id": "scafix", "kind": "fix", "assoc_tag": "preserving",
+        writing_for = {"id": "scafix", "kind": "fix", "assoc_tag": tag,
                        "hypothesis": "repair the starting kernel so it passes the checks"}
         meta = self._meta(run, Queue(), writing_for)
         resp, error = self._ask_judge(run, "scaffold_fix", lambda: judge.next(meta, verdict))
@@ -1245,10 +1277,10 @@ class JobRunner:
         run.kernels[fixed.kernel_id] = fixed
         write_kernel(self.kernel_dir, fixed)
         target = {"target_workload": resp.kernel.target_workload} if resp.kernel.target_workload else {}
-        check = self._evaluate_kernel(region, fixed, "preserving", **target)
+        check = self._evaluate_kernel(region, fixed, tag, **target)
         if check.outcome == "failed":
             self._record_attempt(run, "scafix", "fix", "the judge's one fix of the starting kernel",
-                                 "preserving", fixed, resp.kernel.parent_kernel_id, check)
+                                 tag, fixed, resp.kernel.parent_kernel_id, check)
             self.log.append("scaffold_fix", fingerprint=region.fingerprint,
                             outcome="fix_failed_ladder", gate=check.failed_gate,
                             detail=check.detail)
@@ -1318,7 +1350,8 @@ class JobRunner:
                                        if named else "no queued item is ready for your kernel") + \
                                       f" (queued: {', '.join(queue.ids()) or 'nothing'})"
                         else:
-                            problem = self._opener_rule(run, item, resp.kernel.parent_kernel_id)
+                            problem = (self._opener_rule(run, item, resp.kernel.parent_kernel_id)
+                                       or self._static_refusal(run, resp.kernel, item.id))
                             if problem is None:
                                 queue.pop_ready(item.id)
                             else:
@@ -1356,16 +1389,21 @@ class JobRunner:
                                  kernel, parent, result, outcome=outcome)
 
     def _note_lesson(self, run: RegionRun, resp) -> None:
-        """A sentence the judge wrote for later regions of this job; every
-        later call carries the newest ones."""
-        if resp.lesson:
-            excerpt = resp.lesson
-            if len(excerpt) > LESSON_CONTEXT_CHARS:
-                excerpt = excerpt[:LESSON_CONTEXT_CHARS - 3].rstrip() + "..."
-            self.lessons.append({"region": run.region.fingerprint[:8], "ops": list(run.region.ops),
-                                 "lesson": excerpt})
-            del self.lessons[:-LESSONS_KEPT]
-            self.log.append("lesson", fingerprint=run.region.fingerprint, lesson=resp.lesson)
+        """Link a note to the evaluated candidate and its parent, never a future proposal."""
+        result = run.attempts.get(run.last_kernel)
+        if not resp.lesson or result is None:
+            return
+        evidence = [run.last_kernel]
+        parent = result.get("parent")
+        if parent in run.attempts and parent not in evidence:
+            evidence.append(parent)
+        note = {"region": run.region.fingerprint, "ops": list(run.region.ops),
+                "lesson": resp.lesson, "evidence": evidence,
+                "results": {kid: run.attempts[kid] for kid in evidence}}
+        if note in self.lessons:
+            return
+        self.lessons.append(note)
+        self.log.append("lesson", fingerprint=run.region.fingerprint, **note)
 
     def _budget(self, run: RegionRun) -> dict:
         """Attempts left for the region and for the job: what the judge is
@@ -1373,13 +1411,28 @@ class JobRunner:
         return {"attempts_left_region": self.manifest.budget_per_region - run.hypotheses,
                 "attempts_left_job": self.manifest.budget_total - self.total_hypotheses}
 
+    def _static_refusal(self, run: RegionRun, proposal, hyp_id: str) -> str | None:
+        """The ladder's first gate, asked before the attempt is charged. A kernel
+        the static checks reject never reaches the GPU, so the judge hears why
+        under the refusal rule (asked again once for free, then charged)
+        instead of losing an attempt to a contract slip; 14 of 140 MetalBench
+        attempts went to one such slip. The ladder still runs the same checks.
+        Returns the refusal, or None."""
+        if resolve_parent(run, proposal.parent_kernel_id) is None:
+            return None  # an unknown parent is the verdict's to report
+        failures = static_check(self._kernel_from_proposal(run, run.region, proposal, hyp_id),
+                                self._contract(run.region))
+        if not failures:
+            return None
+        return "the static checks refuse your kernel: " + "; ".join(f"{f.check}: {f.detail}" for f in failures)
+
     def _spend(self, run: RegionRun) -> None:
         run.hypotheses += 1
         self.total_hypotheses += 1
 
     def _openers(self, run: RegionRun) -> int:
         """How many openers the region's widening round holds."""
-        return min(OPENERS, len(run.directions))
+        return OPENERS
 
     def _opener_rule(self, run: RegionRun, item, parent_name: str) -> str | None:
         """While the widening round lasts, a kernel is an opener, written
@@ -1400,8 +1453,8 @@ class JobRunner:
         if run.attempts.get(parent.kernel_id, {}).get("verdict") in ("failed", "rolled_back"):
             return None
         return (f"the widening round has {left} opener(s) left, so {parent_name!r} is refused as a "
-                f"parent: write against the scaffold under a kind no earlier opener used (see "
-                f"directions), or repair a kernel that failed")
+                f"parent: write against the scaffold under a kind no earlier opener used, "
+                f"or repair a kernel that failed")
 
     def _empty_reply(self, run: RegionRun, front, failure: str | None, problem: str | None,
                      last: dict | None) -> tuple[dict, str | None]:
@@ -1531,9 +1584,11 @@ class JobRunner:
         if kernel is not None:
             run.last_kernel = kernel.kernel_id
             run.attempts[kernel.kernel_id] = {
-                "hypothesis_id": hyp_id, "verdict": outcome, "failed_gate": gate,
+                "hypothesis_id": hyp_id, "kernel_id": kernel.kernel_id, "parent": parent,
+                "hypothesis": text, "kind": kind, "assoc_tag": assoc_tag,
+                "verdict": outcome, "failed_gate": gate, "detail": _safe_detail(detail),
                 "region_ms": region_ms, "library_ms": library_ms, "win_ms": win_ms,
-                "floor_ms": floor_ms,
+                "floor_ms": floor_ms, "sigma_ms": sigma_ms,
                 "target_workload": detail.get("target_workload"),
                 "timing_case": detail.get("timing_case"),
                 "model_check": _safe_detail(detail.get("model_check", {})),
@@ -1570,9 +1625,7 @@ class JobRunner:
             f"{wall_now()}\t{region.fingerprint[:8]}\t{hyp_id}\t{kind}\t{how}\t{text}")
 
     def _meta(self, run: RegionRun, queue: Queue, writing_for: dict | None) -> dict:
-        """Everything the judge gets on one call. The kernels it can name are
-        the scaffold, head, shipped, the one the last verdict was about, and
-        any a queued item depends on."""
+        """Approved metadata; the transport shows a compact view with exact lookups."""
         region = run.region
         io_specs = {}
         for label, m, _copies in capture_instances(region, self.traces):
@@ -1587,21 +1640,13 @@ class JobRunner:
                 "outputs": [specs[a] for a in span.output_ids],
             }
         rep = region.members[0]
-        wanted = {k.kernel_id for k in (run.scaffold, run.head, run.shipped) if k}
-        wanted.add(run.last_kernel)
-        for item in queue.snapshot():
-            if item["depends_on"]:
-                wanted.add(_kernel_id(region, item["depends_on"]))
-        kernels = {}
-        for kid in sorted(wanted - {None}):
-            spec = run.kernels.get(kid)
-            if spec is not None:
-                kernels[kid] = {**_kernel_view(spec), **run.attempts.get(kid, {})}
+        kernels = {kid: {**_kernel_view(spec), **run.attempts.get(kid, {})}
+                   for kid, spec in run.kernels.items()}
         chip = {"gpu_cores": gpu_core_count()}
         if self.peaks is not None:
             chip.update(bandwidth_gbps=self.peaks.bandwidth_gbps, launch_us=self.peaks.launch_us,
                         flops_gflops=self.peaks.flops_gflops)
-        history = [{k: h[k] for k in ("id", "kind", "hypothesis", "parent", "verdict", "summary")}
+        history = [{**h, "detail": run.attempts.get(h.get("kernel"), {}).get("detail", {})}
                    for h in self.report.hypotheses if h["region"] == region.fingerprint]
         done = [{"ops": r["ops"], "copies": r["copies"], "attempts": r["hypotheses"],
                  "shipped": f"{r['s']:.2f}x the library" if r.get("s") else "nothing",
@@ -1610,6 +1655,7 @@ class JobRunner:
             region=region, io_specs=io_specs, chip=chip,
             ops=_ops_view(self.traces[rep.workload], rep),
             kernels=kernels,
+            scaffold=run.scaffold.kernel_id if run.scaffold else None,
             head=run.head.kernel_id if run.head else None,
             shipped=run.shipped.kernel_id if run.shipped else None,
             head_ms=run.head_ms, shipped_ms=run.shipped_ms, assoc_tag=run.head_tag,
@@ -1620,7 +1666,6 @@ class JobRunner:
             writing_for=writing_for,
             default_target_workload=self._target_workload(region),
             head_workload=run.head_workload, shipped_workload=run.shipped_workload,
-            directions=run.directions,
             widening={"openers": self._openers(run), "opened": list(run.openers),
                       "left": max(self._openers(run) - len(run.openers), 0)},
         )
@@ -1649,7 +1694,8 @@ class JobRunner:
         if left["attempts_left_job"] <= 0:
             return "the job budget is spent"
         roof = run.region.roofline
-        if roof is not None and roof.bound == "launch" and run.head_age >= 2 and run.floor_streak >= 3:
+        if (len(run.openers) >= self._openers(run) and roof is not None
+                and roof.bound == "launch" and run.head_age >= 2 and run.floor_streak >= 3):
             return ("no discernible headroom: the region is launch-bound, the last two attempts did "
                     "not move head, and the last three kernels each sat within one sigma of the "
                     "launch floor clocked beside them")
@@ -2192,6 +2238,7 @@ class JobRunner:
             self._record_final_clock(w.name, comp)
 
         self._final_check()
+        self._clock_against_other_baseline()
         self.report.session["idled_s"] = round(self.session.idled_s, 1)
         self.report.write(self.work_dir / "report.json")
         return self.report
@@ -2221,6 +2268,27 @@ class JobRunner:
         self.candidates.append(_region_line(run.region, "closed", run))
         self.report.write(self.work_dir / "report.json")  # a crash still leaves the story so far
 
+
+    def _clock_against_other_baseline(self) -> None:
+        """The finished model against the baseline the job did not ship against,
+        paired and interleaved, so every report says where the model stands
+        against both eager MLX and mx.compile. Shipping was decided against
+        self.baseline; this only records, measured rather than derived from
+        step clocks taken minutes apart. A model that keeps Python state cannot
+        be compiled from outside, so it gets no compiled number."""
+        other = "plain" if self.baseline == "compiled" else "compiled"
+        if other == "compiled" and not self.report.baseline.get("compiled_available"):
+            return
+        for w in self.manifest.workloads:
+            tensors = self.tensors[w.name]
+            comp = compare(self.session, self._step_fn(self.baseline_model, tensors, other),
+                           self._step_fn(self.model, tensors), pairs=self.clock_pairs)
+            clocks = {f"{other}_at_end": comp.median_baseline_ms,
+                      f"speedup_vs_{other}": (1.0 / comp.median_ratio) if comp.median_ratio else None,
+                      f"{other}_win_confirmed": comp.wins_by(0.0), f"{other}_loss_confirmed": comp.loses_by(0.0)}
+            self.report.step_ms.setdefault(w.name, {}).update(clocks)
+            self.log.append("baseline_comparison", workload=w.name, against=other,
+                            stability=round(comp.stability, 3), **clocks)
 
     def _record_final_clock(self, workload, comp) -> None:
         after = statistics.median(comp.candidate_ms)
@@ -2265,9 +2333,11 @@ class JobRunner:
             self.report.final["delivery"] = self._final_delivery_split()
         self.log.append("final_e2e", passed=final.passed, veto_passed=final.veto_passed,
                         checks=self.report.final["checks"])
-        if not final.passed:
-            raise RuntimeError("final model validation failed; accepted checkpoints are preserved, "
-                               "but correctness or the paired regression veto failed")
+        if not all(c.passed for c in final.checks):
+            raise RuntimeError("final model validation failed: the patched model's outputs changed; "
+                               "accepted checkpoints are preserved")
+        if not final.veto_passed:
+            return self._unconfirmed("the patched step measured slower than the baseline")
         if self.use_library_inference:
             # Each comparison already runs the full generation task, including
             # evolving state. Repeating it N times would change the objective.
@@ -2275,8 +2345,7 @@ class JobRunner:
             self.report.final["measurement"] = dict(self.report.constants["measurement"])
             self.report.write(self.work_dir / "report.json")
             if not self.final_ok:
-                raise RuntimeError("final library inference timing did not confirm a speedup; "
-                                   "accepted checkpoints are preserved")
+                self._unconfirmed("library inference timing did not confirm a speedup")
             return
         # An inconclusive single-step clock cannot settle deployment performance.
         # Correct, non-regressing candidates still reach the consecutive-step test.
@@ -2294,8 +2363,17 @@ class JobRunner:
             self.report.step_ms[name]["win_confirmed"] &= self.final_ok
         self.report.write(self.work_dir / "report.json")
         if not self.final_ok:
-            raise RuntimeError("consecutive-step validation did not confirm a correct speedup; "
-                               "see final.sequences in report.json; accepted checkpoints are preserved")
+            self._unconfirmed("the runs of consecutive steps did not confirm a speedup")
+
+    def _unconfirmed(self, reason: str) -> None:
+        """The outputs are right and the win is not confirmed: a measurement
+        result, not a broken job. The report keeps every number measured and
+        the checkpoints stay; nothing is exported, since only a confirmed win
+        ships. Wrong outputs still raise."""
+        self.final_ok = False
+        self.report.final.update(passed=False, reason=reason)
+        self.log.append("final_unconfirmed", reason=reason)
+        self.report.write(self.work_dir / "report.json")
 
     def _final_delivery_split(self) -> dict:
         """Split the final speedup: the untouched model against the installed
@@ -2339,7 +2417,11 @@ class JobRunner:
                 # compile the forward call only, as a caller would
                 call = lambda *args, m=model: m(*args)
                 steps.append(mx.compile(call) if self.baseline == "compiled" else call)
-            runs = [make_sequence(step, tensors, config.steps) for step in steps]
+            # a run is never shorter than one timed sample: ten steps of a 20 us
+            # model is mostly the sample's fixed submit-and-sync cost, and could not
+            # confirm a known 1.5x gap
+            length = max(config.steps, self._chain(tensors))
+            runs = [make_sequence(step, tensors, length) for step in steps]
             kind = "repeated_forward"
             if self.use_library_inference:
                 kind = "library_generation"
@@ -2359,12 +2441,12 @@ class JobRunner:
             sequence_checks.append(check)
             if not check.passed:
                 raise RuntimeError(f"consecutive model outputs failed for {name}: {check.reason}")
-            warm = [lambda s=step: s(*tensors) for step in steps]
+            warm = [chained_steps(step, tensors, self._chain(tensors)) for step in steps]
             row = compare_sequences(self.session, *runs, *warm, pairs=config.pairs,
                                     warmup_steps=config.warmup_steps, label=name)
             timings[name] = comparison_from_samples(row["timing"]["baseline_ms"],
                                                     row["timing"]["candidate_ms"])
-            row["steps"] = config.steps
+            row["steps"] = length if kind == "repeated_forward" else config.steps
             row["workload_kind"] = kind
             row["prefix_copy_included"] = self.context is not None
             results[name] = row
@@ -2536,6 +2618,12 @@ def _region_line(region: Region, event: str, run: "RegionRun | None" = None) -> 
 
 
 
+def _tag(kernel: KernelSpec) -> str:
+    """The rule a harness-built kernel is checked under: bitwise, unless its
+    lowering adds in its own order, which is a changing kernel like any other."""
+    return "changing" if kernel.reassociates else "preserving"
+
+
 def _kernel_id(region: Region, tag: str) -> str:
     """Full region identity keeps globally stored kernels distinct."""
     return f"r{region.fingerprint}_{tag}"
@@ -2593,6 +2681,7 @@ def _kernel_view(spec: KernelSpec) -> dict:
     Native call-site settings are visible as read-only context, never proposal fields."""
     from .judge.prompts import diagnostic_metadata
     return {
+        "fallback_predicate": spec.fallback_predicate,
         "native_call": diagnostic_metadata(spec.native_call),
         "input_signature": spec.input_signature,
         "reference_sequence": diagnostic_metadata(spec.reference_sequence),

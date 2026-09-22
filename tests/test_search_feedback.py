@@ -60,10 +60,11 @@ def test_region_search_keeps_history_and_spends_more_than_three_attempts(tmp_pat
     runner.kernel_dir = tmp_path
     seed = KernelSpec('seed', 'seed', ('in0',), ('out0',), 'out0[0]=in0[0];')
     runner._kernel_from_proposal = lambda run, region, proposal, name: replace(seed, kernel_id=name)
+    runner._static_refusal = lambda *a: None  # this bare runner has no traces to build a contract from
     run = RegionRun(region('r', 0, 2), scaffold=seed, head=seed, kernels={'seed': seed})
-    script = [{'queue': [{'id': f'h{i}', 'kind': 'retile', 'assoc_tag': 'preserving',
+    script = [{'queue': [{'id': f'h{i}', 'kind': f'design{i}', 'assoc_tag': 'preserving',
                          'hypothesis': 'try a layout'} for i in range(5)]}]
-    script += [{'mutations': [], 'kernel': {'source': seed.source, 'parent_kernel_id': 'head',
+    script += [{'mutations': [], 'kernel': {'source': seed.source, 'parent_kernel_id': 'scaffold',
                 'grid': ['1','1','1'], 'threadgroup': ['1','1','1'], 'output_shapes': [['1']]}} for _ in range(5)]
     judge = ScriptedJudge(script)
     runner.hypothesis_cycle(run, judge)
@@ -94,6 +95,7 @@ def test_job_finishes_each_region_before_opening_the_next(tmp_path, monkeypatch,
     runner.build_regions = lambda: targets
     runner.capture_and_price = lambda regions: regions.copy()
     runner._next_regions = lambda **kw: []
+    runner._clock_against_other_baseline = lambda: None  # this bare runner has no baseline or models to clock
     runner.judge_factory = lambda r: object()
     opened, cycles, closed, refreshes = [], [], [], []
     def open_region(r, judge):
@@ -135,7 +137,13 @@ def test_long_lessons_are_preserved_in_log_and_bounded_only_in_context():
     logged = []
     runner.log = SimpleNamespace(append=lambda event, **row: logged.append(row))
     note = 'Keep this measured observation. ' * 100
-    runner._note_lesson(RegionRun(region('r', 0, 2)), SimpleNamespace(lesson=note))
+    run = RegionRun(region('r', 0, 2), last_kernel='k',
+                    attempts={'k': {'verdict': 'failed', 'parent': 'seed'},
+                              'seed': {'verdict': 'correct_slower'}})
+    runner._note_lesson(run, SimpleNamespace(lesson=note))
     assert logged[0]['lesson'] == note
-    assert len(runner.lessons[0]['lesson']) <= 400
-    assert runner.lessons[0]['lesson'].endswith('...')
+    assert runner.lessons[0]['lesson'] == note
+    assert runner.lessons[0]['evidence'] == ['k', 'seed']
+    assert runner.lessons[0]['results']['k']['verdict'] == 'failed'
+    runner._note_lesson(run, SimpleNamespace(lesson=note))
+    assert len(runner.lessons) == len(logged) == 1

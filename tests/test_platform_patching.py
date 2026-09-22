@@ -62,7 +62,7 @@ def test_module_setattr_seen_by_nn_at_call_time():
 def test_patching_mx_add_does_not_intercept_plus():
     """a + b dispatches through the array C slot and never calls mx.add, so
     module-level patching alone cannot record operator expressions. This is
-    why the array dunder patches are load-bearing (PLATFORM.md fact 10)."""
+    why the array dunder patches are load-bearing."""
     calls = []
     orig = _spy_module_fn("add", calls)
     try:

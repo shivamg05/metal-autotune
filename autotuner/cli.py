@@ -1,6 +1,7 @@
 """autotune run manifest.yaml"""
 
 import argparse
+from datetime import datetime
 from contextlib import contextmanager
 import fcntl
 import os
@@ -46,13 +47,17 @@ def main(argv=None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     run = sub.add_parser("run", help="run one optimization job")
     run.add_argument("manifest")
-    run.add_argument("--work-dir", default="autotune_work")
+    run.add_argument("--work-dir", default=str(Path("runs") / datetime.now().strftime("%Y-%m-%d_%H-%M-%S-%f")),
+                     help="fresh run directory; defaults to runs/<timestamp>")
     run.add_argument("--artifact", default=None, help="fresh output directory; defaults to <work-dir>/artifact")
     run.add_argument("--model", default=None, help="judge model id; defaults to the selected provider's model")
     run.add_argument("--judge", default="api",
                      help="api: Anthropic SDK (needs ANTHROPIC_API_KEY); "
                           "claude-cli, codex, gemini: that agent's CLI, headless, in an empty dir; "
-                          "agent: answer <work-dir>/judge_io by hand (see AGENT_JUDGE.md)")
+                          "agent: answer <work-dir>/judge_io by hand (see docs/judge-protocol.md)")
+    run.add_argument("--judge-effort", default=None,
+                     help="thinking effort for the claude-cli judge (low, medium, high, xhigh, max); "
+                          "default low, the level the CLI ran at before its 2026-09-17 update")
     run.add_argument("--judge-cmd", default=None,
                      help="run this exact command as the judge, any headless agent CLI; a "
                           "{system}/{prompt} token is filled in, else the prompt goes on stdin. "
@@ -90,12 +95,16 @@ def _execute(args, parser):
         judge = AnthropicJudge(model=args.model or DEFAULT_MODEL)
         label = f"api ({args.model or DEFAULT_MODEL})"
     elif args.judge in CLI_PRESETS:
-        judge = CliJudge(CLI_PRESETS[args.judge](args.model))
-        label = f"{args.judge} ({args.model or 'provider default'})"
+        from .judge.agent import DEFAULT_EFFORT, claude_argv
+        preset = CLI_PRESETS[args.judge]
+        effort = args.judge_effort or DEFAULT_EFFORT
+        judge = CliJudge(preset(args.model, effort) if preset is claude_argv else preset(args.model))
+        label = f"{args.judge} ({args.model or 'provider default'}"
+        label += f", effort {effort})" if preset is claude_argv else ")"
     elif args.judge == "agent":
         mailbox = Path(args.work_dir) / "judge_io"
         judge = AgentFileJudge(mailbox)
-        print(f"agent judge: answer requests in {mailbox}/ (protocol in AGENT_JUDGE.md)")
+        print(f"agent judge: answer requests in {mailbox}/ (protocol in docs/judge-protocol.md)")
         label = "agent"
     else:
         parser.error(f"--judge must be api, agent, or one of {sorted(CLI_PRESETS)}, "
@@ -119,10 +128,12 @@ def _execute(args, parser):
     )
     report = runner.run()
     artifact = None
-    if report.accepted:
+    if report.accepted and runner.final_ok:
         artifact = runner.emit_artifact(args.artifact)
     else:
-        report.session.update(status="complete", outcome="no_improvement", artifact=None)
+        # kernels that shipped during the search but were not confirmed at the end are not exported
+        report.session.update(status="complete", artifact=None,
+                              outcome="unconfirmed" if report.accepted else "no_improvement")
         report.write(Path(args.work_dir) / "report.json")
     shipped = [r for r in report.regions if r.get("s")]
     print(f"job done: {len(shipped)}/{len(report.regions)} regions shipped")

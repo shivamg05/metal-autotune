@@ -217,9 +217,9 @@ def test_scaffold_repair_counts_toward_the_job_budget(monkeypatch):
     kernel = SimpleNamespace(kernel_id="scaffold")
     result = SimpleNamespace(failed_gate="compile", detail={}, region_ms=None, library_ms=None,
                              win_ms=None, sigma_ms=None, floor_ms=None)
-    assert runner._judge_fix(run, None, kernel, result) is None
+    assert runner._judge_fix(run, None, kernel, result, "preserving") is None
     assert (runner.total_hypotheses, run.hypotheses) == (1, 1)
-    assert runner._judge_fix(run, None, kernel, result) is None
+    assert runner._judge_fix(run, None, kernel, result, "preserving") is None
     assert calls == [1]
 
 
@@ -336,3 +336,16 @@ def test_a_trace_pins_no_array_versions():
         assert set(got) == wanted and tracer.recorder.snapshot_seqs is None
     finally:
         tracer.uninstall()
+
+
+def test_minimum_win_scales_with_the_step_up_to_the_fixed_floor():
+    """A region win must save at least 1% of the step, never more than the
+    30 us floor: a 44 us step asks for 0.44 us and leaves the three-sigma rule
+    to decide, a 1.2 s step still asks for the full 30 us."""
+    from autotuner.loop import JobRunner, MIN_WIN_MS
+    runner = JobRunner.__new__(JobRunner)
+    runner.step_ms = {"tiny": 0.044, "flux": 1200.0, "edge": 3.0}
+    assert runner._min_win_ms("tiny") == pytest.approx(0.00044)
+    assert runner._min_win_ms("flux") == MIN_WIN_MS
+    assert runner._min_win_ms("edge") == MIN_WIN_MS
+    assert runner._min_win_ms("unclocked") == MIN_WIN_MS

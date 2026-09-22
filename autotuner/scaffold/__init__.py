@@ -5,6 +5,7 @@ source when the region is a single library op we can wrap verbatim (library
 parity by construction), naive lowering otherwise."""
 
 from .lower import (
+    _CONSTANT_NAMES, _POWER_NAMES, _SOFTMAX_NAMES, _LOGSUMEXP_NAMES,
     _CAST_NAMES, _CONCAT_NAMES, _EW_NAMES, _GETITEM_NAMES, _LN_NAMES, _MATMUL_NAMES,
     _QMM_NAMES, _REDUCE_NAMES, _RMS_NAMES, _ROPE_NAMES, _SPLIT_NAMES, _STACK_NAMES,
     _VIEW_NAMES, lower_naive, stretch_input_shapes,
@@ -14,7 +15,8 @@ from .symshape import NoScaffold
 
 _COVERED = (frozenset(_EW_NAMES) | frozenset(_REDUCE_NAMES) | _MATMUL_NAMES | _RMS_NAMES
             | _LN_NAMES | _QMM_NAMES | _ROPE_NAMES | _VIEW_NAMES | _CAST_NAMES
-            | _GETITEM_NAMES | _SPLIT_NAMES | _CONCAT_NAMES | _STACK_NAMES)
+            | _GETITEM_NAMES | _SPLIT_NAMES | _CONCAT_NAMES | _STACK_NAMES
+            | _CONSTANT_NAMES | _POWER_NAMES | _SOFTMAX_NAMES | _LOGSUMEXP_NAMES)
 
 
 def uncovered_op(ops) -> str | None:

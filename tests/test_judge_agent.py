@@ -161,6 +161,10 @@ class TestCliJudge:
         assert argv[argv.index("--tools") + 1] == ""
         assert argv[argv.index("--setting-sources") + 1] == ""
         assert argv[argv.index("--model") + 1] == "claude-opus-5"
+        assert argv[argv.index("--effort") + 1] == "low"  # pinned, never the CLI's own default
+        assert claude_argv("claude-opus-5", "medium")[claude_argv().index("--effort") + 1] == "medium"
+        with pytest.raises(ValueError, match="judge effort"):
+            claude_argv("claude-opus-5", "extreme")
         # the harness system prompt rides --system-prompt, not stdin
         assert argv[-2:] == ["--system-prompt", SYSTEM_TOKEN]
 

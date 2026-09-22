@@ -1,0 +1,53 @@
+const constant T* in2_ = &in2;
+const uint lid = thread_position_in_threadgroup.x;
+const uint tg = thread_position_in_grid.x / 128u;
+const uint sg = lid / 32u;
+const uint lane = lid % 32u;
+const uint row0 = tg * 8u;
+const float scale = (float)in2_[0];
+threadgroup float tile[8 * 128];
+metal::simdgroup_float8x8 C0(0.0f), C1(0.0f), C2(0.0f), C3(0.0f);
+metal::simdgroup_float8x8 A, B;
+const device T* arow = in1 + row0 * 128u;
+const uint n0 = sg * 32u;
+const device T* bp0 = in0 + (n0 + 0u) * 128u;
+const device T* bp1 = in0 + (n0 + 8u) * 128u;
+const device T* bp2 = in0 + (n0 + 16u) * 128u;
+const device T* bp3 = in0 + (n0 + 24u) * 128u;
+for (uint k = 0; k < 128u; k += 8u) {
+    metal::simdgroup_load(A, arow + k, 128u, ulong2(0, 0), false);
+    metal::simdgroup_load(B, bp0 + k, 128u, ulong2(0, 0), true);
+    metal::simdgroup_multiply_accumulate(C0, A, B, C0);
+    metal::simdgroup_load(B, bp1 + k, 128u, ulong2(0, 0), true);
+    metal::simdgroup_multiply_accumulate(C1, A, B, C1);
+    metal::simdgroup_load(B, bp2 + k, 128u, ulong2(0, 0), true);
+    metal::simdgroup_multiply_accumulate(C2, A, B, C2);
+    metal::simdgroup_load(B, bp3 + k, 128u, ulong2(0, 0), true);
+    metal::simdgroup_multiply_accumulate(C3, A, B, C3);
+}
+metal::simdgroup_store(C0, tile + n0 + 0u, 128u, ulong2(0, 0), false);
+metal::simdgroup_store(C1, tile + n0 + 8u, 128u, ulong2(0, 0), false);
+metal::simdgroup_store(C2, tile + n0 + 16u, 128u, ulong2(0, 0), false);
+metal::simdgroup_store(C3, tile + n0 + 24u, 128u, ulong2(0, 0), false);
+threadgroup_barrier(mem_flags::mem_threadgroup);
+for (uint i = 0; i < 2u; ++i) {
+    const uint r = sg * 2u + i;
+    const threadgroup float* tr = tile + r * 128u;
+    const float c0 = tr[lane] * scale;
+    const float c1 = tr[lane + 32u] * scale;
+    const float c2 = tr[lane + 64u] * scale;
+    const float c3 = tr[lane + 96u] * scale;
+    const float lm = metal::max(metal::max(c0, c1), metal::max(c2, c3));
+    const float m = simd_max(lm);
+    const float e0 = metal::precise::exp(c0 - m);
+    const float e1 = metal::precise::exp(c1 - m);
+    const float e2 = metal::precise::exp(c2 - m);
+    const float e3 = metal::precise::exp(c3 - m);
+    const float s = simd_sum((e0 + e1) + (e2 + e3));
+    const float inv = 1.0f / s;
+    device T* o = out0 + (row0 + r) * 128u;
+    o[lane] = (T)(e0 * inv);
+    o[lane + 32u] = (T)(e1 * inv);
+    o[lane + 64u] = (T)(e2 * inv);
+    o[lane + 96u] = (T)(e3 * inv);
+}

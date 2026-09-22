@@ -14,8 +14,9 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 PROBLEMS = HERE / "problems"
-GENERATED = HERE / "generated"
+GENERATED = HERE.parent / "runs" / "metalbench" / "generated"
 SETS = ("common", "standard", "full")
+FINAL_PAIRS = 8
 
 MODEL_FILE = '''"""MetalBench {set}/{name}: build() wraps the vendored Model so one call is one forward."""
 import importlib.util
@@ -75,8 +76,10 @@ def problems(sets: tuple[str, ...] = SETS) -> dict[str, Problem]:
 
 
 def write_job(problem: Problem, budget_per_region: int, budget_total: int,
-              out: Path = GENERATED) -> Path:
-    """The model file and manifest for one problem; returns the manifest path."""
+              out: Path = GENERATED, baseline: str = "compiled") -> Path:
+    """The model file and manifest for one problem; returns the manifest path.
+    baseline is what a kernel must beat to be installed: the model under
+    mx.compile, or plain eager MLX, the bar the other kernel benchmarks use."""
     job = out / problem.set / problem.name
     job.mkdir(parents=True, exist_ok=True)
     (job / "model.py").write_text(MODEL_FILE.format(set=problem.set, name=problem.name,
@@ -85,5 +88,9 @@ def write_job(problem: Problem, budget_per_region: int, budget_total: int,
     (job / "manifest.yaml").write_text(
         f"model: model.py\nworkloads:\n  - name: {problem.name}\n    inputs:\n{inputs}"
         f"tolerances: {{rtol: {problem.rtol}, atol: {problem.atol}}}\n"
-        f"budget: {{per_region: {budget_per_region}, total: {budget_total}}}\n")
+        f"budget: {{per_region: {budget_per_region}, total: {budget_total}}}\n"
+        # steps this small time noisily from one run to the next (13% on a 0.3 ms step), and
+        # four repeats of the final check can only confirm a win above about 20%; eight, about 6%
+        f"final_benchmark: {{pairs: {FINAL_PAIRS}}}\n"
+        f"baseline: {baseline}\n")
     return job / "manifest.yaml"

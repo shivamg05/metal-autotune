@@ -2,6 +2,7 @@
 
 from types import SimpleNamespace
 
+import mlx.core as mx
 import pytest
 
 from autotuner.e2e import E2EResult
@@ -68,7 +69,21 @@ def test_sequences_balance_order_and_cool_only_outside_complete_runs():
     expected = []
     for arm in ["a", "b", "b", "a"] * 2:
         expected.extend([f"warm_{arm}"] * 7 + [f"{arm}_step"] * 20 + ["cool"])
-    assert timed_events == expected
+    assert timed_events == expected + ["cool"]  # and whatever debt is left at the end
+
+
+def test_short_sequences_run_back_to_back_and_cool_once_at_the_end():
+    """A 20 ms run heats nothing, and an idle before the next one puts it on
+    ramped-down clocks: a kernel 1.4x faster back to back read slower."""
+    events = []
+    class Session:
+        def settle(self): events.append("cool")
+        def warm_until_stable(self, fn): return [0.02]
+        def timed(self, fn): return fn()
+        def log(self, *args, **kwargs): pass
+    def run(): events.append("run"); return 0.02
+    compare_sequences(Session(), run, run, lambda: 0.02, lambda: 0.02, pairs=4, warmup_steps=1)
+    assert events == ["cool"] + ["run"] * 8 + ["cool"]  # prior debt first, then nothing until the end
 
 
 def test_sequence_exception_still_pays_prior_work_debt():
@@ -84,15 +99,20 @@ def test_sequence_exception_still_pays_prior_work_debt():
     assert events[-1] == "cool"
 
 
-def test_every_forward_is_evaluated_even_when_its_output_is_discarded(monkeypatch):
-    evaluations, calls = [], []
-    monkeypatch.setattr("autotuner_runtime.sequence.mx.eval", lambda result: evaluations.append(result))
-    def step(x): calls.append(x); return len(calls)
-    run = make_sequence(step, [7], 5)
-    assert run() == 5
-    assert calls == [7] * 5
-    assert evaluations == [1, 2, 3, 4, 5]
-    assert run() == 10
+def test_a_sequence_chains_every_step_and_returns_all_outputs():
+    """One graph of dependent steps: each call after the first takes an input
+    derived from the previous output, and every output comes back, so the
+    caller's eval reaches all of them and none can be skipped as unused."""
+    calls = []
+    def step(x, w):
+        calls.append(x)
+        return x * w
+    x, w = mx.array([7.0]), mx.array([2.0, 2.0])
+    outs = make_sequence(step, [x, w], 5)()
+    mx.eval(outs)
+    assert len(calls) == 5 and len(outs) == 5
+    assert calls[0] is x and all(c is not x for c in calls[1:])  # linked to the last output
+    assert all(o.tolist() == [14.0, 14.0] for o in outs)
 
 
 def _fake_session(durations, slept):

@@ -1,0 +1,47 @@
+{
+ "kernel_id": "r842d9a6fe74166cc_reg_resident",
+ "name": "at_r842d9a6fe74166cc_reg_resident",
+ "input_names": [
+  "in0"
+ ],
+ "output_names": [
+  "out0"
+ ],
+ "header": "",
+ "grid": [
+  "64 * 1024",
+  "1",
+  "1"
+ ],
+ "threadgroup": [
+  "1024",
+  "1",
+  "1"
+ ],
+ "output_shapes": [
+  [
+   "in0.shape[0]",
+   "8",
+   "in0.shape[1] // 8",
+   "in0.shape[2]",
+   "in0.shape[3]"
+  ]
+ ],
+ "output_dtypes": [
+  "float32"
+ ],
+ "template": [
+  [
+   "T",
+   "in0"
+  ]
+ ],
+ "fallback_predicate": "in0.shape[0] != 8 or in0.shape[1] != 64 or in0.shape[2] != 32 or in0.shape[3] != 32",
+ "ensure_row_contiguous": true,
+ "atomic_outputs": false,
+ "native_call": null,
+ "input_signature": null,
+ "reference_sequence": null,
+ "stages": [],
+ "reassociates": false
+}

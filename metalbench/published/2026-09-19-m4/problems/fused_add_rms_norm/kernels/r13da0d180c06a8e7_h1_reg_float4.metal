@@ -1,0 +1,18 @@
+const uint lid = thread_position_in_threadgroup.x;
+const uint row = thread_position_in_grid.y;
+const uint n = 1024u;
+const device float4* a = (const device float4*)(in0 + row * n);
+const device float4* b = (const device float4*)(in1 + row * n);
+const device float4* w = (const device float4*)in2;
+device float4* o = (device float4*)(out0 + row * n);
+float4 s0 = a[lid] + b[lid];
+float4 s1 = a[lid + 128u] + b[lid + 128u];
+float p = s0.x*s0.x + s0.y*s0.y + s0.z*s0.z + s0.w*s0.w + s1.x*s1.x + s1.y*s1.y + s1.z*s1.z + s1.w*s1.w;
+p = metal::simd_sum(p);
+threadgroup float sh[4];
+if ((lid & 31u) == 0u) sh[lid >> 5] = p;
+threadgroup_barrier(mem_flags::mem_threadgroup);
+const float tot = sh[0] + sh[1] + sh[2] + sh[3];
+const float scale = metal::precise::rsqrt(tot / (float)n + 1e-05f);
+o[lid] = s0 * scale * w[lid];
+o[lid + 128u] = s1 * scale * w[lid + 128u];

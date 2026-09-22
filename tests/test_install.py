@@ -10,6 +10,8 @@ from pathlib import Path
 import mlx.core as mx
 import pytest
 
+from autotuner_runtime.stats import comparison_from_samples
+
 from autotuner.ladder.gates import LadderResult
 from autotuner.loop import JobRunner, RegionRun
 from autotuner.measure.session import Session
@@ -85,7 +87,7 @@ def swept(tmp_path, model_says_win):
     assert r.tracer.verify_restored() == []
 
 
-def test_wins_compose_on_one_model(runner, tmp_path):
+def test_wins_compose_on_one_model(runner, tmp_path, monkeypatch):
     x = runner.tensors["main"][0]
     before = runner.model(x)
     mx.eval(before)
@@ -118,6 +120,11 @@ def test_wins_compose_on_one_model(runner, tmp_path):
     mx.eval(after)
     assert mx.array_equal(before, after).item()  # elementwise kernels in the library's order
 
+    # three single-op kernels in a 37 us step are a call-site tax, not a win,
+    # and the chained step clock resolves that; this test is about composing
+    # installs and exporting them, so the final veto is stubbed
+    monkeypatch.setattr("autotuner.e2e.step_veto",
+                        lambda *args, **kwargs: (comparison_from_samples([1.0] * 4, [0.9] * 4), True))
     runner._final_check()
     assert runner.final_ok and runner.report.final["passed"]
     art = runner.emit_artifact(tmp_path / "artifact")
@@ -330,3 +337,18 @@ def test_a_failed_certification_removes_the_patch_surface(runner, monkeypatch):
     assert not runner.tracer.patcher.installed
     assert runner.installed == {} and "chain" not in runner.certified_scopes
     assert any(r["kind"] == "certification_failed" for r in runner.log.rows())
+
+
+def test_an_unconfirmed_final_check_ends_the_job_normally(runner, monkeypatch):
+    """Right outputs and no confirmed win is a measurement result, not a broken
+    job: nothing raises, the report says why, and final_ok stays false so
+    nothing is exported. Seven MetalBench jobs used to exit 1 here."""
+    k_max = elementwise("rmax_u1", "out0[i] = (in0[i] != in0[i]) ? in0[i] : metal::max(in0[i], 0.0f);")
+    assert runner._bind_and_promote(RegionRun(region=runner.region("mx.maximum")), k_max, WIN)
+    monkeypatch.setattr("autotuner.e2e.step_veto",
+                        lambda *args, **kwargs: (comparison_from_samples([1.0] * 4, [1.2] * 4), False))
+    runner._final_check()
+    assert runner.final_ok is False
+    assert runner.report.final["passed"] is False and "slower" in runner.report.final["reason"]
+    assert [r for r in runner.log.rows() if r["kind"] == "final_unconfirmed"]
+    assert all(c["passed"] for c in runner.report.final["checks"])  # the outputs were right

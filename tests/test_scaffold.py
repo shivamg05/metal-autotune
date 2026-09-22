@@ -162,6 +162,7 @@ def test_inline_reduction_sum_and_mean():
     model = _AbsScaleSum()
     spec, sizes = lower_swept(model, lambda b: (b, 33), (0, 3), keys=(7, 8, 9))
     assert spec.grid[1] == "in0.shape[0]"  # one threadgroup per row
+    assert spec.reassociates  # the loop checks it as a changing kernel
     for x, t, s in sizes:
         assert len(s.output_ids) == 2
         check(spec, model, [x], t, s, bitwise=False)
@@ -178,6 +179,7 @@ def test_inline_reduction_max_bitwise():
     model = _ScaleMax()
     spec, sizes = lower_swept(model, lambda b: (b, 33), (0, 1), keys=(10, 11, 12))
     assert spec.output_shapes[0] == ("in0.shape[0]", "1")
+    assert not spec.reassociates
     for x, t, s in sizes:
         check(spec, model, [x], t, s, bitwise=True)
 
@@ -241,12 +243,33 @@ class _Soup:
 def test_elementwise_soup_bitwise():
     """A chain over the dunder and mx elementwise surface, scalar-broadcast
     and reflected forms included. metal::precise:: transcendentals match
-    library bits (PLATFORM.md spike_04) and every stage rounds per op, so the
+    library bits and every stage rounds per op, so the
     whole chain is bitwise."""
     model = _Soup()
     spec, sizes = lower_swept(model, lambda b: (b, 16), (0, 11), keys=(13, 14, 15))
+    assert not spec.reassociates
     for x, t, s in sizes:
         check(spec, model, [x], t, s, bitwise=True)
+
+
+class _DivByScalar:
+    def __call__(self, x):
+        return (x * 2.0) / mx.sqrt(mx.array(16.0))
+
+
+def test_zero_d_input_is_read_by_reference():
+    """MLX hands a 0-d array to a custom kernel by reference, not as a
+    pointer, so an indexed read of it does not compile. The region is the
+    divide alone; its second input is the 0-d square root."""
+    model = _DivByScalar()
+    x, t = traced(model, (8, 16), key=21)
+    div = next(n.seq for n in t.nodes if n.op == "array.__truediv__")
+    s = cut(t, div, div)
+    specs = t.span_specs(div, div)
+    assert [specs[a][0] for a in s.input_ids] == [(8, 16), ()]
+    spec = lower_naive(t, s)
+    assert spec.input_names == ("in0", "in1")
+    check(spec, model, [x], t, s, bitwise=True)
 
 
 class _Mask:
@@ -655,15 +678,15 @@ def test_unlowerable_op_raises_named_reason():
     assert "frobnicate" in str(e.value)
 
 
-def test_reduction_over_first_axis_raises():
+def test_reduction_over_first_axis():
     class FirstAxis:
         def __call__(self, x):
             return mx.sum(x, axis=0)
 
-    x, t = traced(FirstAxis(), (4, 33), 27)
-    with pytest.raises(NoScaffold) as e:
-        lower_naive(t, cut(t, 0, 0))
-    assert e.value.reason == "reduction-axis-not-last"
+    model = FirstAxis()
+    x, t = traced(model, (4, 33), 27)
+    span = cut(t, 0, 0)
+    check(lower_naive(t, span), model, [x], t, span, bitwise=False)
 
 
 def test_view_op_not_lowered_raises():

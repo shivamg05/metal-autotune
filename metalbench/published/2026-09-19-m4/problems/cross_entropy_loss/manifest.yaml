@@ -1,0 +1,12 @@
+model: model.py
+workloads:
+  - name: cross_entropy_loss
+    inputs:
+      - shape: [1024, 1024]
+        dtype: float32
+      - shape: [1024, 1024]
+        dtype: float32
+tolerances: {rtol: 0.001, atol: 0.001}
+budget: {per_region: 10, total: 30}
+final_benchmark: {pairs: 8}
+baseline: compiled

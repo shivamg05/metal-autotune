@@ -125,6 +125,22 @@ _REDUCE_NAMES = {
     "mx.max": "max", "array.max": "max", "mx.min": "min", "array.min": "min",
 }
 
+# stage kinds whose accumulation order is the lowering's own, not the library's
+_ACCUMULATING_KINDS = {"rms", "ln", "matmul", "qmm", "softmax", "logsumexp"}
+
+
+def _reassociates(stages) -> bool:
+    """Whether the kernel adds in an order other than the library's: a sum or
+    mean tree, a norm, a matmul, or replacing pow(x, 2) with x*x."""
+    return any(st.kind in _ACCUMULATING_KINDS or st.op in _POWER_NAMES
+               or (st.kind == "reduce" and st.reduce_op in ("sum", "mean"))
+               for st in stages)
+
+_POWER_NAMES = frozenset({"array.__pow__", "mx.power"})
+_CONSTANT_NAMES = frozenset({"mx.array"})
+_SOFTMAX_NAMES = frozenset({"mx.softmax"})
+_LOGSUMEXP_NAMES = frozenset({"mx.logsumexp", "array.logsumexp"})
+
 _MATMUL_NAMES = frozenset({"mx.matmul", "array.__matmul__"})
 _RMS_NAMES = frozenset({"mx.fast.rms_norm"})
 _LN_NAMES = frozenset({"mx.fast.layer_norm"})
@@ -157,13 +173,16 @@ class _Value:
 
 @dataclass
 class _Stage:
-    kind: str                       # ew | copy | matmul | rms | reduce | qmm | concat
+    kind: str                       # selects the stage emitter
     op: str                         # recorded op name, for messages
     out: _Buffer | None
     srcs: list = field(default_factory=list)  # _Value or python scalars, arg order
     fmt: str = ""
     bool_out: bool = False
     reduce_op: str = ""
+    axes: tuple[int, ...] = ()
+    literals: tuple = ()
+    rounded_exp: bool = False
     eps: float = 0.0
     qmm_bits: int = 0
     qmm_group: int = 0
@@ -234,7 +253,9 @@ class _Lowering:
                 vals = tuple(ss[k][j] for ss in shape_sets)
                 dims.append(lit(vals[0], self.n_inst) if len(set(vals)) == 1
                             else accessor(k, j, vals))
-            buf = _Buffer(f"in{k}", "input", self.specs[aid][1], tuple(dims))
+            # MLX hands a 0-d input to a kernel by reference, not as a pointer;
+            # the body reads it through a pointer alias declared in _assemble
+            buf = _Buffer(f"in{k}" if dims else f"in{k}_", "input", self.specs[aid][1], tuple(dims))
             self.in_bufs.append(buf)
             self.env[aid] = _Value(buf, contiguous(buf.shape, self.n_inst))
 
@@ -329,7 +350,18 @@ class _Lowering:
     # -- stage builders ------------------------------------------------------
 
     def _build_stage(self, node: TraceNode) -> _Value:
-        if node.op in _EW_NAMES:
+        if node.op in _CONSTANT_NAMES:
+            stage, shape = self._constant_stage(node)
+        elif node.op in _POWER_NAMES:
+            args, kwargs = self._operands(node)
+            if kwargs or len(args) != 2 or not isinstance(args[1], (int, float)) or args[1] != 2:
+                raise NoScaffold("power-exponent-not-lowered", "only a literal exponent of 2 is supported")
+            self._float_values(node, args)
+            stage = _Stage(kind="ew", op=node.op, out=None, srcs=[args[0]], fmt=_EW["square"][0])
+            shape = args[0].view.shape
+        elif node.op in _SOFTMAX_NAMES | _LOGSUMEXP_NAMES:
+            stage, shape = self._reduce_stage(node)
+        elif node.op in _EW_NAMES:
             stage, shape = self._ew_stage(node)
         elif node.op in _MATMUL_NAMES:
             stage, shape = self._matmul_stage(node)
@@ -511,26 +543,54 @@ class _Lowering:
         return _Stage(kind="rope", op=node.op, out=None, srcs=[x],
                       rope_args=(dims, traditional, float(base), float(scale), offset)), x.view.shape
 
+    def _constant_stage(self, node: TraceNode):
+        args, kwargs = self._operands(node)
+        if len(args) != 1 or set(kwargs) - {"dtype"}:
+            raise NoScaffold("op-args-not-lowered", node.op)
+        def flatten(value):
+            if isinstance(value, (list, tuple)):
+                return [x for part in value for x in flatten(part)]
+            if not isinstance(value, (int, float, bool)) or not math.isfinite(value):
+                raise NoScaffold("constant-not-lowered", "expected finite literal data")
+            return [value]
+        values = flatten(args[0])
+        shape = tuple(lit(d, self.n_inst) for d in node.out_specs[0][0])
+        if len(values) != math.prod(node.out_specs[0][0]):
+            raise NoScaffold("constant-shape-mismatch", node.op)
+        return _Stage(kind="constant", op=node.op, out=None, literals=tuple(values)), shape
+
     def _reduce_stage(self, node: TraceNode):
         args, kwargs = self._operands(node)
         x = args[0] if args else None
         if not isinstance(x, _Value):
             raise NoScaffold("op-args-not-lowered", node.op)
         self._float_values(node, [x])
+        softmax = node.op in _SOFTMAX_NAMES
+        logsumexp = node.op in _LOGSUMEXP_NAMES
         axis = kwargs.pop("axis", args[1] if len(args) > 1 else None)
-        keepdims = bool(kwargs.pop("keepdims", args[2] if len(args) > 2 else False))
-        if kwargs:
-            raise NoScaffold("op-args-not-lowered", f"{node.op} kwargs {sorted(kwargs)}")
+        precise = kwargs.pop("precise", False) if softmax else False
+        keepdims = False if softmax else kwargs.pop("keepdims", args[2] if len(args) > 2 else False)
+        if kwargs or len(args) > (2 if softmax else 3) or not isinstance(precise, bool):
+            raise NoScaffold("op-args-not-lowered", node.op)
         rank = len(x.view.shape)
-        if isinstance(axis, (tuple, list)) and len(axis) == 1:
-            axis = axis[0]
-        if axis is None and rank == 1:
-            axis = 0
-        if not isinstance(axis, int) or axis % rank != rank - 1:
-            raise NoScaffold("reduction-axis-not-last", f"{node.op} axis {axis}")
-        shape = x.view.shape[:-1] + ((lit(1, self.n_inst),) if keepdims else ())
-        return _Stage(kind="reduce", op=node.op, out=None, srcs=[x],
-                      reduce_op=_REDUCE_NAMES[node.op]), shape
+        if axis is not None and not isinstance(axis, (int, tuple, list)):
+            raise NoScaffold("reduction-axes", str(axis))
+        axes = tuple(range(rank)) if axis is None else ((axis,) if isinstance(axis, int) else tuple(axis))
+        if any(not isinstance(a, int) or not -rank <= a < rank for a in axes):
+            raise NoScaffold("reduction-axes", str(axes))
+        original_axes = tuple(a % rank for a in axes)
+        axes = tuple(sorted(original_axes))
+        if len(set(axes)) != len(axes):
+            raise NoScaffold("reduction-axes", str(axes))
+        shape = tuple(lit(1, self.n_inst) if i in axes else d for i, d in enumerate(x.view.shape)) \
+            if keepdims else tuple(d for i, d in enumerate(x.view.shape) if i not in axes)
+        kind = "softmax" if softmax else "logsumexp" if logsumexp else "reduce"
+        # MLX's general logsumexp rounds its intermediate array operations.
+        fused_lse = (bool(axes) and original_axes == tuple(range(axes[0], rank))
+                     and all(x.view.shape[a].is_one for a in axes[:-1]))
+        return _Stage(kind=kind, op=node.op, out=None, srcs=[x], axes=axes,
+                      rounded_exp=logsumexp and not fused_lse,
+                      reduce_op="" if softmax or logsumexp else _REDUCE_NAMES[node.op]), x.view.shape if softmax else shape
 
     def _join_operands(self, node: TraceNode):
         """The array list and axis shared by concatenate and stack. args[0] is a
@@ -796,7 +856,9 @@ class _Lowering:
     # -- launch mode analysis ------------------------------------------------
 
     def _stage_rows(self, st: _Stage) -> Dim:
-        if st.kind in ("rms", "ln", "reduce"):
+        if st.kind in ("reduce", "softmax", "logsumexp"):
+            return prod_dims(tuple(d for i, d in enumerate(st.srcs[0].view.shape) if i not in st.axes), self.n_inst)
+        if st.kind in ("rms", "ln"):
             return prod_dims(st.srcs[0].view.shape[:-1], self.n_inst)
         return prod_dims(st.out.shape[:-1], self.n_inst)
 
@@ -829,8 +891,9 @@ class _Lowering:
         if st.kind == "rope":
             # both rotation partners live on the same row (same axis -2 index)
             return own_row(st.srcs[0], None)
-        if st.kind == "reduce":
-            return own_row(st.srcs[0], None)
+        if st.kind in ("reduce", "softmax", "logsumexp"):
+            x = st.srcs[0]
+            return x.buf.kind == "input" or (st.axes == (len(x.view.shape) - 1,) and own_row(x, None))
         return False
 
     def _choose_mode(self) -> tuple[str, Dim]:
@@ -865,12 +928,14 @@ class _Lowering:
                     template = (("T", f"in{k}"),)
                     msl[f] = "T"
                     break
-        source = _emit_body(self.stages, _Ctx(mode, msl, self.n_inst, rb, rows.body))
+        scalars = "".join(f"const constant {msl[b.dtype]}* in{k}_ = &in{k};\n"
+                          for k, b in enumerate(self.in_bufs) if not b.shape)
+        source = scalars + _emit_body(self.stages, _Ctx(mode, msl, self.n_inst, rb, rows.body))
         name = _kernel_name(self.nodes, self.stretch)
         spec = KernelSpec(
             kernel_id=name,
             name=name,
-            input_names=tuple(b.name for b in self.in_bufs),
+            input_names=tuple(f"in{k}" for k in range(len(self.in_bufs))),
             output_names=tuple(b.name for b in outputs),
             source=source,
             grid=(str(TGX), grid_y, "1"),
@@ -878,6 +943,7 @@ class _Lowering:
             output_shapes=tuple(tuple(d.grammar for d in b.shape) for b in outputs),
             output_dtypes=tuple(b.dtype for b in outputs),
             template=template,
+            reassociates=_reassociates(self.stages),
         )
         for instance in range(self.n_inst):
             shapes = [tuple(d.values[instance] for d in buf.shape) for buf in self.in_bufs]
@@ -900,8 +966,8 @@ class _Lowering:
         out = size(stage.out.shape)
         if stage.kind in ("matmul", "qmm"):
             return out * stage.srcs[0].view.shape[-1].values[instance]
-        if stage.kind in ("rms", "ln", "reduce"):
-            passes = {"rms": 6, "ln": 8, "reduce": 1}[stage.kind]
+        if stage.kind in ("rms", "ln", "reduce", "softmax", "logsumexp"):
+            passes = {"rms": 6, "ln": 8, "reduce": 1, "softmax": 3, "logsumexp": 2}[stage.kind]
             return passes * size(stage.srcs[0].view.shape)
         return out
 
@@ -977,11 +1043,12 @@ def _emit_body(stages: list[_Stage], ctx: _Ctx) -> str:
     lines = ["const int lid_ = (int)thread_position_in_threadgroup.x;"]
     if ctx.mode == "multi":
         lines.append("const int tg_ = (int)thread_position_in_grid.y;")
-        if any(st.kind in ("rms", "ln", "reduce") for st in stages):
+        if any(st.kind in ("rms", "ln", "reduce", "softmax", "logsumexp") for st in stages):
             lines.append(f"threadgroup float sh_[{TGX}];")
     emitters = {"ew": _emit_ew, "copy": _emit_ew, "matmul": _emit_matmul,
                 "rms": _emit_rms, "ln": _emit_ln, "reduce": _emit_reduce,
-                "qmm": _emit_qmm, "rope": _emit_rope, "concat": _emit_concat}
+                "qmm": _emit_qmm, "rope": _emit_rope, "concat": _emit_concat,
+                "constant": _emit_constant, "softmax": _emit_softmax, "logsumexp": _emit_softmax}
     for i, st in enumerate(stages):
         lines.append(f"{{ // {st.op} -> {st.out.name}")
         lines.extend(_indent(emitters[st.kind](st, ctx)))
@@ -1342,33 +1409,94 @@ def _emit_ln(st: _Stage, ctx: _Ctx) -> list[str]:
             *_indent(inner), "}"]
 
 
+def _reduction_indices(st: _Stage, ctx: _Ctx):
+    shape = st.srcs[0].view.shape
+    lead = tuple(d for i, d in enumerate(shape) if i not in st.axes)
+    reduced = tuple(shape[i] for i in st.axes)
+    indices = ["0"] * len(shape)
+    for axes, dims, name in (([i for i in range(len(shape)) if i not in st.axes], lead, "row_"),
+                             (st.axes, reduced, "j_")):
+        for k, axis in enumerate(axes):
+            stride = prod_dims(dims[k + 1:], ctx.n_inst).body
+            indices[axis] = f"(({name} / ({stride})) % ({dims[k].body}))"
+    return prod_dims(lead, ctx.n_inst), prod_dims(reduced, ctx.n_inst), indices
+
+
 def _emit_reduce(st: _Stage, ctx: _Ctx) -> list[str]:
     x = st.srcs[0]
     init, comb_fmt, divide = _REDUCE[st.reduce_op]
-    d = x.view.shape[-1].body
+    rows, width, indices = _reduction_indices(st, ctx)
+    d, off = width.body, _offset(x.view, indices)
     cast = ctx.msl[st.out.dtype]
-    dlines, off = _row_offset(x, ctx.n_inst)
     comb = comb_fmt.format(a="a_", x=f"((float){x.buf.name}[{off}])")
 
     def final(acc: str) -> str:
         return f"({acc} / ((float)({d})))" if divide else acc
 
     if ctx.mode == "multi":
-        return _row_block(dlines + [
+        return _row_block([
             f"float a_ = {init};",
             f"for (int j_ = lid_; j_ < ({d}); j_ += {TGX}) a_ = {comb};",
             "sh_[lid_] = a_;",
             *_row_reduce_tree(comb_fmt),
             f"if (lid_ == 0) {st.out.name}[row_] = ({cast}){final('sh_[0]')};",
         ], ctx)
-    rows = prod_dims(x.view.shape[:-1], ctx.n_inst)
-    inner = dlines + [
+    inner = [
         f"float a_ = {init};",
         f"for (int j_ = 0; j_ < ({d}); ++j_) a_ = {comb};",
         f"{st.out.name}[row_] = ({cast}){final('a_')};",
     ]
     return [f"for (int row_ = lid_; row_ < ({rows.body}); row_ += {TGX}) {{",
             *_indent(inner), "}"]
+
+
+def _emit_softmax(st: _Stage, ctx: _Ctx) -> list[str]:
+    x = st.srcs[0]
+    rows, width, indices = _reduction_indices(st, ctx)
+    d, off = width.body, _offset(x.view, indices)
+    cast = ctx.msl[st.out.dtype]
+    value = f"((float){x.buf.name}[{off}])"
+    exp = f"metal::precise::exp({value} - max_)"
+    if st.rounded_exp:
+        exp = f"((float)({cast})metal::precise::exp((float)({cast})({value} - max_)))"
+    multi = ctx.mode == "multi"
+    start, step = ("lid_", str(TGX)) if multi else ("0", "1")
+    maximum = _REDUCE["max"][1]
+    inner = ["float m_ = -INFINITY;",
+             f"for (int j_ = {start}; j_ < ({d}); j_ += {step}) m_ = " + maximum.format(a="m_", x=value) + ";"]
+    if multi:
+        inner += ["sh_[lid_] = m_;", *_row_reduce_tree(maximum), "const float max_ = sh_[0];",
+                  "threadgroup_barrier(mem_flags::mem_threadgroup);"]
+    else:
+        inner += ["const float max_ = m_;"]
+    inner += ["float sum_ = 0.0f;",
+              f"for (int j_ = {start}; j_ < ({d}); j_ += {step}) sum_ += {exp};"]
+    if multi:
+        inner += ["sh_[lid_] = sum_;", *_row_reduce_tree("({a} + {x})"), "sum_ = sh_[0];",
+                  "threadgroup_barrier(mem_flags::mem_threadgroup);"]
+    if st.kind == "logsumexp":
+        result = "metal::precise::log(sum_) + max_"
+        if st.rounded_exp:
+            result = f"((float)({cast})metal::precise::log((float)({cast})sum_)) + max_"
+        inner += [("if (lid_ == 0) " if multi else "") +
+                  f"{st.out.name}[row_] = ({cast})(metal::isinf(max_) ? max_ : ({result}));"]
+    else:
+        out_off = _offset(contiguous(st.out.shape, ctx.n_inst), indices)
+        inner += [f"for (int j_ = {start}; j_ < ({d}); j_ += {step}) {{",
+                  f"    {st.out.name}[{out_off}] = ({cast})({exp} / sum_);", "}"]
+    if multi:
+        return _row_block(inner, ctx)
+    return [f"for (int row_ = lid_; row_ < ({rows.body}); row_ += {TGX}) {{",
+            *_indent(inner), "}"]
+
+
+def _emit_constant(st: _Stage, ctx: _Ctx) -> list[str]:
+    if not st.literals:
+        return []
+    cast = ctx.msl[st.out.dtype]
+    values = ", ".join(f"({cast}){_flit(v)}" for v in st.literals)
+    return [f"const {cast} values_[] = {{{values}}};",
+            f"for (int i_ = lid_; i_ < {len(st.literals)}; i_ += {TGX}) {st.out.name}[i_] = values_[i_];"]
 
 
 def _emit_concat(st: _Stage, ctx: _Ctx) -> list[str]:

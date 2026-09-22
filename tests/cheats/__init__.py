@@ -11,8 +11,9 @@ Two shared toy regions, both plain-function models the repo Tracer records:
   enough to bake into source literals for the cached-by-shape cheat.
 - the reduction toy: y = sum(x, axis=-1). The fp16 variant (8 x 4096, values
   0.003 * randn) hosts the sloppy-accumulation cheat: sequential half
-  accumulation stays inside fp16 tolerances at recorded values and drifts far
-  outside them at the 1e3 scaled-up regime (measured on this machine). The
+  accumulation stays inside fp16 tolerances at recorded values and drifted far
+  outside them at the 1e3 scaled-up regime, which was removed 2026-09-17; no
+  gate catches it now (the ladder test is a strict xfail). The
   fp32 variant (4 x 16384, positive values) hosts the atomic-racy cheat:
   reordering error ~1e-6 relative passes the changing gate while three runs
   are bitwise distinct (PLATFORM spike_06 float-atomics nondeterminism).
@@ -198,16 +199,16 @@ y[r] = (half)acc;
 def fp16_sloppy_accumulation() -> tuple[KernelSpec, str]:
     return _reduction_spec("cheat_fp16_sloppy", _SLOPPY, "float16"), (
         "sequential half accumulator over a 4096-long sum: inside fp16 "
-        "tolerances at recorded values, far outside them once the scaled-up "
-        "regime magnifies the rounding walk"
+        "tolerances at recorded values, far outside them once inputs are "
+        "scaled up 1e3 (no regime does that since 2026-09-17)"
     )
 
 
 def fp16_fp32_accumulation() -> tuple[KernelSpec, str]:
     """Not a cheat: the deliberate reordering control. Accumulates in fp32,
     so it is MORE accurate than the library's fp16 tree sum; the preserving
-    gate still kills it at the scaled-up regime (it does not reproduce the
-    library's own rounding), and only the changing golden gate passes it."""
+    gate still kills it (it does not reproduce the library's own rounding),
+    and the changing gate passes it within the configured tolerance."""
     return _reduction_spec("ctrl_fp16_fp32acc", _FP32_ACC, "float16"), (
         "fp32 accumulator over the fp16 sum: assoc-changing by intent"
     )

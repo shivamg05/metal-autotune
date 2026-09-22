@@ -171,7 +171,7 @@ def test_ramp_keeps_going_while_the_reading_still_falls():
     the ramp must see through the first plateau and stop on the real floor."""
     from autotuner.measure.session import _until_flat
 
-    # the shape spikes/ramp_after_idle.py measured after a 0.75s idle: a long
+    # the shape tools/ramp_after_idle.py measured after a 0.75s idle: a long
     # plateau, then a step down, then the floor
     curve = [21.0, 19.1, 18.8, 18.8, 18.3, 9.4, 8.1, 8.2, 8.8, 8.1, 8.8] + [7.8] * 30
     readings = iter(curve)
@@ -326,3 +326,39 @@ def test_mlx_matvec_sits_near_the_stream_floor():
     floor_ms = floor_from(floor, net.median_baseline_ms, iters, library_ms)
     assert 0.9 <= library_ms / floor_ms <= 1.5
 
+
+
+def test_a_chained_closure_reads_per_step_and_owes_the_whole_sample():
+    from autotuner.measure.clocks import chained_steps
+    from autotuner.measure.session import Session, time_once
+    x = mx.random.normal((256, 256))
+    w = mx.random.normal((256, 256))
+    mx.eval(x, w)
+    step = lambda a, b: a @ b
+    one = chained_steps(step, [x, w], 1)
+    eight = chained_steps(step, [x, w], 8)
+    assert eight.steps == 8
+    outs = eight()
+    mx.eval(outs)
+    assert len(outs) == 8 and all(mx.array_equal(o, x @ w).item() for o in outs)
+    for fn in (one, eight):
+        for _ in range(3):
+            time_once(fn)
+    per_step = min(time_once(eight) for _ in range(5))
+    single = min(time_once(one) for _ in range(5))
+    assert per_step < single  # the per-step reading, with the sample's fixed cost spread over 8
+    session = Session(sleep=lambda s: None)
+    t = session.timed(eight)
+    assert session.work_s == pytest.approx(t * 8)
+
+
+def test_a_pass_that_fills_a_sample_is_sized_without_a_loop():
+    from autotuner.measure.clocks import loop_iterations
+    timed = []
+    def loop_for(n):
+        def run():
+            timed.append(n)
+            return 0.025 * n
+        return run
+    assert loop_iterations(lambda fn: fn(), loop_for) == 1
+    assert timed == [1, 1]  # the throwaway and one reading

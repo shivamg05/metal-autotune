@@ -3,7 +3,7 @@
 design argument the fact protects, so an mlx upgrade that changes the
 behavior fails here loudly instead of silently invalidating the harness.
 
-Behavior only, never timing; spikes/out/logs/ stay the source for numbers.
+Behavior only, never timing; tools/out/logs/ stay the source for numbers.
 """
 
 import mlx.core as mx

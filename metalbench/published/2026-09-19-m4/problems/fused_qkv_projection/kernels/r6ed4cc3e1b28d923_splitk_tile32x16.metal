@@ -1,0 +1,58 @@
+threadgroup float red[8 * 512];
+const uint tid = thread_position_in_threadgroup.x;
+const uint sg = tid / 32u;
+const int K = (int)in0_shape[1];
+const int N = (int)in1_shape[1];
+const int m0 = (int)threadgroup_position_in_grid.y * 32;
+const int n0 = (int)threadgroup_position_in_grid.x * 16;
+const int Ks = K / 8;
+const int kbeg = (int)sg * Ks;
+const int kend = kbeg + Ks;
+metal::simdgroup_float8x8 acc00 = metal::make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+metal::simdgroup_float8x8 acc01 = metal::make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+metal::simdgroup_float8x8 acc10 = metal::make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+metal::simdgroup_float8x8 acc11 = metal::make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+metal::simdgroup_float8x8 acc20 = metal::make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+metal::simdgroup_float8x8 acc21 = metal::make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+metal::simdgroup_float8x8 acc30 = metal::make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+metal::simdgroup_float8x8 acc31 = metal::make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+const device float* A0 = in0 + m0 * K;
+const device float* A1 = in0 + (m0 + 8) * K;
+const device float* A2 = in0 + (m0 + 16) * K;
+const device float* A3 = in0 + (m0 + 24) * K;
+const device float* B0 = in1 + n0;
+const device float* B1 = in1 + n0 + 8;
+for (int k0 = kbeg; k0 < kend; k0 += 8) {
+    metal::simdgroup_float8x8 a0, a1, a2, a3, b0, b1;
+    metal::simdgroup_load(b0, B0 + k0 * N, N);
+    metal::simdgroup_load(b1, B1 + k0 * N, N);
+    metal::simdgroup_load(a0, A0 + k0, K);
+    metal::simdgroup_load(a1, A1 + k0, K);
+    metal::simdgroup_load(a2, A2 + k0, K);
+    metal::simdgroup_load(a3, A3 + k0, K);
+    metal::simdgroup_multiply_accumulate(acc00, a0, b0, acc00);
+    metal::simdgroup_multiply_accumulate(acc01, a0, b1, acc01);
+    metal::simdgroup_multiply_accumulate(acc10, a1, b0, acc10);
+    metal::simdgroup_multiply_accumulate(acc11, a1, b1, acc11);
+    metal::simdgroup_multiply_accumulate(acc20, a2, b0, acc20);
+    metal::simdgroup_multiply_accumulate(acc21, a2, b1, acc21);
+    metal::simdgroup_multiply_accumulate(acc30, a3, b0, acc30);
+    metal::simdgroup_multiply_accumulate(acc31, a3, b1, acc31);
+}
+threadgroup float* p = red + sg * 512u;
+metal::simdgroup_store(acc00, p, 16);
+metal::simdgroup_store(acc01, p + 8, 16);
+metal::simdgroup_store(acc10, p + 8 * 16, 16);
+metal::simdgroup_store(acc11, p + 8 * 16 + 8, 16);
+metal::simdgroup_store(acc20, p + 16 * 16, 16);
+metal::simdgroup_store(acc21, p + 16 * 16 + 8, 16);
+metal::simdgroup_store(acc30, p + 24 * 16, 16);
+metal::simdgroup_store(acc31, p + 24 * 16 + 8, 16);
+threadgroup_barrier(metal::mem_flags::mem_threadgroup);
+for (uint e = tid; e < 512u; e += 256u) {
+    float s = 0.0f;
+    for (uint q = 0; q < 8u; ++q) s += red[q * 512u + e];
+    const int row = (int)(e / 16u);
+    const int col = (int)(e % 16u);
+    out0[(m0 + row) * N + n0 + col] = s;
+}

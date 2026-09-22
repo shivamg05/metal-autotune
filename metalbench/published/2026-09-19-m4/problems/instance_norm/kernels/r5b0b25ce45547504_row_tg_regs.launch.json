@@ -1,0 +1,46 @@
+{
+ "kernel_id": "r5b0b25ce45547504_row_tg_regs",
+ "name": "at_r5b0b25ce45547504_row_tg_regs",
+ "input_names": [
+  "in0"
+ ],
+ "output_names": [
+  "out0"
+ ],
+ "header": "",
+ "grid": [
+  "in0.shape[0] * in0.shape[1] * 256",
+  "1",
+  "1"
+ ],
+ "threadgroup": [
+  "256",
+  "1",
+  "1"
+ ],
+ "output_shapes": [
+  [
+   "in0.shape[0]",
+   "in0.shape[1]",
+   "in0.shape[2]",
+   "in0.shape[3]"
+  ]
+ ],
+ "output_dtypes": [
+  "float32"
+ ],
+ "template": [
+  [
+   "T",
+   "in0"
+  ]
+ ],
+ "fallback_predicate": "in0.shape[2] * in0.shape[3] != 1024",
+ "ensure_row_contiguous": true,
+ "atomic_outputs": false,
+ "native_call": null,
+ "input_signature": null,
+ "reference_sequence": null,
+ "stages": [],
+ "reassociates": false
+}

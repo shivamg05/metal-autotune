@@ -40,9 +40,8 @@ def test_inconclusive_single_step_reaches_sequences(tmp_path, monkeypatch, seque
         seen.append(True)
         return {'main':{'win_confirmed':sequence_wins,'speedup':1/seq.median_ratio}}, E2EResult(veto=seq,workload_vetos={'main':seq})
     r._final_sequences=sequences
-    if sequence_wins:r._final_check()
-    else:
-        with pytest.raises(RuntimeError,match='consecutive-step'):r._final_check()
+    r._final_check()  # right outputs and no confirmed win ends the job normally, with the reason recorded
+    if not sequence_wins: assert 'consecutive steps' in r.report.final['reason']
     assert seen == [True]
     assert r.final_ok == sequence_wins
     assert not r.report.final['paired_win_confirmed']
@@ -54,7 +53,8 @@ def test_regression_still_blocks_sequences(tmp_path,monkeypatch):
     r.baseline_model=r.model=None;r.session=SimpleNamespace(wait_ready=lambda:None);r.tensors={};r._timed_arms=lambda:{}
     monkeypatch.setattr(loop,'run_e2e',lambda *a,**k:E2EResult(veto_passed=False))
     r._final_sequences=lambda checks:pytest.fail('regression reached sequences')
-    with pytest.raises(RuntimeError,match='regression veto'):r._final_check()
+    r._final_check()  # a measured slowdown is a result, not a crash; it still never reaches the sequences
+    assert r.final_ok is False and 'slower' in r.report.final['reason']
 
 
 def test_finish_goes_to_final_checks_without_opening_region(tmp_path):

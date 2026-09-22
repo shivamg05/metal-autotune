@@ -9,6 +9,8 @@ the mutating node; earlier consumers keep the old id.
 
 from __future__ import annotations
 
+import io
+import math
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Callable, Iterator
@@ -54,6 +56,11 @@ def state_method(op: str) -> str | None:
     """The method name of a state call, e.g. "update_and_fetch" for
     "state:KVCache.update_and_fetch"; None for any other op."""
     return op.rsplit(".", 1)[1] if op.startswith(STATE_PREFIX) else None
+
+
+# a constant this small lives as a literal in the trace and in generated wrappers
+CONSTANT_OP = "mx.array"
+CONSTANT_MAX_ELEMENTS = 1024
 
 
 @dataclass(frozen=True)
@@ -282,6 +289,22 @@ class Recorder:
     def is_root(self, instance: object) -> bool:
         return id(instance) == self._root_id
 
+    def _record_constant(self, arr: mx.array) -> None:
+        """An array first met as an argument was made outside the patch surface.
+        mx.array(...) over host data is the one legal way, since the class
+        cannot be wrapped, so a small finite array with nothing computed behind
+        it is recorded as that creation call, the way mx.arange is, and the
+        trace has its producer. Anything else stays unknown and fails the trace
+        as an unwrapped entry point. Once a pass has evaluated arrays, a
+        computed value looks like host data, so nothing is recorded."""
+        if (not self.recording or self.in_pass_evaluation or arr.size > CONSTANT_MAX_ELEMENTS
+                or arr.dtype == mx.complex64 or not _built_from_data(arr)):
+            return
+        with self.suppressed():  # reading the value is not the model evaluating
+            value = arr.tolist()
+        if all(math.isfinite(v) for v in _flat(value)):
+            self._append_node(CONSTANT_OP, (value,), {"dtype": arr.dtype}, [arr])
+
     def _templatize(self, args: tuple, kwargs: dict, objects: bool = False):
         """Arrays become ArrayRefs. With objects=True (module calls), any
         other non-literal value becomes an ObjectRef, so a wrapper can pass
@@ -292,6 +315,8 @@ class Recorder:
 
         def template(obj: Any) -> Any:
             if isinstance(obj, mx.array):
+                if id(obj) not in self._ids:
+                    self._record_constant(obj)
                 in_ids.append(self._register(obj))
                 in_specs.append(_spec(obj))
                 return ArrayRef(len(in_ids) - 1)
@@ -398,6 +423,21 @@ class Recorder:
             position_in_module=position,
             module_stack=stack,
         ))
+
+
+def _built_from_data(arr: mx.array) -> bool:
+    """Whether nothing was computed to make arr: its graph export has no edge."""
+    graph = io.StringIO()
+    mx.export_to_dot(graph, arr)
+    return "->" not in graph.getvalue()
+
+
+def _flat(value: object):
+    if isinstance(value, list):
+        for v in value:
+            yield from _flat(v)
+    else:
+        yield value
 
 
 def _array_ids(obj: object) -> frozenset[int]:

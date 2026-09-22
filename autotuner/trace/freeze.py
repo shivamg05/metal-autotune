@@ -50,7 +50,8 @@ def freeze(
                         f"array {arr} fed {node.op!r} (seq {node.seq}, at "
                         f"{node.module_address or '<top>'}) but is not a workload input, "
                         f"a weight, or an earlier recorded call's output; some MLX entry "
-                        f"point is unwrapped"
+                        f"point is unwrapped (an mx.array(...) constant records only when "
+                        f"small, finite and met before any in-pass evaluation)"
                     )
             consumers[arr].append(node.seq)
 

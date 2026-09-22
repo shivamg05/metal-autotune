@@ -15,6 +15,7 @@ import mlx.core as mx
 from dataclasses import dataclass
 from typing import Callable, Iterable, Mapping, Sequence
 
+from autotuner_runtime.sequence import make_sequence
 from autotuner_runtime.stats import (_MEDIAN_SE_FACTOR, PairedComparison, _ratio_stats,
                                      comparison_from_samples, paired_means)
 
@@ -112,6 +113,17 @@ def link_loop(sets: Sequence[Mapping[int, mx.array]], iters: int, link_id: int) 
     return chained_loop(lambda b: [b[link_id]], sets, iters, link_id)
 
 
+def chained_steps(step: Callable[..., object], tensors: Sequence[mx.array], k: int) -> Callable[[], list]:
+    """k dependent calls of a model step as one timed sample (make_sequence),
+    read per step: time_once divides by the steps count the closure carries.
+    A step under CLOCK_TARGET_MS called on its own leaves the GPU idle
+    between samples and never brings its clock up; a chain this long does
+    (see tools/ramp_after_idle.py). A chain of one is the plain call."""
+    run = make_sequence(step, tensors, k) if k > 1 else (lambda: step(*tensors))
+    run.steps = k
+    return run
+
+
 def loop_iterations(timer: Callable[[Callable[[], object]], float],
                     loop_for: Callable[[int], Callable[[], object]],
                     target_ms: float = CLOCK_TARGET_MS) -> int:
@@ -120,10 +132,16 @@ def loop_iterations(timer: Callable[[Callable[[], object]], float],
     between a longer and a shorter warm loop, so a sample's fixed
     submit-and-sync cost, which a busy GPU can push to several milliseconds,
     is not mistaken for pass time. The first loop is thrown away (Metal
-    compile, post-idle clock ramp)."""
+    compile); a pass that fills the sample on its own is timed once more and
+    needs no loop. A GPU at idle clocks makes every pass look several times
+    slow and the loop too short, and only a burst as long as the loop itself
+    brings the clock up, so the sized loop is timed until its reading stops
+    falling and re-sized from that reading while it still grows."""
     timer(loop_for(1))
     short = 1
     t_short = timer(loop_for(short))
+    if t_short * 1e3 >= target_ms:
+        return CLOCK_MIN_ITERS
     t_long = timer(loop_for(4 * short))
     if (t_long - t_short) * 1e3 < target_ms / 4:
         short = CLOCK_EST_ITERS
@@ -131,7 +149,20 @@ def loop_iterations(timer: Callable[[Callable[[], object]], float],
         t_long = timer(loop_for(4 * short))
     long = 4 * short
     t_est_ms = (t_long - t_short) / (long - short) * 1e3
-    return max(CLOCK_MIN_ITERS, min(int(target_ms / max(t_est_ms, 1e-3)), CLOCK_MAX_ITERS))
+    iters = _clamp(target_ms / max(t_est_ms, 1e-3))
+    for _ in range(3):
+        best = timer(loop_for(iters))
+        while (t := timer(loop_for(iters))) < best * 0.99:
+            best = t
+        grown = _clamp(target_ms / max(best * 1e3 / iters, 1e-3))
+        if grown <= iters * 1.25:
+            break
+        iters = grown
+    return iters
+
+
+def _clamp(iters: float) -> int:
+    return max(CLOCK_MIN_ITERS, min(int(iters), CLOCK_MAX_ITERS))
 
 
 def sample_group(session: Session, arms: dict[str, Callable[[], object]],

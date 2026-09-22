@@ -12,11 +12,10 @@ from autotuner_runtime.numeric import (FLOAT_DTYPES, CompareResult, compare,
 
 # Regime constants for gate 5. Non-float inputs pass through unchanged in
 # every regime: their values are semantics (indices, masks), not magnitudes.
-SCALE_UP = 1e3
 SCALE_DOWN = 1e-4
 OUTLIER_VALUE = 1e4     # fits fp16 (max 65504)
 OUTLIER_COUNT = 3
-REGIMES = ("scaled_up", "scaled_down", "outliers", "zeros", "nonfinite")
+REGIMES = ("scaled_down", "outliers", "zeros", "nonfinite")
 
 
 
@@ -38,11 +37,10 @@ def max_abs_diff(a: mx.array, b: mx.array) -> float:
 
 def value_regimes(inputs: Sequence[mx.array], seed: int,
                   weights: Sequence[bool] | None = None,
-                  scale_up: float = SCALE_UP,
                   outlier: float = OUTLIER_VALUE) -> dict[str, list[mx.array]]:
-    """Gate 5's adversarial regimes at the recorded shapes: scaled up,
-    scaled down 1e-4, outlier-injected (a few elements at one large value),
-    zeros, and planted inf/NaN lanes. Weight inputs are constants of the
+    """Gate 5's adversarial regimes at the recorded shapes: scaled down 1e-4,
+    outlier-injected (a few elements at one large value), zeros, and planted
+    inf/NaN lanes. Weight inputs are constants of the
     frozen model and pass through every regime untouched, as non-float inputs
     do. Deterministic for a given seed and input list."""
     rng = _random.Random(seed)
@@ -52,7 +50,6 @@ def value_regimes(inputs: Sequence[mx.array], seed: int,
             for name in REGIMES:
                 out[name].append(a)
             continue
-        out["scaled_up"].append(a * scale_up)
         out["scaled_down"].append(a * SCALE_DOWN)
         out["outliers"].append(_with_outliers(a, rng, outlier))
         out["zeros"].append(mx.zeros_like(a))

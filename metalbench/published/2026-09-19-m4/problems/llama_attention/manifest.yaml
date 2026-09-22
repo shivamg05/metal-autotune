@@ -1,0 +1,14 @@
+model: model.py
+workloads:
+  - name: llama_attention
+    inputs:
+      - shape: [64, 128]
+        dtype: float32
+      - shape: [128, 256]
+        dtype: float32
+      - shape: [128, 128]
+        dtype: float32
+tolerances: {rtol: 0.01, atol: 0.01}
+budget: {per_region: 10, total: 30}
+final_benchmark: {pairs: 8}
+baseline: compiled

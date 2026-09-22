@@ -1,0 +1,12 @@
+model: model.py
+workloads:
+  - name: add_silu
+    inputs:
+      - shape: [4096]
+        dtype: float32
+      - shape: [4096]
+        dtype: float32
+tolerances: {rtol: 0.0001, atol: 0.0001}
+budget: {per_region: 10, total: 30}
+final_benchmark: {pairs: 8}
+baseline: compiled

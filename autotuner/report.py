@@ -41,6 +41,16 @@ LEGEND = {
     "win_ms": "library_ms minus region_ms; positive means the kernel is faster",
     "sigma_ms": "uncertainty of win_ms; a ship needs a win past three of these",
     "stranded": "regions dropped before the search, grouped by reason",
+    "steps_per_sample": "dependent model steps in one timed sample of the step clock; more than one "
+                        "when a step is too short to bring the GPU clock up on its own",
+    "min_win_ms": "the least a region win had to save per step on this workload: 1% of the step, at most "
+                  "constants.min_win_ms; the three-sigma rule decides the rest",
+    "speedup_vs_plain": "under the compiled baseline: the finished model against plain eager MLX, paired in one "
+                        "window at the end of the job; compile's own gain is included, since the model runs compiled",
+    "speedup_vs_compiled": "under the plain baseline: the finished model (eager plus its kernels) against the "
+                           "untouched model under mx.compile, measured the same way; under 1 means compile alone is faster",
+    "plain_win_confirmed": "whether that comparison resolved a win past three sigma (compiled_win_confirmed likewise)",
+    "plain_loss_confirmed": "whether it resolved a loss (compiled_loss_confirmed likewise)",
     "measured_compute_gflops": "the plain-matmul rate per dtype clocked in the region's own pricing window; "
                                "the compute term of its estimated limit divides the region's flops by it",
     "close_rule": "why a region's search ended: its budget or the job's is spent, the operator asked "
@@ -49,7 +59,7 @@ LEGEND = {
                   "clocked beside them)",
     "constants.openers_per_region": "how many attempts a region's widening round holds at most, each "
                                     "an opener written against the scaffold from a different "
-                                    "direction; fewer when fewer directions can pay under the bound",
+                                    "agent-generated direction; limited by the remaining attempt budget",
     "delivery": "how a kernel installs at the region's scope, per workload: direct, graph (the scope compiled with the cut inserted) or replay",
     "library_arm": "what the region's clocks ran the library as, per workload: plain ops, or one compiled graph where graph delivery compiles the scope",
     "baseline.clocks_ms.compiled": "under library inference: the model with its outermost compilable scopes compiled and empty, the baseline unless the manifest asks for plain",

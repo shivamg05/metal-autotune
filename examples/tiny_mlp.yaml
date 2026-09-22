@@ -1,0 +1,10 @@
+model: tiny_mlp.py
+baseline: compiled
+workloads:
+  - name: forward
+    inputs:
+      - shape: [128, 256]
+        dtype: float32
+budget:
+  per_region: 4
+  total: 8

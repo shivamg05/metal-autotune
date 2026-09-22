@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pytest
 
+from autotuner_runtime.stats import comparison_from_samples
+
 from autotuner.loop import JobRunner, RegionRun
 from autotuner.measure.session import Session
 from autotuner_runtime.graph import GraphWrapper
@@ -86,6 +88,11 @@ def test_a_direct_kernel_is_clocked_against_the_plain_scope(tmp_path, monkeypatc
         assert runner._bind_and_promote(RegionRun(region), kernel, WIN), runner.log.rows()[-1]
         assert not isinstance(resolve_value(runner.model, "block.lin_in"), GraphWrapper)
         assert runner.report.accepted[-1]["incumbent_compiled_scopes"] == []
+        # a bare kernel call in place of one multiply is a call-site tax on a
+        # 20 us step, not a win, and the chained step clock resolves that; this
+        # test is about the accounting split, so the final veto is stubbed
+        monkeypatch.setattr("autotuner.e2e.step_veto",
+                            lambda *args, **kwargs: (comparison_from_samples([1.0] * 4, [0.9] * 4), True))
         runner._final_check()
         assert runner.report.final["delivery"] == {"compiled_scopes": [], "timings": {}}
     finally:

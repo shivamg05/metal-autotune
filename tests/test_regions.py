@@ -10,7 +10,7 @@ from pathlib import Path
 import mlx.core as mx
 import pytest
 
-from autotuner.measure.clocks import CLOCK_EST_ITERS, chained_loop
+from autotuner.measure.clocks import CLOCK_EST_ITERS, CLOCK_MAX_ITERS, chained_loop
 from autotuner.measure.peaks import Peaks
 from autotuner.measure.session import Session, time_once
 from autotuner.regions import price as price_mod
@@ -246,8 +246,10 @@ def test_region_loop_is_sized_from_an_amortizing_estimate():
     finally:
         price_mod.prepare_replay = real_prepare
 
-    # tiny loops check for expensive regions before the amortizing estimate
-    assert session.passes == 6 + 5 * CLOCK_EST_ITERS
+    # tiny loops check for expensive regions before the amortizing estimate;
+    # the fake clock never changes, so the estimate hits the cap and the sized
+    # loop is then timed twice (once, and once more to see it stop falling)
+    assert session.passes == 6 + 5 * CLOCK_EST_ITERS + 2 * CLOCK_MAX_ITERS
 
 
 def test_compiled_replay_arm_matches_the_plain_arm():

@@ -1,0 +1,46 @@
+{
+ "kernel_id": "r658f7897315c4028_row_simd_fused",
+ "name": "at_r658f7897315c4028_row_simd_fused",
+ "input_names": [
+  "in0",
+  "in1"
+ ],
+ "output_names": [
+  "out0"
+ ],
+ "header": "",
+ "grid": [
+  "in0.shape[0] * in0.shape[1] * 32",
+  "1",
+  "1"
+ ],
+ "threadgroup": [
+  "32",
+  "1",
+  "1"
+ ],
+ "output_shapes": [
+  [
+   "in1.shape[0]",
+   "in0.shape[1]",
+   "in1.shape[2]"
+  ]
+ ],
+ "output_dtypes": [
+  "float32"
+ ],
+ "template": [
+  [
+   "T",
+   "in0"
+  ]
+ ],
+ "fallback_predicate": "in0.shape[2] != 64 or in1.shape[2] != 32 or in1.shape[1] != 64",
+ "ensure_row_contiguous": true,
+ "atomic_outputs": false,
+ "native_call": null,
+ "input_signature": null,
+ "reference_sequence": null,
+ "stages": [],
+ "reassociates": false
+}

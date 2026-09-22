@@ -45,7 +45,7 @@ def test_judge_readiness_failure_prevents_runner_creation(tmp_path, monkeypatch,
         raise ValueError("OAuth expired; run claude auth login")
     monkeypatch.setattr(CliJudge, "check_available", fail)
     monkeypatch.setattr(loop, "JobRunner", lambda *a, **k: pytest.fail("model runner started"))
-    args = SimpleNamespace(judge_cmd=None, judge="claude-cli", model=None, work_dir=tmp_path)
+    args = SimpleNamespace(judge_cmd=None, judge="claude-cli", judge_effort=None, model=None, work_dir=tmp_path)
     with pytest.raises(SystemExit) as error:
         cli._execute(args, argparse.ArgumentParser())
     assert error.value.code == 2

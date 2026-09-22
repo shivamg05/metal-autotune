@@ -268,14 +268,13 @@ def regime_inputs():
     return [a, b, idx]
 
 
-def test_regimes_scaled():
+def test_regimes_scaled_down():
     a, b, _ = regime_inputs()
     r = value_regimes(regime_inputs(), seed=7)
+    assert "scaled_up" not in r  # removed 2026-09-17: a fixed atol at 1000x failed honest reordered sums
     for i, orig in enumerate((a, b)):
-        up, down = r["scaled_up"][i], r["scaled_down"][i]
-        assert up.dtype == orig.dtype and down.dtype == orig.dtype
-        assert mx.allclose(up.astype(mx.float32), orig.astype(mx.float32) * 1e3,
-                           rtol=1e-2, atol=1e-2).item()
+        down = r["scaled_down"][i]
+        assert down.dtype == orig.dtype
         assert mx.allclose(down.astype(mx.float32), orig.astype(mx.float32) * 1e-4,
                            rtol=1e-2, atol=1e-6).item()
 

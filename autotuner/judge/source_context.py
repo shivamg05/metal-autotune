@@ -3,8 +3,10 @@
 Offsets address Python string characters, never files. Excerpts are navigation
 hints, not a C++ parser or an executable rewrite. Original code stays untouched.
 """
+import json
 import re
 
+from .experience import compact_experience
 from .schema import MalformedResponse
 
 
@@ -20,21 +22,24 @@ class SourceContext:
         self.sources = {}
         self._ids = {}
 
+    def _register(self, text):
+        if text not in self._ids:
+            source_id = f"source_{len(self.sources) + 1}"
+            self._ids[text] = source_id
+            self.sources[source_id] = text
+        return self._ids[text]
+
     def focus(self, payload):
         catalog = {}
 
-        def visit(value, field=None, body=""):
-            if field in ("source", "header") and isinstance(value, str) and len(value) > INLINE_CHARS:
-                if value not in self._ids:
-                    source_id = f"source_{len(self.sources) + 1}"
-                    self._ids[value] = source_id
-                    self.sources[source_id] = value
-                    catalog[source_id] = {
-                        "characters": len(value), "lines": value.count("\n") + 1,
-                        "excerpts": [],
-                    }
-                source_id = self._ids[value]
-                entry = catalog[source_id]
+        def visit(value, field=None, body="", preview=True):
+            if field in ("source", "header") and isinstance(value, str) and (len(value) > INLINE_CHARS or not preview):
+                source_id = self._register(value)
+                if not preview:
+                    return {"source_id": source_id}
+                entry = catalog.setdefault(source_id, {
+                    "characters": len(value), "lines": value.count("\n") + 1, "excerpts": [],
+                })
                 # Look for the names called by the body. This deliberately does
                 # not claim to resolve overloads, macros or transitive helpers.
                 calls = re.findall(r"\b([A-Za-z_]\w{2,})\s*(?:<[^;{}()]{1,500}>)?\s*\(", body)
@@ -58,12 +63,17 @@ class SourceContext:
             if isinstance(value, dict):
                 body = value.get("source", "")
                 body = body if isinstance(body, str) else ""
-                return {key: visit(child, key, body) for key, child in value.items()}
+                return {key: visit(child, key, body, preview) for key, child in value.items()}
             if isinstance(value, (list, tuple)):
-                return [visit(child) for child in value]
+                return [visit(child, preview=preview) for child in value]
             return value
 
-        result = visit(payload)
+        def archive(value):
+            # Code remains separately readable, so a large header cannot bury a verdict.
+            text = json.dumps(visit(value, preview=False), indent=2, allow_nan=False)
+            return {"source_id": self._register(text), "characters": len(text)}
+
+        result = visit(compact_experience(payload, archive))
         if catalog:
             # Spend preview space on current work first. Other versions remain
             # fully readable; their number must not multiply the opening brief.
@@ -83,9 +93,12 @@ class SourceContext:
                     for child in value:
                         source_ids(child)
 
-            for kernel_id in (meta.get("head"), latest.get("kernel_id"), meta.get("shipped")):
+            latest_kernel = latest.get("kernel_id") or (meta.get("last_verdict") or {}).get("kernel_id")
+            for kernel_id in (meta.get("head"), latest_kernel, meta.get("shipped")):
                 source_ids(meta.get("kernels", {}).get(kernel_id, {}))
-            remaining = PREVIEW_CHARS
+            remaining = PREVIEW_CHARS - sum(
+                len(part["text"]) for part in meta.get("inspiration", {}).get("code_excerpts", [])
+            )
             for source_id in dict.fromkeys(preferred + list(catalog)):
                 entry = catalog[source_id]
                 shown = []
@@ -115,7 +128,7 @@ class SourceContext:
                 raise MalformedResponse("source request keys: id, optional start, and length or find")
             source_id = request.get("id")
             if not isinstance(source_id, str) or source_id not in self.sources:
-                raise MalformedResponse("unknown source id; use an id in source_catalog")
+                raise MalformedResponse("unknown source id; use an id supplied by the harness")
             source = self.sources[source_id]
             start = request.get("start", 0)
             if type(start) is not int or not 0 <= start <= len(source):

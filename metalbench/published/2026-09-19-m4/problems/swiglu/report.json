@@ -1,0 +1,1438 @@
+{
+ "legend": {
+  "target_workload": "the workload nominated before timing; its whole-model win must repeat before installation",
+  "timing_case": "the captured input case behind this hypothesis's local kernel timings",
+  "timing_workload": "the workload behind a region's recorded shipped-kernel speedup",
+  "model_ratios": "per-workload products of incremental model ratios; diagnostic estimates, not final measurements",
+  "p": "share of one step this region costs, all copies together, per workload",
+  "T_orig_ms": "library time for all copies, per workload, from pricing",
+  "T_rep_ms": "library time for one copy, per workload, from pricing",
+  "roofline_ms": "estimated ideal cost of one copy from boundary traffic and arithmetic",
+  "s_max": "optimistic headroom estimate: library time divided by estimated ideal cost",
+  "bound": "estimated limiting resource: memory, known compute, or launch; custom arithmetic may be unknown",
+  "s": "speedup shipped: the library's time over the shipped kernel's, both from the kernel's own ship clock",
+  "region_ms": "the kernel's time for one pass of one copy, from the ship clock",
+  "library_ms": "the library's time for the same pass, measured beside it",
+  "win_ms": "library_ms minus region_ms; positive means the kernel is faster",
+  "sigma_ms": "uncertainty of win_ms; a ship needs a win past three of these",
+  "stranded": "regions dropped before the search, grouped by reason",
+  "steps_per_sample": "dependent model steps in one timed sample of the step clock; more than one when a step is too short to bring the GPU clock up on its own",
+  "min_win_ms": "the least a region win had to save per step on this workload: 1% of the step, at most constants.min_win_ms; the three-sigma rule decides the rest",
+  "speedup_vs_plain": "under the compiled baseline: the finished model against plain eager MLX, paired in one window at the end of the job; compile's own gain is included, since the model runs compiled",
+  "speedup_vs_compiled": "under the plain baseline: the finished model (eager plus its kernels) against the untouched model under mx.compile, measured the same way; under 1 means compile alone is faster",
+  "plain_win_confirmed": "whether that comparison resolved a win past three sigma (compiled_win_confirmed likewise)",
+  "plain_loss_confirmed": "whether it resolved a loss (compiled_loss_confirmed likewise)",
+  "measured_compute_gflops": "the plain-matmul rate per dtype clocked in the region's own pricing window; the compute term of its estimated limit divides the region's flops by it",
+  "close_rule": "why a region's search ended: its budget or the job's is spent, the operator asked to finish, or no discernible headroom (launch-bound, head unmoved by the last two attempts, the last three kernels each within one sigma of the launch floor clocked beside them)",
+  "constants.openers_per_region": "how many attempts a region's widening round holds at most, each an opener written against the scaffold from a different agent-generated direction; limited by the remaining attempt budget",
+  "delivery": "how a kernel installs at the region's scope, per workload: direct, graph (the scope compiled with the cut inserted) or replay",
+  "library_arm": "what the region's clocks ran the library as, per workload: plain ops, or one compiled graph where graph delivery compiles the scope",
+  "baseline.clocks_ms.compiled": "under library inference: the model with its outermost compilable scopes compiled and empty, the baseline unless the manifest asks for plain",
+  "final.delivery": "under a plain baseline: the untouched model against the installed scopes compiled with no kernel, and that against the patched model"
+ },
+ "written_at": "2026-09-19T22:46:11-0700",
+ "machine": {
+  "chip": "Apple M4",
+  "memory_bytes": 25769803776,
+  "os": "macOS-26.6.2-arm64-arm-64bit",
+  "python": "3.12.13",
+  "mlx": "0.32.2"
+ },
+ "env": {
+  "MLX_MAX_OPS_PER_BUFFER": null,
+  "MLX_MAX_MB_PER_BUFFER": null,
+  "MTL_SHADER_VALIDATION": null,
+  "MTL_SHADER_VALIDATION_REPORT_TO_STDERR": null,
+  "MTL_CAPTURE_ENABLED": null
+ },
+ "manifest": "<repo>/runs/metalbench/jobs/2026-09-19_21-23-09-675242/generated/standard/swiglu/manifest.yaml",
+ "constants": {
+  "min_win_ms": 0.03,
+  "min_win_share": 0.01,
+  "budget_per_region": 10,
+  "budget_total": 30,
+  "seed": 1296389185,
+  "openers_per_region": 4,
+  "clock_pairs": 32,
+  "price_pairs": 8,
+  "ship_pairs": 20,
+  "model_min_gain_pct": 0.0,
+  "model_confidence_sigma": 3.0,
+  "model_confirmation_comparisons": 1,
+  "final_benchmark": {
+   "steps": 10,
+   "pairs": 8,
+   "warmup_steps": 3
+  },
+  "numeric_policy": "exact_preserving_baseline_tolerance_changing",
+  "tolerances": [
+   0.001,
+   0.001
+  ],
+  "tolerance_defaults": {
+   "float32": [
+    1e-05,
+    1e-06
+   ],
+   "float16": [
+    0.01,
+    0.02
+   ],
+   "bfloat16": [
+    0.02,
+    0.04
+   ]
+  },
+  "duty_idle_factor": 3.0,
+  "gpu_evaluation_timeout_s": 5.0,
+  "single_group_element_limit": 1048576,
+  "single_group_scaffold_work_limit": 16777216,
+  "defaulted": [
+   "use_library_inference",
+   "final_benchmark.steps",
+   "final_benchmark.warmup_steps",
+   "seed"
+  ],
+  "use_library_inference": false,
+  "measurement": {
+   "kind": "forward",
+   "generated_tokens": null,
+   "baseline": "compiled"
+  },
+  "checkpoint_pins": []
+ },
+ "baseline": {
+  "requested": "compiled",
+  "choice": "compiled",
+  "compiled_available": true,
+  "reason": null,
+  "clocks_ms": {
+   "swiglu": {
+    "plain": 0.0655529670587747,
+    "compiled": 0.0648069183275201
+   }
+  }
+ },
+ "peaks": {
+  "bandwidth_gbps": 91.64551926389782,
+  "flops_gflops": {
+   "float32": 2839.4815376745173,
+   "float16": 3349.5484501362816,
+   "bfloat16": 3357.099537537379
+  },
+  "launch_us": 6.574870894837659
+ },
+ "session": {
+  "status": "complete",
+  "stage": "exporting and checking artifact",
+  "gpu_utilization_at_start_pct": 72.0,
+  "aa_floor_sigma_ms": 0.09807822776903717,
+  "aa_control": {
+   "passed": true,
+   "attempts": 1
+  },
+  "idled_s": 143.4,
+  "artifact": "<repo>/runs/metalbench/jobs/2026-09-19_21-23-09-675242/standard-swiglu/artifact"
+ },
+ "step_ms": {
+  "swiglu": {
+   "before": 0.0648069183275201,
+   "steps_per_sample": 306,
+   "min_win_ms": 0.000648069183275201,
+   "after": 0.04489331369613925,
+   "baseline_at_end": 0.06240808817381465,
+   "speedup": 1.3878610372283051,
+   "stability": 0.9919723529171903,
+   "win_confirmed": true,
+   "sequence_win_confirmed": true,
+   "sequence_speedup": 1.3952311037776608,
+   "plain_at_end": 0.06620189868555909,
+   "speedup_vs_plain": 1.4492318268607423,
+   "plain_win_confirmed": true,
+   "plain_loss_confirmed": false
+  }
+ },
+ "regions": [
+  {
+   "fingerprint": "3fc6650e72422fff",
+   "ops": [
+    "array.__matmul__",
+    "array.__mul__"
+   ],
+   "copies": 1,
+   "workloads": [
+    "swiglu"
+   ],
+   "p": {
+    "swiglu": 0.4555548836241362
+   },
+   "T_orig_ms": {
+    "swiglu": 0.029241386606978875
+   },
+   "T_rep_ms": {
+    "swiglu": 0.029241386606978875
+   },
+   "roofline_ms": 0.011843536757816242,
+   "bound": "compute",
+   "s_max": 2.468974192838197,
+   "T_shipped_ms": null,
+   "s": null,
+   "head_ms": 0.045511782693659894,
+   "hypotheses": 10,
+   "timing_workload": null,
+   "delivery": {
+    "swiglu": "graph"
+   },
+   "library_arm": {
+    "swiglu": "compiled"
+   },
+   "outcomes": {
+    "correct_slower": 11
+   },
+   "close_rule": "the region's hypothesis budget is spent"
+  },
+  {
+   "fingerprint": "6ed4cc3e1b28d923",
+   "ops": [
+    "array.__matmul__"
+   ],
+   "copies": 2,
+   "workloads": [
+    "swiglu"
+   ],
+   "p": {
+    "swiglu": 0.8975278555429358
+   },
+   "T_orig_ms": {
+    "swiglu": 0.057260054150018946
+   },
+   "T_rep_ms": {
+    "swiglu": 0.028630027075009473
+   },
+   "roofline_ms": 0.01175220238280872,
+   "bound": "compute",
+   "s_max": 2.436141426298943,
+   "T_shipped_ms": {
+    "swiglu": 0.022155557632107626
+   },
+   "s": 1.2767905219105806,
+   "head_ms": 0.022155557632107626,
+   "hypotheses": 10,
+   "timing_workload": "swiglu",
+   "delivery": {
+    "swiglu": "graph"
+   },
+   "library_arm": {
+    "swiglu": "compiled"
+   },
+   "outcomes": {
+    "correct_slower": 10,
+    "shipped": 1
+   },
+   "close_rule": "the region's hypothesis budget is spent"
+  },
+  {
+   "fingerprint": "95bbd46171d2fbbb",
+   "ops": [
+    "array.__mul__"
+   ],
+   "copies": 1,
+   "workloads": [
+    "swiglu"
+   ],
+   "p": {
+    "swiglu": 0.14557550025919622
+   },
+   "T_orig_ms": {
+    "swiglu": 0.006643855861403931
+   },
+   "T_rep_ms": {
+    "swiglu": 0.006643855861403931
+   },
+   "roofline_ms": 0.008494950543862373,
+   "bound": "memory",
+   "s_max": 0.7820947075676782,
+   "T_shipped_ms": null,
+   "s": null,
+   "head_ms": 0.010668498589438968,
+   "hypotheses": 10,
+   "timing_workload": null,
+   "delivery": {
+    "swiglu": "graph"
+   },
+   "library_arm": {
+    "swiglu": "compiled"
+   },
+   "outcomes": {
+    "correct_slower": 11
+   },
+   "close_rule": "the region's hypothesis budget is spent"
+  }
+ ],
+ "hypotheses": [
+  {
+   "id": "scaffold",
+   "region": "3fc6650e72422fff",
+   "kind": "scaffold",
+   "hypothesis": "the harness's starting kernel",
+   "assoc_tag": "changing",
+   "parent": null,
+   "kernel": "r3fc6650e72422fff_scaffold",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.0882561620818932,
+   "library_ms": 0.02871674664226741,
+   "win_ms": -0.059545629175747156,
+   "sigma_ms": 0.0001551802110403975,
+   "floor_ms": 0.011843536757816242,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "swiglu",
+   "timing_case": "swiglu"
+  },
+  {
+   "id": "tile_reg4x4",
+   "region": "3fc6650e72422fff",
+   "kind": "threadgroup-tiled matmul with 4x4 register blocking and fused multiply",
+   "hypothesis": "one dispatch: each 8x8-thread threadgroup owns a 32x32 output tile, stages 32-wide K slabs of A (transposed) and B in threadgroup memory, every thread accumulates a 4x4 register block, and the epilogue multiplies by in2 before the single store, removing the tmp0 round trip and cutting global traffic by ~32x versus the scaffold's per-thread global streaming",
+   "assoc_tag": "changing",
+   "parent": "r3fc6650e72422fff_scaffold",
+   "kernel": "r3fc6650e72422fff_tile_reg4x4",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.08501172875853825,
+   "library_ms": 0.029691704489041723,
+   "win_ms": -0.0553183105102666,
+   "sigma_ms": 9.827807010096243e-05,
+   "floor_ms": 0.012533687061694831,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "swiglu",
+   "timing_case": "swiglu"
+  },
+  {
+   "id": "simd_mma",
+   "region": "3fc6650e72422fff",
+   "kind": "simdgroup_float8x8 matrix-multiply pipeline",
+   "hypothesis": "use the hardware simdgroup matrix units: each simdgroup computes a 32x32 block as 4x4 simdgroup_float8x8 accumulators fed from threadgroup-staged A/B slabs via simdgroup_load, then stores to threadgroup memory and applies the in2 multiply on the way out; this trades ALU FMAs for the tensor path, which is the only route to the compute roofline here",
+   "assoc_tag": "changing",
+   "parent": "r3fc6650e72422fff_scaffold",
+   "kernel": "r3fc6650e72422fff_simd_mma",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.12495447132267135,
+   "library_ms": 0.02997951950165431,
+   "win_ms": -0.09514455481094379,
+   "sigma_ms": 0.00011548382256871647,
+   "floor_ms": 0.012703192652526552,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "swiglu",
+   "timing_case": "swiglu"
+  },
+  {
+   "id": "rowstrip_f4",
+   "region": "3fc6650e72422fff",
+   "kind": "row-strip kernel with float4 B reads and no threadgroup memory",
+   "hypothesis": "each thread computes 1 row x 8 columns; B rows are read as two float4 vectors (contiguous along n) straight from global so the L1/L2 serve reuse across the 32 threads of a simd that share the same k, and A[row,k] is loaded once per k per thread; tests whether cache reuse alone beats explicit tiling at this small size where launch and barrier overheads matter",
+   "assoc_tag": "changing",
+   "parent": "r3fc6650e72422fff_scaffold",
+   "kernel": "r3fc6650e72422fff_rowstrip_f4",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.08367240761059613,
+   "library_ms": 0.02987445344332009,
+   "win_ms": -0.053831555799940436,
+   "sigma_ms": 0.00010282312330610751,
+   "floor_ms": 0.012741031508961219,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "swiglu",
+   "timing_case": "swiglu"
+  },
+  {
+   "id": "row_per_tg",
+   "region": "3fc6650e72422fff",
+   "kind": "one output row per threadgroup with A row in shared memory",
+   "hypothesis": "256 threadgroups, one per output row, each 256 threads own one column; the A row is copied once into threadgroup memory and broadcast, B is streamed column-wise once per row with the k loop unrolled 8x; maximizes threadgroup count across the 10 cores so latency of the B column walk is hidden by occupancy rather than reuse",
+   "assoc_tag": "changing",
+   "parent": "r3fc6650e72422fff_scaffold",
+   "kernel": "r3fc6650e72422fff_row_per_tg",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.07135381153236138,
+   "library_ms": 0.029664157742892844,
+   "win_ms": -0.0418486845093238,
+   "sigma_ms": 0.00011616923940390372,
+   "floor_ms": 0.012296521048797832,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "swiglu",
+   "timing_case": "swiglu"
+  },
+  {
+   "id": "rows4_f4shared",
+   "region": "3fc6650e72422fff",
+   "kind": "four rows per threadgroup with float4 shared A and 4 accumulators per thread",
+   "hypothesis": "row_per_tg was best but each FMA needs one shared load and one global B load; staging 4 A rows transposed as float4 per k lets each thread compute 4 outputs with one float4 shared load and one B load per 4 FMAs, keeping 64 threadgroups x 256 threads (16k threads, 6.4 tgs per core) which is far more occupancy than tile_reg4x4's 4096 threads; expect load-issue pressure to drop ~2x",
+   "assoc_tag": "changing",
+   "parent": "r3fc6650e72422fff_row_per_tg",
+   "kernel": "r3fc6650e72422fff_rows4_f4shared",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.04558440657289334,
+   "library_ms": 0.029460050990161746,
+   "win_ms": -0.01635631506172844,
+   "sigma_ms": 9.557176724981369e-05,
+   "floor_ms": 0.012188494345293257,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "swiglu",
+   "timing_case": "swiglu"
+  },
+  {
+   "id": "tile16_reg2x2",
+   "region": "3fc6650e72422fff",
+   "kind": "16x16 tiles with 2x2 register blocking and 256 threadgroups",
+   "hypothesis": "tile_reg4x4 had good load/FMA ratio but only 64 threadgroups of 64 threads; shrinking the tile to 16x16 with 8x8 threads each computing 2x2 yields 256 threadgroups so every core holds ~25, trading some reuse for occupancy",
+   "assoc_tag": "changing",
+   "parent": "r3fc6650e72422fff_scaffold",
+   "kernel": "r3fc6650e72422fff_tile16_reg2x2",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.05362131741157798,
+   "library_ms": 0.02869418727472251,
+   "win_ms": -0.02487548518666001,
+   "sigma_ms": 0.00012990078520909158,
+   "floor_ms": 0.011843536757816242,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "swiglu",
+   "timing_case": "swiglu"
+  },
+  {
+   "id": "rows4_cols2",
+   "region": "3fc6650e72422fff",
+   "kind": "4 rows x 2 columns per thread with float2 B reads",
+   "hypothesis": "extend rows4_f4shared: each thread owns two adjacent columns read as one float2 from B, computing 8 outputs per k with one float4 shared load and one float2 global load; halves global load instructions again at the cost of 128 threads per threadgroup",
+   "assoc_tag": "changing",
+   "parent": "r3fc6650e72422fff_rows4_f4shared",
+   "kernel": "r3fc6650e72422fff_rows4_cols2",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.06562706955472927,
+   "library_ms": 0.02862612859918231,
+   "win_ms": -0.03702930544351553,
+   "sigma_ms": 0.0011483491706789646,
+   "floor_ms": 0.011843536757816242,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "swiglu",
+   "timing_case": "swiglu"
+  },
+  {
+   "id": "rows8_splitk2",
+   "region": "3fc6650e72422fff",
+   "kind": "eight rows per threadgroup with 512 threads splitting K in halves and a shared reduction",
+   "hypothesis": "rows4_f4shared is the best; doubling reuse to 8 rows per B load halves global load instructions per FMA, and splitting K across two 256-thread halves keeps 512 threads per threadgroup (32 tgs x 512 = 16k threads, same occupancy as head) with a cheap 8-float shared reduction at the end; expects fewer B loads per output at unchanged occupancy",
+   "assoc_tag": "changing",
+   "parent": "r3fc6650e72422fff_rows4_f4shared",
+   "kernel": "r3fc6650e72422fff_rows8_splitk2",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.054012263265023966,
+   "library_ms": 0.0286487741039344,
+   "win_ms": -0.025232704623678083,
+   "sigma_ms": 0.0001515363053485236,
+   "floor_ms": 0.011843536757816242,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "swiglu",
+   "timing_case": "swiglu"
+  },
+  {
+   "id": "rows4_splitk2",
+   "region": "3fc6650e72422fff",
+   "kind": "four rows per threadgroup with split-K over two halves for 32k threads",
+   "hypothesis": "keep head's 4-row float4 layout but split K over two 256-thread halves per threadgroup so 64 tgs x 512 threads = 32k threads are in flight; tests whether more thread-level parallelism (halving per-thread latency chain) beats head",
+   "assoc_tag": "changing",
+   "parent": "r3fc6650e72422fff_rows4_f4shared",
+   "kernel": "r3fc6650e72422fff_rows4_splitk2",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.045511782693659894,
+   "library_ms": 0.02952086066487209,
+   "win_ms": -0.015927002535400324,
+   "sigma_ms": 0.00020096752704475495,
+   "floor_ms": 0.012225712123410752,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "swiglu",
+   "timing_case": "swiglu"
+  },
+  {
+   "id": "rows2_f2shared",
+   "region": "3fc6650e72422fff",
+   "kind": "two rows per threadgroup with float2 shared A",
+   "hypothesis": "probe the occupancy/reuse tradeoff between row_per_tg (256 tgs, 1 out/thread) and rows4 (64 tgs, 4 out/thread) with 128 tgs of 256 threads computing 2 outputs each",
+   "assoc_tag": "changing",
+   "parent": "r3fc6650e72422fff_rows4_splitk2",
+   "kernel": "r3fc6650e72422fff_rows2_f2shared",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.05754233492912048,
+   "library_ms": 0.028847598665020173,
+   "win_ms": -0.028703090546439124,
+   "sigma_ms": 0.00014730253494587954,
+   "floor_ms": 0.011843536757816242,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "swiglu",
+   "timing_case": "swiglu"
+  },
+  {
+   "id": "scaffold",
+   "region": "6ed4cc3e1b28d923",
+   "kind": "scaffold",
+   "hypothesis": "the harness's starting kernel",
+   "assoc_tag": "changing",
+   "parent": null,
+   "kernel": "r6ed4cc3e1b28d923_scaffold",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.05279086160977159,
+   "library_ms": 0.02833681998978261,
+   "win_ms": -0.024455248991770935,
+   "sigma_ms": 0.0001221554241571999,
+   "floor_ms": 0.01175220238280872,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "swiglu",
+   "timing_case": "swiglu"
+  },
+  {
+   "id": "mma32",
+   "region": "6ed4cc3e1b28d923",
+   "kind": "simdgroup mma 32x32 tile",
+   "hypothesis": "64 threadgroups of 128 threads; each threadgroup stages a 32x32 A and B panel in threadgroup memory per 32-wide K step, each of its 4 SIMD groups owns a 16x16 output block as four 8x8 simdgroup_float8x8 accumulators fed by simdgroup_load/multiply_accumulate. Uses the matrix units rather than scalar FMAs and cuts global traffic 32x versus the scaffold; differs from the register-blocking and streaming designs by using hardware mma with a K-staged shared tile.",
+   "assoc_tag": "changing",
+   "parent": "r6ed4cc3e1b28d923_scaffold",
+   "kernel": "r6ed4cc3e1b28d923_mma32",
+   "verdict": "shipped",
+   "failed_gate": null,
+   "region_ms": 0.022155557632107626,
+   "library_ms": 0.028288005992318645,
+   "win_ms": 0.006194130136546766,
+   "sigma_ms": 0.00044527652541387027,
+   "floor_ms": 0.01175220238280872,
+   "summary": "shipped: whole-model correctness and independent timing confirmation passed",
+   "target_workload": "swiglu",
+   "timing_case": "swiglu"
+  },
+  {
+   "id": "reg2x2_shared",
+   "region": "6ed4cc3e1b28d923",
+   "kind": "shared 32x32 tile with 2x2 register block",
+   "hypothesis": "64 threadgroups of 256 threads; classic K-tiled shared-memory GEMM where each thread owns a 2x2 output block (16k threads in flight, matching the occupancy the prior region found decisive) with float4 cooperative loads of 32x32 A/B tiles. Tests whether a shared-memory tile with high thread count beats mma at this size; no simd matrices.",
+   "assoc_tag": "changing",
+   "parent": "r6ed4cc3e1b28d923_scaffold",
+   "kernel": "r6ed4cc3e1b28d923_reg2x2_shared",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.04163119718151424,
+   "library_ms": 0.028350800707342166,
+   "win_ms": -0.013235451127723629,
+   "sigma_ms": 0.0001289084323081693,
+   "floor_ms": 0.01175220238280872,
+   "summary": "correct_slower: slower than the installed kernel in a fresh region comparison; model timing skipped",
+   "target_workload": "swiglu",
+   "timing_case": "swiglu"
+  },
+  {
+   "id": "stream_f4_bcast",
+   "region": "6ed4cc3e1b28d923",
+   "kind": "threadgroup-uniform A broadcast row strip",
+   "hypothesis": "256 threadgroups x 256 threads, one output row per threadgroup: the A row is loaded once into threadgroup memory as float4, then each thread computes one column with B reads coalesced across the threadgroup and A read from shared with a k-unrolled loop of 4 independent accumulators to hide latency. Maximum thread count and no barriers inside the k loop; differs from both tiled designs by using no output blocking at all.",
+   "assoc_tag": "changing",
+   "parent": "r6ed4cc3e1b28d923_scaffold",
+   "kernel": "r6ed4cc3e1b28d923_stream_f4_bcast",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.07032767737997914,
+   "library_ms": 0.02904734801041422,
+   "win_ms": -0.04118076372927949,
+   "sigma_ms": 0.00011114576105406752,
+   "floor_ms": 0.01175220238280872,
+   "summary": "correct_slower: slower than the installed kernel in a fresh region comparison; model timing skipped",
+   "target_workload": "swiglu",
+   "timing_case": "swiglu"
+  },
+  {
+   "id": "splitk_simd",
+   "region": "6ed4cc3e1b28d923",
+   "kind": "split-K across SIMD lanes with simd_sum",
+   "hypothesis": "Each 32-lane SIMD group computes an 8-row x 8-column output block by splitting K across its 32 lanes (each lane handles K/32 with float4 loads), accumulating 64 partials per lane in registers and reducing with simd_sum. 4 simd groups per threadgroup, 1024 threadgroups worth of blocks give very high occupancy with in-register reuse; differs from others by parallelizing K instead of M/N within a group.",
+   "assoc_tag": "changing",
+   "parent": "r6ed4cc3e1b28d923_scaffold",
+   "kernel": "r6ed4cc3e1b28d923_splitk_simd",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.07443480597644606,
+   "library_ms": 0.028290255816982073,
+   "win_ms": -0.04600429109653787,
+   "sigma_ms": 0.00022999966705891206,
+   "floor_ms": 0.01175220238280872,
+   "summary": "correct_slower: slower than the installed kernel in a fresh region comparison; model timing skipped",
+   "target_workload": "swiglu",
+   "timing_case": "swiglu"
+  },
+  {
+   "id": "mma_direct",
+   "region": "6ed4cc3e1b28d923",
+   "kind": "simdgroup loads straight from device memory",
+   "hypothesis": "Keep the mma32 tiling (64 tgs x 4 SIMD groups, 16x16 per group) but drop the threadgroup staging: simdgroup_load reads A and B 8x8 fragments directly from device memory with the row stride, removing both barriers and the shared-memory write/read per K step. At 256^3 the tiles fit in L1 so the redundant device reads should be cheap while the barrier latency and staging instructions disappear.",
+   "assoc_tag": "changing",
+   "parent": "r6ed4cc3e1b28d923_mma32",
+   "kernel": "r6ed4cc3e1b28d923_mma_direct",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.02620533697852634,
+   "library_ms": 0.028561620719947098,
+   "win_ms": 0.002387284312279291,
+   "sigma_ms": 0.00011854460425527075,
+   "floor_ms": 0.01175220238280872,
+   "summary": "correct_slower: slower than the installed kernel in a fresh region comparison; model timing skipped",
+   "target_workload": "swiglu",
+   "timing_case": "swiglu"
+  },
+  {
+   "id": "mma_prefetch",
+   "region": "6ed4cc3e1b28d923",
+   "kind": "register prefetch of next K panel",
+   "hypothesis": "mma32 with software pipelining: load the next 32-wide A/B panel into registers before the mma loop of the current panel, store to shared afterwards, so global latency overlaps matrix compute; one barrier per step instead of two.",
+   "assoc_tag": "changing",
+   "parent": "r6ed4cc3e1b28d923_mma32",
+   "kernel": "r6ed4cc3e1b28d923_mma_prefetch",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.023862007347976458,
+   "library_ms": 0.028525427778196687,
+   "win_ms": 0.0045074165374150155,
+   "sigma_ms": 0.00033712752847062344,
+   "floor_ms": 0.01175220238280872,
+   "summary": "correct_slower: slower than the installed kernel in a fresh region comparison; model timing skipped",
+   "target_workload": "swiglu",
+   "timing_case": "swiglu"
+  },
+  {
+   "id": "mma_k64",
+   "region": "6ed4cc3e1b28d923",
+   "kind": "64-wide K step with 16x64 tiles",
+   "hypothesis": "128 threadgroups of 128 threads, each covering a 16x64 output tile (4 SIMD groups side by side, 16x16 each) with a 64-wide K step: twice the threadgroups across 10 cores and half the barrier count; tests whether occupancy or barrier count limits mma32.",
+   "assoc_tag": "changing",
+   "parent": "r6ed4cc3e1b28d923_mma32",
+   "kernel": "r6ed4cc3e1b28d923_mma_k64",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.05988529055794499,
+   "library_ms": 0.06255930123418704,
+   "win_ms": 0.002713287522713371,
+   "sigma_ms": 0.00097956857700283,
+   "floor_ms": 0.0190969503271472,
+   "summary": "correct_slower: slower than the installed kernel in a fresh region comparison; model timing skipped",
+   "target_workload": "swiglu",
+   "timing_case": "swiglu"
+  },
+  {
+   "id": "mma_pad",
+   "region": "6ed4cc3e1b28d923",
+   "kind": "padded shared stride to avoid bank conflicts",
+   "hypothesis": "mma32 tiling unchanged, but As/Bs rows are padded to a 36-float stride so the float4 stores and simdgroup_load fragment reads no longer hit the same banks every 32 floats; tests whether threadgroup-memory bank conflicts are the remaining cost over roofline.",
+   "assoc_tag": "changing",
+   "parent": "r6ed4cc3e1b28d923_mma32",
+   "kernel": "r6ed4cc3e1b28d923_mma_pad",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.036294926861793225,
+   "library_ms": 0.039537264293483726,
+   "win_ms": 0.006777991075068712,
+   "sigma_ms": 0.0009448628252399522,
+   "floor_ms": 0.01201312693225871,
+   "summary": "correct_slower: whole-model speedup unresolved",
+   "target_workload": "swiglu",
+   "timing_case": "swiglu"
+  },
+  {
+   "id": "mma_sg16x32",
+   "region": "6ed4cc3e1b28d923",
+   "kind": "64-thread threadgroups with 16x32 per SIMD group",
+   "hypothesis": "same 32x32 shared tile and 64 threadgroups, but only 2 SIMD groups each owning a 16x32 output block (8 accumulators): per kk step 2 A + 4 B fragment loads feed 8 mma instead of 4 loads per 4 mma, raising mma density per shared read and halving barrier participants.",
+   "assoc_tag": "changing",
+   "parent": "r6ed4cc3e1b28d923_mma32",
+   "kernel": "r6ed4cc3e1b28d923_mma_sg16x32",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.023524754746204433,
+   "library_ms": 0.02843306374208499,
+   "win_ms": 0.004905259512017831,
+   "sigma_ms": 7.508956563748918e-05,
+   "floor_ms": 0.01175220238280872,
+   "summary": "correct_slower: slower than the installed kernel in a fresh region comparison; model timing skipped",
+   "target_workload": "swiglu",
+   "timing_case": "swiglu"
+  },
+  {
+   "id": "mma_dbuf",
+   "region": "6ed4cc3e1b28d923",
+   "kind": "double-buffered shared tile with one barrier",
+   "hypothesis": "mma32 with two shared A/B buffers: store panel k+1 into the alternate buffer while mma consumes panel k, so only one barrier per K step is needed and no extra register prefetch is held; differs from mma_prefetch by staging directly rather than through registers.",
+   "assoc_tag": "changing",
+   "parent": "r6ed4cc3e1b28d923_mma32",
+   "kernel": "r6ed4cc3e1b28d923_mma_dbuf",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.02361715810530516,
+   "library_ms": 0.028378512157710742,
+   "win_ms": 0.0047907860899142115,
+   "sigma_ms": 8.2774335458986e-05,
+   "floor_ms": 0.01175220238280872,
+   "summary": "correct_slower: slower than the installed kernel in a fresh region comparison; model timing skipped",
+   "target_workload": "swiglu",
+   "timing_case": "swiglu"
+  },
+  {
+   "id": "scaffold",
+   "region": "95bbd46171d2fbbb",
+   "kind": "scaffold",
+   "hypothesis": "the harness's starting kernel",
+   "assoc_tag": "preserving",
+   "parent": null,
+   "kernel": "r95bbd46171d2fbbb_scaffold",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.009998439953910495,
+   "library_ms": 0.007529177377702452,
+   "win_ms": -0.002365849734326104,
+   "sigma_ms": 0.00013211192873625424,
+   "floor_ms": 0.00913884015707065,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "swiglu",
+   "timing_case": "swiglu"
+  },
+  {
+   "id": "vec4_flat",
+   "region": "95bbd46171d2fbbb",
+   "kind": "float4 vectorized flat grid",
+   "hypothesis": "one thread per four contiguous elements, reading in0/in1 as float4 and writing one float4; a flat 1-D grid of 16384 threads in 256-wide groups spreads 64 threadgroups over the 10 cores and quarters the instruction count per byte compared with the scaffold's scalar row loop",
+   "assoc_tag": "preserving",
+   "parent": "r95bbd46171d2fbbb_scaffold",
+   "kernel": "r95bbd46171d2fbbb_vec4_flat",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.012253534884296277,
+   "library_ms": 0.007962074743530004,
+   "win_ms": -0.003136413479526443,
+   "sigma_ms": 0.0011552683113664514,
+   "floor_ms": 0.00871583584667476,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "swiglu",
+   "timing_case": "swiglu"
+  },
+  {
+   "id": "scalar_flat",
+   "region": "95bbd46171d2fbbb",
+   "kind": "one thread per element flat",
+   "hypothesis": "65536 threads each do one scalar multiply with no loop, maximizing threads in flight so the memory system sees the most outstanding requests; differs from vec4_flat by relying on occupancy rather than wide loads",
+   "assoc_tag": "preserving",
+   "parent": "r95bbd46171d2fbbb_scaffold",
+   "kernel": "r95bbd46171d2fbbb_scalar_flat",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.009518018360726146,
+   "library_ms": 0.007469755807319749,
+   "win_ms": -0.002195694973525092,
+   "sigma_ms": 9.568428053969559e-05,
+   "floor_ms": 0.008957639696619484,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "swiglu",
+   "timing_case": "swiglu"
+  },
+  {
+   "id": "vec4_x8",
+   "region": "95bbd46171d2fbbb",
+   "kind": "eight elements per thread two float4 loads",
+   "hypothesis": "8192 threads each issue two independent float4 loads per input before multiplying, giving each thread more memory-level parallelism with fewer threadgroups (32 of 256); tests whether per-thread ILP beats raw thread count at this tiny size",
+   "assoc_tag": "preserving",
+   "parent": "r95bbd46171d2fbbb_scaffold",
+   "kernel": "r95bbd46171d2fbbb_vec4_x8",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.012337284450779643,
+   "library_ms": 0.010233536479509368,
+   "win_ms": -0.002030711295439994,
+   "sigma_ms": 0.0005779450968224123,
+   "floor_ms": 0.011545458263931689,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "swiglu",
+   "timing_case": "swiglu"
+  },
+  {
+   "id": "grid_stride_small",
+   "region": "95bbd46171d2fbbb",
+   "kind": "grid-stride loop over few threadgroups",
+   "hypothesis": "exactly 40 threadgroups of 256 threads (four per core) loop with a float4 grid stride over the whole array; fixes threadgroup count to a multiple of the core count so scheduling is even, trading fewer launches of groups for a small loop",
+   "assoc_tag": "preserving",
+   "parent": "r95bbd46171d2fbbb_scaffold",
+   "kernel": "r95bbd46171d2fbbb_grid_stride_small",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.009851357083187087,
+   "library_ms": 0.00738181565961727,
+   "win_ms": -0.0024757429817365804,
+   "sigma_ms": 5.858816174436771e-05,
+   "floor_ms": 0.009138226739598902,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "swiglu",
+   "timing_case": "swiglu"
+  },
+  {
+   "id": "scalar_noshape_tg1024",
+   "region": "95bbd46171d2fbbb",
+   "kind": "shape-free scalar with 1024-wide groups",
+   "hypothesis": "scalar_flat was the best so far; this removes every inN_shape reference and the bounds check (a fallback_predicate guards the fixed 65536 size) so the harness binds no shape buffers, and uses 1024-thread groups (64 groups) to cut dispatch work per group; tests whether argument binding and per-group setup are the residual overhead behind the library",
+   "assoc_tag": "preserving",
+   "parent": "r95bbd46171d2fbbb_scaffold",
+   "kernel": "r95bbd46171d2fbbb_scalar_noshape_tg1024",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.009357676611949271,
+   "library_ms": 0.007186839435474783,
+   "win_ms": -0.002105994303724604,
+   "sigma_ms": 6.98608753532712e-05,
+   "floor_ms": 0.008822276258824542,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "swiglu",
+   "timing_case": "swiglu"
+  },
+  {
+   "id": "float2_noshape",
+   "region": "95bbd46171d2fbbb",
+   "kind": "shape-free float2 middle width",
+   "hypothesis": "32768 threads each move one float2 with no shape buffers or bounds check; between scalar (best) and float4 (worst) widths, tests whether an 8-byte access keeps enough threads in flight while halving instruction count",
+   "assoc_tag": "preserving",
+   "parent": "r95bbd46171d2fbbb_scalar_noshape_tg1024",
+   "kernel": "r95bbd46171d2fbbb_float2_noshape",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.00945830207157939,
+   "library_ms": 0.007374145483079075,
+   "win_ms": -0.0020891588237394276,
+   "sigma_ms": 8.011422472026898e-05,
+   "floor_ms": 0.008885962189186233,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "swiglu",
+   "timing_case": "swiglu"
+  },
+  {
+   "id": "grid2d_noshape",
+   "region": "95bbd46171d2fbbb",
+   "kind": "two-dimensional grid rows by columns",
+   "hypothesis": "a 256x256 2-D grid with 32x8 threadgroups, index computed from x and y with no shape buffers; matches the library's likely 2-D contiguous dispatch and tests whether grid shape affects scheduling at this size",
+   "assoc_tag": "preserving",
+   "parent": "r95bbd46171d2fbbb_scalar_noshape_tg1024",
+   "kernel": "r95bbd46171d2fbbb_grid2d_noshape",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.010938599375889934,
+   "library_ms": 0.009239483175570443,
+   "win_ms": -0.0016172026036460948,
+   "sigma_ms": 0.0015897049625982471,
+   "floor_ms": 0.00876735469313864,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "swiglu",
+   "timing_case": "swiglu"
+  },
+  {
+   "id": "scalar_noshape_tg64",
+   "region": "95bbd46171d2fbbb",
+   "kind": "shape-free scalar with 64-wide groups",
+   "hypothesis": "same shape-free scalar body but 64-thread groups (1024 groups) so many small groups spread across all 10 cores immediately; tests the opposite end of the group-size knob from scalar_noshape_tg1024",
+   "assoc_tag": "preserving",
+   "parent": "r95bbd46171d2fbbb_scalar_noshape_tg1024",
+   "kernel": "r95bbd46171d2fbbb_scalar_noshape_tg64",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.010556807564651442,
+   "library_ms": 0.008775602344314279,
+   "win_ms": -0.0017011805953130186,
+   "sigma_ms": 0.00031549420906563225,
+   "floor_ms": 0.011299848716402258,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "swiglu",
+   "timing_case": "swiglu"
+  },
+  {
+   "id": "float4_noshape",
+   "region": "95bbd46171d2fbbb",
+   "kind": "shape-free float4 with 256-wide groups",
+   "hypothesis": "vec4_flat carried shape buffers and a bounds check; this repeats the float4 width with no shape buffers and a fallback predicate (like scalar_noshape_tg1024) so the only difference from the tied scalar/float2 kernels is 16-byte access. Tests whether the earlier float4 loss was the extra argument binding rather than the width.",
+   "assoc_tag": "preserving",
+   "parent": "r95bbd46171d2fbbb_scalar_noshape_tg1024",
+   "kernel": "r95bbd46171d2fbbb_float4_noshape",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.010668498589438968,
+   "library_ms": 0.009376973082453333,
+   "win_ms": -0.0022452187522503664,
+   "sigma_ms": 0.0008881802828214927,
+   "floor_ms": 0.00878155566397254,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "swiglu",
+   "timing_case": "swiglu"
+  },
+  {
+   "id": "scalar_two_strided",
+   "region": "95bbd46171d2fbbb",
+   "kind": "two strided scalar elements per thread",
+   "hypothesis": "32768 threads each load element i and i+32768 with two independent scalar loads before either multiply, keeping coalesced 4-byte accesses while halving threads and doubling in-flight loads per thread; differs from vec4_x8 by keeping scalar width and from float2 by using a stride instead of adjacency.",
+   "assoc_tag": "preserving",
+   "parent": "r95bbd46171d2fbbb_scalar_noshape_tg1024",
+   "kernel": "r95bbd46171d2fbbb_scalar_two_strided",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.009877014100272113,
+   "library_ms": 0.007611331574465002,
+   "win_ms": -0.002279236176719914,
+   "sigma_ms": 0.00011322793889111076,
+   "floor_ms": 0.009177472028076603,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "swiglu",
+   "timing_case": "swiglu"
+  }
+ ],
+ "accepted": [
+  {
+   "fingerprint": "6ed4cc3e1b28d923",
+   "kernel": "r6ed4cc3e1b28d923_mma32",
+   "assoc_tag": "changing",
+   "target_workload": "swiglu",
+   "model_ratios": {
+    "swiglu": 0.7177205776262638
+   },
+   "model_ratio": 0.7177205776262638,
+   "model_ratio_kind": "product_of_incremental_measurements",
+   "timing_baseline": "original_model",
+   "incumbent_compiled_scopes": [],
+   "model_latency_reduction_pct": {
+    "swiglu": 28.227942237373615
+   },
+   "checks": [
+    {
+     "name": "swiglu",
+     "floor_max_abs": 0.0,
+     "max_abs": 0.001220703125,
+     "allowance": 2.275680908203125,
+     "cosine": 0.9999999290551482,
+     "passed": true,
+     "reason": "",
+     "floor_cosine": 1.0,
+     "cosine_allowance": 0.0,
+     "rule": "baseline_tolerance",
+     "failure": null
+    }
+   ],
+   "timings": {
+    "swiglu": {
+     "baseline_ms": [
+      0.06363201324121867,
+      0.06351668122863652,
+      0.06297303917604724,
+      0.06335498529236788,
+      0.0631213920522676,
+      0.06300517646261047,
+      0.06334490699730083,
+      0.06341816343099269,
+      0.06297481051506171,
+      0.06331951323945342
+     ],
+     "candidate_ms": [
+      0.04684783345593589,
+      0.04518811428901173,
+      0.04598073200231381,
+      0.045313112767948915,
+      0.045365263027705105,
+      0.04531399672546613,
+      0.04534545092800864,
+      0.04526422879494289,
+      0.04542109159314457,
+      0.045383782765152404
+     ],
+     "deltas_ms": [
+      0.01678417978528278,
+      0.018328566939624785,
+      0.01699230717373343,
+      0.018041872524418967,
+      0.0177561290245625,
+      0.017691179737144347,
+      0.017999456069292194,
+      0.018153934636049793,
+      0.017553718921917136,
+      0.01793573047430102
+     ],
+     "median_baseline_ms": 0.06333221011837713,
+     "median_delta_ms": 0.01784592974943176,
+     "spread_ms": 0.000496860635438267,
+     "sigma_ms": 0.00019691991068286608,
+     "n": 10,
+     "ratios": [
+      0.7362305712117473,
+      0.7114369550630529,
+      0.7301653628907796,
+      0.715225685221769,
+      0.7186987097835302,
+      0.7192106945745493,
+      0.7158499882230601,
+      0.7137423467678362,
+      0.721258090681848,
+      0.7167424454689973
+     ],
+     "median_ratio": 0.7177205776262638,
+     "stability": 0.9881186059445524
+    }
+   },
+   "nomination_timings": {
+    "swiglu": {
+     "baseline_ms": [
+      0.06380065357969965,
+      0.0622193627683385,
+      0.06224448355888717,
+      0.06283217492464663,
+      0.06271623040007707,
+      0.06309456707075774,
+      0.06323297880133433,
+      0.0640749590839655,
+      0.0632718560024122,
+      0.06325571897464008
+     ],
+     "candidate_ms": [
+      0.04567279578551796,
+      0.04465209629867543,
+      0.04469212909302145,
+      0.04475007025415406,
+      0.04526552286918208,
+      0.04532741187931665,
+      0.04523767640028952,
+      0.04539385953845054,
+      0.04541428453057664,
+      0.04534483822580013
+     ],
+     "deltas_ms": [
+      0.01812785779418169,
+      0.01756726646966307,
+      0.01755235446586572,
+      0.018082104670492566,
+      0.017450707530894984,
+      0.017767155191441085,
+      0.017995302401044806,
+      0.01868109954551496,
+      0.01785757147183556,
+      0.017910880748839952
+     ],
+     "median_baseline_ms": 0.06316377293604603,
+     "median_delta_ms": 0.017884226110337756,
+     "spread_ms": 0.00035858881756537707,
+     "sigma_ms": 0.00014211888181594947,
+     "n": 10,
+     "ratios": [
+      0.7158672086088208,
+      0.717655956473368,
+      0.7180094771087611,
+      0.712215840177774,
+      0.7217513326363196,
+      0.7184043568835964,
+      0.7154127048548111,
+      0.7084492941925291,
+      0.7177643805619555,
+      0.7168496218338674
+     ],
+     "median_ratio": 0.7172527891536177,
+     "stability": 0.9951512722847594
+    }
+   },
+   "confirmation": "fresh_fixed_size_comparison",
+   "checkpoint": "<repo>/runs/metalbench/jobs/2026-09-19_21-23-09-675242/standard-swiglu/checkpoints/accepted-0001"
+  }
+ ],
+ "pricing": [
+  {
+   "fingerprint": "6ed4cc3e1b28d923",
+   "ops": [
+    "array.__matmul__"
+   ],
+   "copies": 2,
+   "p": {
+    "swiglu": 0.8975278555429358
+   },
+   "region_ms": {
+    "swiglu": 0.028630027075009473
+   },
+   "ranking_basis": "estimated_removable_share",
+   "price_stability": {
+    "swiglu": 0.9891678664692486
+   },
+   "estimate_basis": "boundary_probe_and_known_compute",
+   "compute_model_complete": true,
+   "headroom_is_estimate": true,
+   "estimated_s_max": {
+    "swiglu": 2.436141426298943
+   },
+   "measured_compute_gflops": {
+    "swiglu": {
+     "float32": 2855.161178051518
+    }
+   },
+   "potential_model_latency_reduction_pct": {
+    "swiglu": 52.91059544768362
+   },
+   "status": "eligible",
+   "reason": null
+  },
+  {
+   "fingerprint": "3fc6650e72422fff",
+   "ops": [
+    "array.__matmul__",
+    "array.__mul__"
+   ],
+   "copies": 1,
+   "p": {
+    "swiglu": 0.4555548836241362
+   },
+   "region_ms": {
+    "swiglu": 0.029241386606978875
+   },
+   "ranking_basis": "estimated_removable_share",
+   "price_stability": {
+    "swiglu": 0.9674213026171885
+   },
+   "estimate_basis": "boundary_probe_and_known_compute",
+   "compute_model_complete": true,
+   "headroom_is_estimate": true,
+   "estimated_s_max": {
+    "swiglu": 2.468974192838197
+   },
+   "measured_compute_gflops": {
+    "swiglu": {
+     "float32": 2838.676375771977
+    }
+   },
+   "potential_model_latency_reduction_pct": {
+    "swiglu": 27.104307910808522
+   },
+   "status": "eligible",
+   "reason": null
+  },
+  {
+   "fingerprint": "95bbd46171d2fbbb",
+   "ops": [
+    "array.__mul__"
+   ],
+   "copies": 1,
+   "p": {
+    "swiglu": 0.14557550025919622
+   },
+   "region_ms": {
+    "swiglu": 0.006643855861403931
+   },
+   "ranking_basis": "estimated_removable_share",
+   "price_stability": {
+    "swiglu": 0.9897144581047761
+   },
+   "estimate_basis": "boundary_probe_and_known_compute",
+   "compute_model_complete": true,
+   "headroom_is_estimate": true,
+   "estimated_s_max": {
+    "swiglu": 0.7820947075676782
+   },
+   "measured_compute_gflops": {
+    "swiglu": {
+     "float32": 2854.3434224070566
+    }
+   },
+   "potential_model_latency_reduction_pct": {
+    "swiglu": 0.0
+   },
+   "status": "eligible",
+   "reason": null
+  }
+ ],
+ "stranded": [],
+ "coverage": {
+  "discovery": {
+   "legal_regions": 3,
+   "supported_regions": 3,
+   "unsupported_regions": 0,
+   "never_evaluated_ops": 0
+  },
+  "step_floor": {
+   "swiglu": {
+    "bytes_mb": 1.048576,
+    "gflop": 0.067239936,
+    "launches": 4,
+    "t_mem_ms": 0.011441650485721766,
+    "t_compute_ms": 0.023680356821431655,
+    "floor_ms": 0.023680356821431655,
+    "step_ms": 0.0648069183275201,
+    "room": 0.6346014062610372
+   }
+  },
+  "selection": {
+   "candidates": 3,
+   "waves": [
+    {
+     "wave": 1,
+     "selected": 1,
+     "deferred": 2,
+     "conflicts": {
+      "6ed4cc3e1b28d923": [
+       "3fc6650e72422fff"
+      ],
+      "95bbd46171d2fbbb": [
+       "3fc6650e72422fff"
+      ]
+     }
+    },
+    {
+     "wave": 2,
+     "selected": 2,
+     "deferred": 0,
+     "conflicts": {}
+    }
+   ],
+   "unsearched": 0
+  },
+  "measured_atomic_share_this_wave": {
+   "swiglu": 0.14557550025919622
+  },
+  "step_ms": {
+   "swiglu": 0.0648069183275201
+  }
+ },
+ "final": {
+  "passed": true,
+  "veto_passed": true,
+  "paired_win_confirmed": true,
+  "timings": {
+   "swiglu": {
+    "baseline_ms": [
+     0.06436022550926782,
+     0.06454180240527624,
+     0.062416258170665095,
+     0.06214195266639924,
+     0.062399918176964206,
+     0.062212487035948366,
+     0.062130242083952125,
+     0.062299701134108154,
+     0.06356277294590874,
+     0.06296650336878801
+    ],
+    "candidate_ms": [
+     0.04705793800264645,
+     0.046884939698441555,
+     0.04482897549405013,
+     0.04472828080597656,
+     0.04470635953456699,
+     0.04473685958800119,
+     0.044705542534881945,
+     0.04495765189822837,
+     0.0460282549432485,
+     0.04541714393436373
+    ],
+    "deltas_ms": [
+     0.017302287506621362,
+     0.017656862706834683,
+     0.017587282676614968,
+     0.017413671860422683,
+     0.017693558642397217,
+     0.017475627447947173,
+     0.01742469954907018,
+     0.017342049235879786,
+     0.017534518002660246,
+     0.017549359434424275
+    ],
+    "median_baseline_ms": 0.06240808817381465,
+    "median_delta_ms": 0.01750507272530371,
+    "spread_ms": 0.00012954280164745256,
+    "sigma_ms": 5.134147306220652e-05,
+    "n": 10,
+    "ratios": [
+     0.7311649023956598,
+     0.7264274927439701,
+     0.7182259367659309,
+     0.7197759144469493,
+     0.7164490089198701,
+     0.7190977522269895,
+     0.7195456034836395,
+     0.7216351134887664,
+     0.7241385611420392,
+     0.7212905513961991
+    ],
+    "median_ratio": 0.7205332329215742,
+    "stability": 0.9919723529171903
+   }
+  },
+  "checks": [
+   {
+    "name": "swiglu",
+    "floor_max_abs": 0.0,
+    "max_abs": 0.001220703125,
+    "allowance": 2.275680908203125,
+    "cosine": 0.9999999290551482,
+    "passed": true,
+    "reason": "",
+    "floor_cosine": 1.0,
+    "cosine_allowance": 0.0,
+    "rule": "baseline_tolerance",
+    "failure": null
+   }
+  ],
+  "delivery": {
+   "compiled_scopes": [],
+   "timings": {}
+  },
+  "sequences": {
+   "swiglu": {
+    "protocol": "whole_sequences_balanced_ab_ba",
+    "warmup_steps": 12,
+    "pairs": 8,
+    "observations": [
+     {
+      "pair": 0,
+      "arm": "baseline",
+      "elapsed_ms": 19.347582943737507
+     },
+     {
+      "pair": 0,
+      "arm": "candidate",
+      "elapsed_ms": 13.869583024643362
+     },
+     {
+      "pair": 1,
+      "arm": "candidate",
+      "elapsed_ms": 13.850625022314489
+     },
+     {
+      "pair": 1,
+      "arm": "baseline",
+      "elapsed_ms": 19.304207991808653
+     },
+     {
+      "pair": 2,
+      "arm": "baseline",
+      "elapsed_ms": 19.45050002541393
+     },
+     {
+      "pair": 2,
+      "arm": "candidate",
+      "elapsed_ms": 13.938041985966265
+     },
+     {
+      "pair": 3,
+      "arm": "candidate",
+      "elapsed_ms": 13.957416987977922
+     },
+     {
+      "pair": 3,
+      "arm": "baseline",
+      "elapsed_ms": 20.15241701155901
+     },
+     {
+      "pair": 4,
+      "arm": "baseline",
+      "elapsed_ms": 19.94804199784994
+     },
+     {
+      "pair": 4,
+      "arm": "candidate",
+      "elapsed_ms": 14.49662505183369
+     },
+     {
+      "pair": 5,
+      "arm": "candidate",
+      "elapsed_ms": 13.968374929390848
+     },
+     {
+      "pair": 5,
+      "arm": "baseline",
+      "elapsed_ms": 19.471167004667222
+     },
+     {
+      "pair": 6,
+      "arm": "baseline",
+      "elapsed_ms": 19.270375021733344
+     },
+     {
+      "pair": 6,
+      "arm": "candidate",
+      "elapsed_ms": 13.777874992229044
+     },
+     {
+      "pair": 7,
+      "arm": "candidate",
+      "elapsed_ms": 13.864209060557187
+     },
+     {
+      "pair": 7,
+      "arm": "baseline",
+      "elapsed_ms": 19.40300001297146
+     }
+    ],
+    "timing": {
+     "baseline_ms": [
+      19.347582943737507,
+      19.304207991808653,
+      19.45050002541393,
+      20.15241701155901,
+      19.94804199784994,
+      19.471167004667222,
+      19.270375021733344,
+      19.40300001297146
+     ],
+     "candidate_ms": [
+      13.869583024643362,
+      13.850625022314489,
+      13.938041985966265,
+      13.957416987977922,
+      14.49662505183369,
+      13.968374929390848,
+      13.777874992229044,
+      13.864209060557187
+     ],
+     "deltas_ms": [
+      5.477999919094145,
+      5.453582969494164,
+      5.512458039447665,
+      6.195000023581088,
+      5.451416946016252,
+      5.502792075276375,
+      5.492500029504299,
+      5.538790952414274
+     ],
+     "median_baseline_ms": 19.426750019192696,
+     "median_delta_ms": 5.497646052390337,
+     "spread_ms": 0.2509955749862053,
+     "sigma_ms": 0.11121826381100038,
+     "n": 8,
+     "ratios": [
+      0.7168638617534764,
+      0.7174925295143794,
+      0.7165904201822517,
+      0.6925927038911629,
+      0.7267191964703191,
+      0.7173876597146253,
+      0.7149770036488757,
+      0.7145394553052913
+     ],
+     "median_ratio": 0.716727140967864,
+     "stability": 0.9960843710986271
+    },
+    "baseline_sequence_ms": 19.426750019192696,
+    "candidate_sequence_ms": 13.903812505304813,
+    "speedup": 1.3952311037776608,
+    "latency_reduction_pct": 28.327285903213596,
+    "win_confirmed": true,
+    "regression_confirmed": false,
+    "steps": 306,
+    "workload_kind": "repeated_forward",
+    "prefix_copy_included": false
+   }
+  }
+ }
+}

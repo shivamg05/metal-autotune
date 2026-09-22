@@ -1,6 +1,9 @@
 [project]
 name = "metal-autotune"
 version = "0.1.0"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 description = "Autonomous inter-kernel optimizer for MLX models on Apple Silicon"
 requires-python = ">=3.12,<3.13"
 dependencies = [
@@ -30,7 +33,7 @@ packages = ["autotuner", "autotuner_runtime"]
 
 [tool.hatch.build.targets.sdist]
 include = ["/autotuner", "/autotuner_runtime", "/tests", "/models/*.py", "/models/README.md", "/models/workloads/*.yaml",
-           "/pyproject.toml", "/uv.lock", "/DESIGN_SPEC.html", "/RUNNING.md", "/AGENT_JUDGE.md"]
+           "/pyproject.toml", "/uv.lock", "/DESIGN_SPEC.html", "/RUNNING.md", "/README.md", "/LICENSE", "/docs", "/examples", "/tools", "/metalbench/*.py", "/metalbench/README.md", "/metalbench/problems", "/metalbench/published"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

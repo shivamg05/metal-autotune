@@ -1,4 +1,4 @@
-"""Pins from spike_03_weakref_retention (PLATFORM.md): the liveness facts
+"""Regression checks for traced-array liveness
 retention detection is built on. If an mlx upgrade breaks any of these, freeze-time
 liveness classification (consumed vs python_retained) silently misclassifies arrays,
 so these tests must fail loudly instead.

@@ -1,0 +1,1057 @@
+{
+ "legend": {
+  "target_workload": "the workload nominated before timing; its whole-model win must repeat before installation",
+  "timing_case": "the captured input case behind this hypothesis's local kernel timings",
+  "timing_workload": "the workload behind a region's recorded shipped-kernel speedup",
+  "model_ratios": "per-workload products of incremental model ratios; diagnostic estimates, not final measurements",
+  "p": "share of one step this region costs, all copies together, per workload",
+  "T_orig_ms": "library time for all copies, per workload, from pricing",
+  "T_rep_ms": "library time for one copy, per workload, from pricing",
+  "roofline_ms": "estimated ideal cost of one copy from boundary traffic and arithmetic",
+  "s_max": "optimistic headroom estimate: library time divided by estimated ideal cost",
+  "bound": "estimated limiting resource: memory, known compute, or launch; custom arithmetic may be unknown",
+  "s": "speedup shipped: the library's time over the shipped kernel's, both from the kernel's own ship clock",
+  "region_ms": "the kernel's time for one pass of one copy, from the ship clock",
+  "library_ms": "the library's time for the same pass, measured beside it",
+  "win_ms": "library_ms minus region_ms; positive means the kernel is faster",
+  "sigma_ms": "uncertainty of win_ms; a ship needs a win past three of these",
+  "stranded": "regions dropped before the search, grouped by reason",
+  "steps_per_sample": "dependent model steps in one timed sample of the step clock; more than one when a step is too short to bring the GPU clock up on its own",
+  "min_win_ms": "the least a region win had to save per step on this workload: 1% of the step, at most constants.min_win_ms; the three-sigma rule decides the rest",
+  "speedup_vs_plain": "under the compiled baseline: the finished model against plain eager MLX, paired in one window at the end of the job; compile's own gain is included, since the model runs compiled",
+  "speedup_vs_compiled": "under the plain baseline: the finished model (eager plus its kernels) against the untouched model under mx.compile, measured the same way; under 1 means compile alone is faster",
+  "plain_win_confirmed": "whether that comparison resolved a win past three sigma (compiled_win_confirmed likewise)",
+  "plain_loss_confirmed": "whether it resolved a loss (compiled_loss_confirmed likewise)",
+  "measured_compute_gflops": "the plain-matmul rate per dtype clocked in the region's own pricing window; the compute term of its estimated limit divides the region's flops by it",
+  "close_rule": "why a region's search ended: its budget or the job's is spent, the operator asked to finish, or no discernible headroom (launch-bound, head unmoved by the last two attempts, the last three kernels each within one sigma of the launch floor clocked beside them)",
+  "constants.openers_per_region": "how many attempts a region's widening round holds at most, each an opener written against the scaffold from a different agent-generated direction; limited by the remaining attempt budget",
+  "delivery": "how a kernel installs at the region's scope, per workload: direct, graph (the scope compiled with the cut inserted) or replay",
+  "library_arm": "what the region's clocks ran the library as, per workload: plain ops, or one compiled graph where graph delivery compiles the scope",
+  "baseline.clocks_ms.compiled": "under library inference: the model with its outermost compilable scopes compiled and empty, the baseline unless the manifest asks for plain",
+  "final.delivery": "under a plain baseline: the untouched model against the installed scopes compiled with no kernel, and that against the patched model"
+ },
+ "written_at": "2026-09-19T23:31:27-0700",
+ "machine": {
+  "chip": "Apple M4",
+  "memory_bytes": 25769803776,
+  "os": "macOS-26.6.2-arm64-arm-64bit",
+  "python": "3.12.13",
+  "mlx": "0.32.2"
+ },
+ "env": {
+  "MLX_MAX_OPS_PER_BUFFER": null,
+  "MLX_MAX_MB_PER_BUFFER": null,
+  "MTL_SHADER_VALIDATION": null,
+  "MTL_SHADER_VALIDATION_REPORT_TO_STDERR": null,
+  "MTL_CAPTURE_ENABLED": null
+ },
+ "manifest": "<repo>/runs/metalbench/jobs/2026-09-19_21-23-09-675242/generated/standard/dropout/manifest.yaml",
+ "constants": {
+  "min_win_ms": 0.03,
+  "min_win_share": 0.01,
+  "budget_per_region": 10,
+  "budget_total": 30,
+  "seed": 1296389185,
+  "openers_per_region": 4,
+  "clock_pairs": 32,
+  "price_pairs": 8,
+  "ship_pairs": 20,
+  "model_min_gain_pct": 0.0,
+  "model_confidence_sigma": 3.0,
+  "model_confirmation_comparisons": 1,
+  "final_benchmark": {
+   "steps": 10,
+   "pairs": 8,
+   "warmup_steps": 3
+  },
+  "numeric_policy": "exact_preserving_baseline_tolerance_changing",
+  "tolerances": [
+   1e-05,
+   1e-06
+  ],
+  "tolerance_defaults": {
+   "float32": [
+    1e-05,
+    1e-06
+   ],
+   "float16": [
+    0.01,
+    0.02
+   ],
+   "bfloat16": [
+    0.02,
+    0.04
+   ]
+  },
+  "duty_idle_factor": 3.0,
+  "gpu_evaluation_timeout_s": 5.0,
+  "single_group_element_limit": 1048576,
+  "single_group_scaffold_work_limit": 16777216,
+  "defaulted": [
+   "use_library_inference",
+   "final_benchmark.steps",
+   "final_benchmark.warmup_steps",
+   "seed"
+  ],
+  "use_library_inference": false,
+  "measurement": {
+   "kind": "forward",
+   "generated_tokens": null,
+   "baseline": "compiled"
+  },
+  "checkpoint_pins": []
+ },
+ "baseline": {
+  "requested": "compiled",
+  "choice": "compiled",
+  "compiled_available": true,
+  "reason": null,
+  "clocks_ms": {
+   "dropout": {
+    "plain": 0.27215476230984287,
+    "compiled": 0.25162103563724525
+   }
+  }
+ },
+ "peaks": {
+  "bandwidth_gbps": 89.24298793843774,
+  "flops_gflops": {
+   "float32": 2841.991622929297,
+   "float16": 3360.16368045937,
+   "bfloat16": 3367.8829937378937
+  },
+  "launch_us": 6.67317590341554
+ },
+ "session": {
+  "status": "complete",
+  "stage": "checking final model timings",
+  "gpu_utilization_at_start_pct": 85.0,
+  "aa_floor_sigma_ms": 0.0963638834189179,
+  "aa_control": {
+   "passed": true,
+   "attempts": 1
+  },
+  "idled_s": 138.6,
+  "artifact": null,
+  "outcome": "no_improvement"
+ },
+ "step_ms": {
+  "dropout": {
+   "before": 0.25162103563724525,
+   "steps_per_sample": 84,
+   "min_win_ms": 0.0025162103563724524,
+   "after": 0.24410069627698422,
+   "baseline_at_end": 0.24346701476523386,
+   "speedup": 0.9927076139082268,
+   "stability": 0.9590697179887604,
+   "win_confirmed": false,
+   "plain_at_end": 0.28911805635462295,
+   "speedup_vs_plain": 1.1713881570218645,
+   "plain_win_confirmed": true,
+   "plain_loss_confirmed": false
+  }
+ },
+ "regions": [
+  {
+   "fingerprint": "c40e67c79cf8160f",
+   "ops": [
+    "array.__mul__",
+    "array.__mul__"
+   ],
+   "copies": 1,
+   "workloads": [
+    "dropout"
+   ],
+   "p": {
+    "dropout": 0.5105314374240649
+   },
+   "T_orig_ms": {
+    "dropout": 0.12687347911959213
+   },
+   "T_rep_ms": {
+    "dropout": 0.12687347911959213
+   },
+   "roofline_ms": 0.1306672965251233,
+   "bound": "memory",
+   "s_max": 0.9709658230756941,
+   "T_shipped_ms": null,
+   "s": null,
+   "head_ms": 0.1311641455766141,
+   "hypotheses": 10,
+   "timing_workload": null,
+   "delivery": {
+    "dropout": "direct"
+   },
+   "library_arm": {
+    "dropout": "compiled"
+   },
+   "outcomes": {
+    "correct_slower": 10,
+    "failed": 1
+   },
+   "close_rule": "the region's hypothesis budget is spent"
+  },
+  {
+   "fingerprint": "1379e0b84acfd638",
+   "ops": [
+    "array.__mul__"
+   ],
+   "copies": 1,
+   "workloads": [
+    "dropout"
+   ],
+   "p": {
+    "dropout": 0.3385529319519699
+   },
+   "T_orig_ms": {
+    "dropout": 0.08269318178380755
+   },
+   "T_rep_ms": {
+    "dropout": 0.08269318178380755
+   },
+   "roofline_ms": 0.07908394930208962,
+   "bound": "memory",
+   "s_max": 1.0456379899280341,
+   "T_shipped_ms": null,
+   "s": null,
+   "head_ms": 0.08065226163877093,
+   "hypotheses": 10,
+   "timing_workload": null,
+   "delivery": {
+    "dropout": "graph"
+   },
+   "library_arm": {
+    "dropout": "compiled"
+   },
+   "outcomes": {
+    "correct_slower": 11
+   },
+   "close_rule": "the region's hypothesis budget is spent"
+  },
+  {
+   "fingerprint": "95bbd46171d2fbbb",
+   "ops": [
+    "array.__mul__"
+   ],
+   "copies": 1,
+   "workloads": [
+    "dropout"
+   ],
+   "p": {
+    "dropout": 0.509708012783451
+   },
+   "T_orig_ms": {
+    "dropout": 0.12400778359733522
+   },
+   "T_rep_ms": {
+    "dropout": 0.12400778359733522
+   },
+   "roofline_ms": 0.1206182297192823,
+   "bound": "memory",
+   "s_max": 1.028101505766927,
+   "T_shipped_ms": null,
+   "s": null,
+   "head_ms": 0.12570271064760163,
+   "hypotheses": 10,
+   "timing_workload": null,
+   "delivery": {
+    "dropout": "graph"
+   },
+   "library_arm": {
+    "dropout": "compiled"
+   },
+   "outcomes": {
+    "correct_slower": 11
+   },
+   "close_rule": "the region's hypothesis budget is spent"
+  }
+ ],
+ "hypotheses": [
+  {
+   "id": "scaffold",
+   "region": "c40e67c79cf8160f",
+   "kind": "scaffold",
+   "hypothesis": "the harness's starting kernel",
+   "assoc_tag": "preserving",
+   "parent": null,
+   "kernel": "rc40e67c79cf8160f_scaffold",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.17737893601103377,
+   "library_ms": 0.1278946748546635,
+   "win_ms": -0.05020729505405244,
+   "sigma_ms": 0.0024329935990293405,
+   "floor_ms": 0.12472361106322044,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "dropout",
+   "timing_case": "dropout"
+  },
+  {
+   "id": "h1_fused_elem",
+   "region": "c40e67c79cf8160f",
+   "kind": "fused one thread per element",
+   "hypothesis": "the scaffold streams the product through a scratch buffer, reading and writing 4 MB extra; one thread per element computes in0*in1 into a register then multiplies by the constant in the same order, so the region moves only the three boundary tensors (12 MB) and needs no barrier",
+   "assoc_tag": "preserving",
+   "parent": "rc40e67c79cf8160f_scaffold",
+   "kernel": "rc40e67c79cf8160f_h1_fused_elem",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.1311641455766141,
+   "library_ms": 0.12939663157429915,
+   "win_ms": -0.0033189071173483076,
+   "sigma_ms": 0.0020411126385826914,
+   "floor_ms": 0.12365876918320881,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "dropout",
+   "timing_case": "dropout"
+  },
+  {
+   "id": "h2_float4",
+   "region": "c40e67c79cf8160f",
+   "kind": "vectorized float4 per thread",
+   "hypothesis": "same fusion but each thread loads float4 from in0 and in1 and stores float4, quartering thread count and issuing 16-byte memory transactions; differs from h1 by width per thread rather than mapping",
+   "assoc_tag": "preserving",
+   "parent": "rc40e67c79cf8160f_scaffold",
+   "kernel": "rc40e67c79cf8160f_h2_float4",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.13377567250115263,
+   "library_ms": 0.12584697590985647,
+   "win_ms": -0.00688194302797672,
+   "sigma_ms": 0.0014254104331659434,
+   "floor_ms": 0.12506274721263685,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "dropout",
+   "timing_case": "dropout"
+  },
+  {
+   "id": "h3_gridstride",
+   "region": "c40e67c79cf8160f",
+   "kind": "grid-stride persistent loop",
+   "hypothesis": "launch a fixed 10 cores x several threadgroups worth of threads (e.g. 40960) that loop over the array in float4 chunks with a grid stride, keeping many loads in flight per thread and avoiding per-thread launch overhead; differs from h2 by reusing threads across many chunks",
+   "assoc_tag": "preserving",
+   "parent": "rc40e67c79cf8160f_scaffold",
+   "kernel": "rc40e67c79cf8160f_h3_gridstride",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.13554676368822466,
+   "library_ms": 0.12795493460979068,
+   "win_ms": -0.00599275834089065,
+   "sigma_ms": 0.0014122556549928734,
+   "floor_ms": 0.12328849761220424,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "dropout",
+   "timing_case": "dropout"
+  },
+  {
+   "id": "h4_row_tg",
+   "region": "c40e67c79cf8160f",
+   "kind": "row per threadgroup fused",
+   "hypothesis": "keep the scaffold's 2D mapping (one threadgroup per row, 128 threads striding across 1024 columns) but fuse both multiplies in registers and drop the scratch buffer and barrier; tests whether the scaffold's mapping itself was fine and only the scratch traffic hurt, contrasting with the flat mappings of h1-h3",
+   "assoc_tag": "preserving",
+   "parent": "rc40e67c79cf8160f_scaffold",
+   "kernel": "rc40e67c79cf8160f_h4_row_tg",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.13451659885634268,
+   "library_ms": 0.12684203837844696,
+   "win_ms": -0.008944936600708206,
+   "sigma_ms": 0.0011364219943832497,
+   "floor_ms": 0.1251382857515057,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "dropout",
+   "timing_case": "dropout"
+  },
+  {
+   "id": "h5_multi_float4",
+   "region": "c40e67c79cf8160f",
+   "kind": "two float4 per thread interleaved halves",
+   "hypothesis": "each thread loads two float4 chunks from distant halves of the array (i and i + N/8) before any multiply, keeping two 16-byte loads per input in flight and halving thread count vs h2; tests whether more outstanding memory requests per thread beat the h1/h2 one-request layouts, since all attempts sit within noise of the streaming floor",
+   "assoc_tag": "preserving",
+   "parent": "rc40e67c79cf8160f_h2_float4",
+   "kernel": "rc40e67c79cf8160f_h5_multi_float4",
+   "verdict": "failed",
+   "failed_gate": "compile",
+   "region_ms": null,
+   "library_ms": null,
+   "win_ms": null,
+   "sigma_ms": null,
+   "floor_ms": null,
+   "summary": "failed at compile: line 2: cannot combine with previous 'type-name' declaration specifier",
+   "target_workload": "dropout",
+   "timing_case": "dropout"
+  },
+  {
+   "id": "h5_fix_half",
+   "region": "c40e67c79cf8160f",
+   "kind": "fix reserved identifier",
+   "hypothesis": "h5 failed only because 'half' is a Metal type name used as a variable; rename it to hoff so the two-float4-per-thread interleaved-halves layout actually gets timed",
+   "assoc_tag": "preserving",
+   "parent": "rc40e67c79cf8160f_h5_multi_float4",
+   "kernel": "rc40e67c79cf8160f_h5_fix_half",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.13092903204129208,
+   "library_ms": 0.12546165937117743,
+   "win_ms": -0.0029803102754138305,
+   "sigma_ms": 0.0016351999535330706,
+   "floor_ms": 0.1226309482212905,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "dropout",
+   "timing_case": "dropout"
+  },
+  {
+   "id": "h6_tg1024",
+   "region": "c40e67c79cf8160f",
+   "kind": "scalar with 1024-thread threadgroups",
+   "hypothesis": "h1's per-element mapping with the largest threadgroup size so each core has fewer, larger groups and less scheduling overhead; tests whether threadgroup granularity moves the few-microsecond gap to the library",
+   "assoc_tag": "preserving",
+   "parent": "rc40e67c79cf8160f_h1_fused_elem",
+   "kernel": "rc40e67c79cf8160f_h6_tg1024",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.13245820271181344,
+   "library_ms": 0.12761114873994095,
+   "win_ms": -0.004758041195830773,
+   "sigma_ms": 0.0014920274153332675,
+   "floor_ms": 0.1244338076779784,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "dropout",
+   "timing_case": "dropout"
+  },
+  {
+   "id": "h7_single_mul",
+   "region": "c40e67c79cf8160f",
+   "kind": "single multiply by prescaled operand",
+   "hypothesis": "compute (a * 1.1111f) * b, reassociating so the compiler emits one dependent chain per element with no intermediate rounding difference concern beyond tolerance; mostly a probe that a changing edit is accepted and whether ALU issue matters at all",
+   "assoc_tag": "changing",
+   "parent": "rc40e67c79cf8160f_h2_float4",
+   "kernel": "rc40e67c79cf8160f_h7_single_mul",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.13552094990220132,
+   "library_ms": 0.12657619728916064,
+   "win_ms": -0.008000232922855052,
+   "sigma_ms": 0.0017256871550814954,
+   "floor_ms": 0.12452551098331138,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "dropout",
+   "timing_case": "dropout"
+  },
+  {
+   "id": "h8_float4_tg64",
+   "region": "c40e67c79cf8160f",
+   "kind": "float4 with small 64-thread threadgroups",
+   "hypothesis": "the library sits ~4 us ahead of every mapping tried; all of them used 128-1024 thread threadgroups. Small 64-thread groups yield 4096 threadgroups spread evenly across all 10 cores with finer-grained scheduling and fewer idle lanes at the tail, which may recover a few microseconds on this 12 MB stream; same float4 fused math as h2, only the group size differs downward, a direction not yet probed",
+   "assoc_tag": "preserving",
+   "parent": "rc40e67c79cf8160f_h2_float4",
+   "kernel": "rc40e67c79cf8160f_h8_float4_tg64",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.13612019528819064,
+   "library_ms": 0.12769127695739352,
+   "win_ms": -0.008070967121786635,
+   "sigma_ms": 0.0014297918889601595,
+   "floor_ms": 0.12466437688639777,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "dropout",
+   "timing_case": "dropout"
+  },
+  {
+   "id": "h9_eight_contig",
+   "region": "c40e67c79cf8160f",
+   "kind": "eight contiguous floats per thread",
+   "hypothesis": "each thread loads two adjacent float4 (32 contiguous bytes) from each input and stores two adjacent float4, so each simdgroup touches 1 KB contiguous per input per instruction pair; differs from h5 (distant halves) by keeping the two chunks adjacent, which favors the memory controller's page locality over interleaving",
+   "assoc_tag": "preserving",
+   "parent": "rc40e67c79cf8160f_h2_float4",
+   "kernel": "rc40e67c79cf8160f_h9_eight_contig",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.134028475278885,
+   "library_ms": 0.12480324431736436,
+   "win_ms": -0.008863772705404296,
+   "sigma_ms": 0.002030562844359513,
+   "floor_ms": 0.12445393561696014,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "dropout",
+   "timing_case": "dropout"
+  },
+  {
+   "id": "scaffold",
+   "region": "1379e0b84acfd638",
+   "kind": "scaffold",
+   "hypothesis": "the harness's starting kernel",
+   "assoc_tag": "preserving",
+   "parent": null,
+   "kernel": "r1379e0b84acfd638_scaffold",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.08204946112211632,
+   "library_ms": 0.08086956551541452,
+   "win_ms": -0.0002057089105896373,
+   "sigma_ms": 0.0030249698327606492,
+   "floor_ms": 0.07636703287615725,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "dropout",
+   "timing_case": "dropout"
+  },
+  {
+   "id": "h1_float4_flat",
+   "region": "1379e0b84acfd638",
+   "kind": "flat float4 stream",
+   "hypothesis": "one thread per 4 consecutive floats via a flat float4 view of the 1024x1024 buffer; 262144 threads in 256-thread groups spread across all cores, vector loads/stores halve instruction count versus the scaffold's 128-thread row loop and remove its per-row grid structure.",
+   "assoc_tag": "preserving",
+   "parent": "r1379e0b84acfd638_scaffold",
+   "kernel": "r1379e0b84acfd638_h1_float4_flat",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.0833719950793407,
+   "library_ms": 0.08081228648715644,
+   "win_ms": -0.004152059567055291,
+   "sigma_ms": 0.001888089977228453,
+   "floor_ms": 0.07894780869672516,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "dropout",
+   "timing_case": "dropout"
+  },
+  {
+   "id": "h2_gridstride2x",
+   "region": "1379e0b84acfd638",
+   "kind": "grid-stride two float4 per thread",
+   "hypothesis": "fewer threads (half the vector count), each loading two float4 from the two halves of the buffer before storing, so more loads are in flight per thread and fewer threadgroups are scheduled; differs from h1 in work per thread and memory-level parallelism rather than mapping.",
+   "assoc_tag": "preserving",
+   "parent": "r1379e0b84acfd638_scaffold",
+   "kernel": "r1379e0b84acfd638_h2_gridstride2x",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.08585153921993206,
+   "library_ms": 0.08306567147171692,
+   "win_ms": -0.0032967371542168694,
+   "sigma_ms": 0.0018189886806725555,
+   "floor_ms": 0.07711992821777644,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "dropout",
+   "timing_case": "dropout"
+  },
+  {
+   "id": "h3_row_tg_wide",
+   "region": "1379e0b84acfd638",
+   "kind": "row per threadgroup with wide threads",
+   "hypothesis": "keep the scaffold's 1024-row grid but give each row 256 threads that each handle one float4, so a row is one coalesced pass with no loop; tests whether the 2D row launch is fine once the inner loop and scalar accesses are removed.",
+   "assoc_tag": "preserving",
+   "parent": "r1379e0b84acfd638_scaffold",
+   "kernel": "r1379e0b84acfd638_h3_row_tg_wide",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.08305416736022933,
+   "library_ms": 0.0810055214020869,
+   "win_ms": -0.0038042593666392788,
+   "sigma_ms": 0.001003438942531492,
+   "floor_ms": 0.07898387823091901,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "dropout",
+   "timing_case": "dropout"
+  },
+  {
+   "id": "h4_scalar_flat",
+   "region": "1379e0b84acfd638",
+   "kind": "flat scalar one element per thread",
+   "hypothesis": "the simplest mapping: 1M threads, one float each, 1024-thread groups; maximal occupancy and hardware coalescing with no vector types, to check whether vectorization matters at all on this 4 MB stream.",
+   "assoc_tag": "preserving",
+   "parent": "r1379e0b84acfd638_scaffold",
+   "kernel": "r1379e0b84acfd638_h4_scalar_flat",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.08265869109891355,
+   "library_ms": 0.08084111943152611,
+   "win_ms": -0.002174091565868133,
+   "sigma_ms": 0.001582133883037594,
+   "floor_ms": 0.07657246087151377,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "dropout",
+   "timing_case": "dropout"
+  },
+  {
+   "id": "h5_persistent_loop",
+   "region": "1379e0b84acfd638",
+   "kind": "persistent small grid with strided loop",
+   "hypothesis": "launch a fixed small grid (40 threadgroups of 512 threads, several per core) and have each thread loop over float4 elements with a grid stride; this removes per-threadgroup scheduling churn for 1M elements and keeps a steady stream of loads per core, a different regime from the wide one-shot mappings tried so far.",
+   "assoc_tag": "preserving",
+   "parent": "r1379e0b84acfd638_scaffold",
+   "kernel": "r1379e0b84acfd638_h5_persistent_loop",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.08505615267148685,
+   "library_ms": 0.08026755891651624,
+   "win_ms": -0.005220334112112007,
+   "sigma_ms": 0.0008008593322852758,
+   "floor_ms": 0.0786100217651221,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "dropout",
+   "timing_case": "dropout"
+  },
+  {
+   "id": "h6_float2_mid",
+   "region": "1379e0b84acfd638",
+   "kind": "float2 per thread",
+   "hypothesis": "half-width vectors: 512K threads each moving 8 bytes, between the scalar and float4 regimes, to see whether an intermediate access granularity lands closer to the library.",
+   "assoc_tag": "preserving",
+   "parent": "r1379e0b84acfd638_scaffold",
+   "kernel": "r1379e0b84acfd638_h6_float2_mid",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.08065226163877093,
+   "library_ms": 0.08194990805350244,
+   "win_ms": -0.0008422084172944599,
+   "sigma_ms": 0.001343549818510193,
+   "floor_ms": 0.0780038973417781,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "dropout",
+   "timing_case": "dropout"
+  },
+  {
+   "id": "h7_2d_tile",
+   "region": "1379e0b84acfd638",
+   "kind": "2D 32x32 tile grid",
+   "hypothesis": "a 2D launch with 32x32 threadgroups over the matrix, each thread one float, so consecutive threads in a simdgroup cover one 128-byte row segment; tests whether 2D tile scheduling order changes DRAM page behavior.",
+   "assoc_tag": "preserving",
+   "parent": "r1379e0b84acfd638_h6_float2_mid",
+   "kernel": "r1379e0b84acfd638_h7_2d_tile",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.08182861746045883,
+   "library_ms": 0.0796146738930079,
+   "win_ms": -0.004344741793592344,
+   "sigma_ms": 0.0018068550530235875,
+   "floor_ms": 0.07620652423888122,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "dropout",
+   "timing_case": "dropout"
+  },
+  {
+   "id": "h8_float4_tg1024",
+   "region": "1379e0b84acfd638",
+   "kind": "float4 with maximal 1024-thread groups",
+   "hypothesis": "float4 per thread like h1 but with 1024-thread groups (256 groups total, ~26 per core); fewer, larger groups reduce dispatch bookkeeping while keeping 16-byte accesses, an untested combination of the two closest mappings (h4 used 1024 groups scalar, h1 used float4 at 256).",
+   "assoc_tag": "preserving",
+   "parent": "r1379e0b84acfd638_h6_float2_mid",
+   "kernel": "r1379e0b84acfd638_h8_float4_tg1024",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.08427741423682228,
+   "library_ms": 0.08292644965797336,
+   "win_ms": -0.0031472057647382243,
+   "sigma_ms": 0.001488799920989093,
+   "floor_ms": 0.07907328274501324,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "dropout",
+   "timing_case": "dropout"
+  },
+  {
+   "id": "h9_float2_tg64",
+   "region": "1379e0b84acfd638",
+   "kind": "float2 with 64-thread groups",
+   "hypothesis": "keep head's float2 mapping (closest to library) but shrink groups to 64 threads (8192 groups) so the scheduler can balance finer-grained work across the 10 cores; tests group size rather than access width on the best-performing width.",
+   "assoc_tag": "preserving",
+   "parent": "r1379e0b84acfd638_h6_float2_mid",
+   "kernel": "r1379e0b84acfd638_h9_float2_tg64",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.08568293445645586,
+   "library_ms": 0.08287682864823166,
+   "win_ms": -0.002498813780237051,
+   "sigma_ms": 0.0010928855582388996,
+   "floor_ms": 0.07720385308442801,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "dropout",
+   "timing_case": "dropout"
+  },
+  {
+   "id": "h10_float4_interleave",
+   "region": "1379e0b84acfd638",
+   "kind": "float4 two per thread interleaved within group",
+   "hypothesis": "each 256-thread group covers 2048 float4 in two group-contiguous sweeps (index i and i+256) so both loads per thread are issued before either store, but unlike h2 the two accesses stay within one 8 KB span for better DRAM page locality.",
+   "assoc_tag": "preserving",
+   "parent": "r1379e0b84acfd638_h6_float2_mid",
+   "kernel": "r1379e0b84acfd638_h10_float4_interleave",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.08789490358581269,
+   "library_ms": 0.08362479505617873,
+   "win_ms": -0.004425435672781558,
+   "sigma_ms": 0.0010795513229302448,
+   "floor_ms": 0.07834529422343442,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "dropout",
+   "timing_case": "dropout"
+  },
+  {
+   "id": "scaffold",
+   "region": "95bbd46171d2fbbb",
+   "kind": "scaffold",
+   "hypothesis": "the harness's starting kernel",
+   "assoc_tag": "preserving",
+   "parent": null,
+   "kernel": "r95bbd46171d2fbbb_scaffold",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.13458681124676433,
+   "library_ms": 0.12587117768513661,
+   "win_ms": -0.007834027767077908,
+   "sigma_ms": 0.0013014042892874548,
+   "floor_ms": 0.12619768612138513,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "dropout",
+   "timing_case": "dropout"
+  },
+  {
+   "id": "h1_flat_float4",
+   "region": "95bbd46171d2fbbb",
+   "kind": "flat float4 one-shot",
+   "hypothesis": "one thread per 4 contiguous elements, 256-thread groups over a flat 1D grid: 16-byte loads/stores per thread halve instruction count versus the scaffold's scalar 128-thread row loop and give the scheduler 1024 threadgroups across all cores; expected to sit at or within noise of the library on this 12 MB stream",
+   "assoc_tag": "preserving",
+   "parent": "r95bbd46171d2fbbb_scaffold",
+   "kernel": "r95bbd46171d2fbbb_h1_flat_float4",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.1338798610959202,
+   "library_ms": 0.12493726972024888,
+   "win_ms": -0.008210644914975598,
+   "sigma_ms": 0.0015266885174462185,
+   "floor_ms": 0.12486365869537824,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "dropout",
+   "timing_case": "dropout"
+  },
+  {
+   "id": "h2_flat_float2",
+   "region": "95bbd46171d2fbbb",
+   "kind": "flat float2 one-shot",
+   "hypothesis": "one thread per 2 elements at 256 threads, twice the thread count of float4: on the prior region float2 at 256 was the closest mapping to the library, so test whether that access width transfers to this 12 MB stream",
+   "assoc_tag": "preserving",
+   "parent": "r95bbd46171d2fbbb_scaffold",
+   "kernel": "r95bbd46171d2fbbb_h2_flat_float2",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.1348709772349123,
+   "library_ms": 0.12888615795721609,
+   "win_ms": -0.007451394482989593,
+   "sigma_ms": 0.0022083019262414687,
+   "floor_ms": 0.12676571873670217,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "dropout",
+   "timing_case": "dropout"
+  },
+  {
+   "id": "h3_persistent_stride",
+   "region": "95bbd46171d2fbbb",
+   "kind": "persistent grid-stride float4 loop",
+   "hypothesis": "a fixed grid of 10 cores x 8 threadgroups x 256 threads, each thread looping over float4 chunks with a grid stride: fewer threadgroup launches and steady in-flight loads per core; differs from one-shot mappings by amortizing dispatch cost across a loop",
+   "assoc_tag": "preserving",
+   "parent": "r95bbd46171d2fbbb_scaffold",
+   "kernel": "r95bbd46171d2fbbb_h3_persistent_stride",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.12570271064760163,
+   "library_ms": 0.12404481860453655,
+   "win_ms": -0.0012295824585874596,
+   "sigma_ms": 0.0007082692117068499,
+   "floor_ms": 0.12245750603094502,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "dropout",
+   "timing_case": "dropout"
+  },
+  {
+   "id": "h4_scalar_flat",
+   "region": "95bbd46171d2fbbb",
+   "kind": "scalar flat one-shot",
+   "hypothesis": "one thread per element, 256-thread flat grid with no row loop: maximal thread count and coalesced 4-byte accesses; tests whether the scaffold's per-row loop with 128 threads is the source of its 8 us gap rather than access width",
+   "assoc_tag": "preserving",
+   "parent": "r95bbd46171d2fbbb_scaffold",
+   "kernel": "r95bbd46171d2fbbb_h4_scalar_flat",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.13436278446722005,
+   "library_ms": 0.12548149218140492,
+   "win_ms": -0.009393680274711338,
+   "sigma_ms": 0.0016340807785840252,
+   "floor_ms": 0.12308531009254914,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "dropout",
+   "timing_case": "dropout"
+  },
+  {
+   "id": "h5_persistent_unroll2",
+   "region": "95bbd46171d2fbbb",
+   "kind": "persistent stride with two float4 in flight",
+   "hypothesis": "same persistent grid as h3 but each loop iteration issues two independent float4 load pairs before multiplying and storing, doubling outstanding memory requests per thread; the head trailed the library by ~1 us, so more bytes in flight per thread may close the remaining gap",
+   "assoc_tag": "preserving",
+   "parent": "r95bbd46171d2fbbb_h3_persistent_stride",
+   "kernel": "r95bbd46171d2fbbb_h5_persistent_unroll2",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.1274576176816983,
+   "library_ms": 0.12448562935380073,
+   "win_ms": -0.002976831104927531,
+   "sigma_ms": 0.000573201893711364,
+   "floor_ms": 0.12331717278294523,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "dropout",
+   "timing_case": "dropout"
+  },
+  {
+   "id": "h6_persistent_half_grid",
+   "region": "95bbd46171d2fbbb",
+   "kind": "persistent stride with half the threadgroups",
+   "hypothesis": "persistent float4 loop with 10240 threads (4 groups of 256 per core) instead of 20480: fewer resident groups means each loops longer, testing whether dispatch of extra groups or occupancy is the lever",
+   "assoc_tag": "preserving",
+   "parent": "r95bbd46171d2fbbb_h3_persistent_stride",
+   "kernel": "r95bbd46171d2fbbb_h6_persistent_half_grid",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.13289366244942277,
+   "library_ms": 0.12615830752650625,
+   "win_ms": -0.005921934524059785,
+   "sigma_ms": 0.002962056449105113,
+   "floor_ms": 0.12467331016323642,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "dropout",
+   "timing_case": "dropout"
+  },
+  {
+   "id": "h7_persistent_tg512",
+   "region": "95bbd46171d2fbbb",
+   "kind": "persistent stride with 512-thread groups",
+   "hypothesis": "persistent float4 loop with 512-thread groups and 40 groups total (4 per core): wider groups shift the scheduling granularity while keeping the same total thread count as h3",
+   "assoc_tag": "preserving",
+   "parent": "r95bbd46171d2fbbb_h3_persistent_stride",
+   "kernel": "r95bbd46171d2fbbb_h7_persistent_tg512",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.13468269441675929,
+   "library_ms": 0.12634169268114798,
+   "win_ms": -0.007866411648977258,
+   "sigma_ms": 0.0015254655063228,
+   "floor_ms": 0.12531169756714788,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "dropout",
+   "timing_case": "dropout"
+  },
+  {
+   "id": "h8_persistent_block_per_tg",
+   "region": "95bbd46171d2fbbb",
+   "kind": "persistent contiguous block per threadgroup",
+   "hypothesis": "same 80x256 persistent float4 grid as h3, but each threadgroup owns one contiguous slice of the array and its threads stride only within that slice; consecutive iterations of one group touch adjacent pages, so DRAM page locality per core improves versus the grid-wide stride where neighbouring groups interleave at 4 KB granularity",
+   "assoc_tag": "preserving",
+   "parent": "r95bbd46171d2fbbb_h3_persistent_stride",
+   "kernel": "r95bbd46171d2fbbb_h8_persistent_block_per_tg",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.14386686803349719,
+   "library_ms": 0.12988769184713336,
+   "win_ms": -0.013999421869150624,
+   "sigma_ms": 0.0032079855701607437,
+   "floor_ms": 0.12721950505775484,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "dropout",
+   "timing_case": "dropout"
+  },
+  {
+   "id": "h9_persistent_tg128",
+   "region": "95bbd46171d2fbbb",
+   "kind": "persistent stride with 128-thread groups",
+   "hypothesis": "persistent float4 grid-stride at the same 20480 threads but 160 groups of 128: smaller groups give the scheduler finer packing per core, the opposite direction from h7's 512 groups which lost",
+   "assoc_tag": "preserving",
+   "parent": "r95bbd46171d2fbbb_h3_persistent_stride",
+   "kernel": "r95bbd46171d2fbbb_h9_persistent_tg128",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.13890846866559697,
+   "library_ms": 0.1265064373696118,
+   "win_ms": -0.010522115802957428,
+   "sigma_ms": 0.0014353116487938375,
+   "floor_ms": 0.1259176034396619,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "dropout",
+   "timing_case": "dropout"
+  },
+  {
+   "id": "h10_persistent_double_grid",
+   "region": "95bbd46171d2fbbb",
+   "kind": "persistent stride with twice the threads",
+   "hypothesis": "persistent float4 grid-stride with 40960 threads (16 groups of 256 per core), doubling resident groups since h6's halving cost ~7 us; tests whether more in-flight groups per core closes the last microsecond",
+   "assoc_tag": "preserving",
+   "parent": "r95bbd46171d2fbbb_h3_persistent_stride",
+   "kernel": "r95bbd46171d2fbbb_h10_persistent_double_grid",
+   "verdict": "correct_slower",
+   "failed_gate": null,
+   "region_ms": 0.13940935043552727,
+   "library_ms": 0.12973410163172766,
+   "win_ms": -0.010604715881575105,
+   "sigma_ms": 0.0019008276244315973,
+   "floor_ms": 0.13159081981141577,
+   "summary": "correct_slower: region did not nominate an installable replacement",
+   "target_workload": "dropout",
+   "timing_case": "dropout"
+  }
+ ],
+ "accepted": [],
+ "pricing": [
+  {
+   "fingerprint": "c40e67c79cf8160f",
+   "ops": [
+    "array.__mul__",
+    "array.__mul__"
+   ],
+   "copies": 1,
+   "p": {
+    "dropout": 0.5105314374240649
+   },
+   "region_ms": {
+    "dropout": 0.12687347911959213
+   },
+   "ranking_basis": "estimated_removable_share",
+   "price_stability": {
+    "dropout": 0.9644706716412313
+   },
+   "estimate_basis": "boundary_probe_and_known_compute",
+   "compute_model_complete": true,
+   "headroom_is_estimate": true,
+   "estimated_s_max": {
+    "dropout": 0.9709658230756941
+   },
+   "measured_compute_gflops": {
+    "dropout": {
+     "float32": 2817.7011993151064
+    }
+   },
+   "potential_model_latency_reduction_pct": {
+    "dropout": 0.0
+   },
+   "status": "eligible",
+   "reason": null
+  },
+  {
+   "fingerprint": "95bbd46171d2fbbb",
+   "ops": [
+    "array.__mul__"
+   ],
+   "copies": 1,
+   "p": {
+    "dropout": 0.509708012783451
+   },
+   "region_ms": {
+    "dropout": 0.12400778359733522
+   },
+   "ranking_basis": "estimated_removable_share",
+   "price_stability": {
+    "dropout": 0.9621960388482935
+   },
+   "estimate_basis": "boundary_probe_and_known_compute",
+   "compute_model_complete": true,
+   "headroom_is_estimate": true,
+   "estimated_s_max": {
+    "dropout": 1.028101505766927
+   },
+   "measured_compute_gflops": {
+    "dropout": {
+     "float32": 2846.6578404554966
+    }
+   },
+   "potential_model_latency_reduction_pct": {
+    "dropout": 1.3932051047817664
+   },
+   "status": "eligible",
+   "reason": null
+  },
+  {
+   "fingerprint": "1379e0b84acfd638",
+   "ops": [
+    "array.__mul__"
+   ],
+   "copies": 1,
+   "p": {
+    "dropout": 0.3385529319519699
+   },
+   "region_ms": {
+    "dropout": 0.08269318178380755
+   },
+   "ranking_basis": "estimated_removable_share",
+   "price_stability": {
+    "dropout": 0.9686996806942714
+   },
+   "estimate_basis": "boundary_probe_and_known_compute",
+   "compute_model_complete": true,
+   "headroom_is_estimate": true,
+   "estimated_s_max": {
+    "dropout": 1.0456379899280341
+   },
+   "measured_compute_gflops": {
+    "dropout": {
+     "float32": 2846.6578404554966
+    }
+   },
+   "potential_model_latency_reduction_pct": {
+    "dropout": 1.477650529854392
+   },
+   "status": "eligible",
+   "reason": null
+  }
+ ],
+ "stranded": [],
+ "coverage": {
+  "discovery": {
+   "legal_regions": 3,
+   "supported_regions": 3,
+   "unsupported_regions": 0,
+   "never_evaluated_ops": 0
+  },
+  "step_floor": {
+   "dropout": {
+    "bytes_mb": 12.582912,
+    "gflop": 0.002097152,
+    "launches": 2,
+    "t_mem_ms": 0.14099608597462066,
+    "t_compute_ms": 0.0007379163200482709,
+    "floor_ms": 0.14099608597462066,
+    "step_ms": 0.25162103563724525,
+    "room": 0.4396490515288609
+   }
+  },
+  "selection": {
+   "candidates": 3,
+   "waves": [
+    {
+     "wave": 1,
+     "selected": 1,
+     "deferred": 2,
+     "conflicts": {
+      "95bbd46171d2fbbb": [
+       "c40e67c79cf8160f"
+      ],
+      "1379e0b84acfd638": [
+       "c40e67c79cf8160f"
+      ]
+     }
+    },
+    {
+     "wave": 2,
+     "selected": 2,
+     "deferred": 0,
+     "conflicts": {}
+    }
+   ],
+   "unsearched": 0
+  },
+  "measured_atomic_share_this_wave": {
+   "dropout": 0.8482609447354209
+  },
+  "step_ms": {
+   "dropout": 0.25162103563724525
+  }
+ },
+ "final": {
+  "passed": true,
+  "reason": "no replacements installed"
+ }
+}
