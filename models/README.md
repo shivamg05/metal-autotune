@@ -2,10 +2,19 @@
 
 Each Python file exposes `build()` and loads pretrained weights unless explicitly
 marked otherwise. Workload manifests select input shapes; they do not change the
-model's precision during optimization. The first build downloads weights.
+model's precision during optimization. Pretrained models download weights on
+the first build; the weights are not included in this repository.
+
+Start with [the tiny MLP](../examples/tiny_mlp.yaml) for a small, download-free
+example. The files below show larger model integrations. Copy a matching
+workload manifest and adjust its model path and inputs to make your own target.
 
 | Target | MLX-LM support | Example workloads |
 | --- | --- | --- |
+| [Qwen3-0.6B Base, bf16](qwen3_0.6b.py) | Yes, `qwen3` | Define token inputs in your manifest; see the [usage guide](../docs/usage.md) |
+| [Qwen3-0.6B Base, 4-bit](qwen3_0.6b_4bit.py) | Yes, `qwen3`; quantized after loading | Same token-input contract as the bf16 example |
+| [Llama 3 8B Instruct, 4-bit](llama8b.py) | Yes, `llama` | Define token inputs in your manifest; see the [usage guide](../docs/usage.md) |
+| [FLUX.2 transformer, random weights](flux2_4b.py) | No; standalone MLX implementation | One denoiser call; inspect the model's input signature. No checkpoint download or image generation |
 | Qwen3-4B, 4-bit | Yes, `qwen3` | `workloads/qwen3_4b_prefill_128.yaml`, `qwen3_4b_prefill_512.yaml` |
 | Qwen3.5-4B, 4-bit | Yes, `qwen3_5` | Define input shapes in your manifest; see the usage guide |
 | Mamba-370M, fp16 | Yes, `mamba` | `workloads/mamba_370m_prefill_32.yaml`, `mamba_370m_prefill_128.yaml` |

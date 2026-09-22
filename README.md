@@ -57,6 +57,22 @@ The CLI prints its output paths. New jobs default to a unique folder under
 An isolated kernel speedup is not a shipped model speedup. Read the final
 confirmation and workload timings in the report.
 
+## Model examples
+
+The repo includes [model definitions and workload manifests](models/README.md)
+for Qwen, Llama, Mamba, RecurrentGemma, Whisper, and Stable Diffusion, plus a
+randomly initialized FLUX transformer. These show how to target language,
+audio, and image models. Model weights are downloaded when needed, not committed.
+
+For example, optimize a 128-token Qwen3-4B prompt:
+
+```sh
+uv run autotune run models/workloads/qwen3_4b_prefill_128.yaml --judge claude-cli
+```
+
+Check the example index for dependencies and workload limits. The small MLP in
+the quickstart is the simplest starting point and needs no download.
+
 ## Use your own model
 
 Provide a Python file with `build()` returning a callable MLX model, and a YAML
