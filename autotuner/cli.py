@@ -126,37 +126,58 @@ def _execute(args, parser):
         args.work_dir,
         judge_factory=lambda region: judge,
     )
-    report = runner.run()
-    artifact = None
-    if report.accepted and runner.final_ok:
-        artifact = runner.emit_artifact(args.artifact)
+    try:
+        report = runner.run()
+        artifact = None
+        if report.accepted and runner.final_ok:
+            artifact = runner.emit_artifact(args.artifact)
+        else:
+            report.session.update(status="complete", artifact=None,
+                                  outcome="unconfirmed" if report.accepted else "no_improvement")
+            report.write(Path(args.work_dir) / "report.json")
+    except Exception:
+        print(f"job failed: see {args.work_dir}/report.json and the error below", file=sys.stderr)
+        raise
+    _print_result(report, artifact)
+    return 0
+
+
+def _print_result(report, artifact):
+    if artifact:
+        shipped = sum(bool(r.get("s")) for r in report.regions)
+        print(f"job complete: verified artifact with {shipped}/{len(report.regions)} regions optimized")
     else:
-        # kernels that shipped during the search but were not confirmed at the end are not exported
-        report.session.update(status="complete", artifact=None,
-                              outcome="unconfirmed" if report.accepted else "no_improvement")
-        report.write(Path(args.work_dir) / "report.json")
-    shipped = [r for r in report.regions if r.get("s")]
-    print(f"job done: {len(shipped)}/{len(report.regions)} regions shipped")
+        print("job complete: no confirmed improvement; no artifact produced")
+        if report.accepted:
+            print("  Search accepted candidates, but final validation did not confirm the improvement.")
+    measurement = report.final.get("measurement", report.constants.get("measurement", {}))
+    objective = "forward pass"
+    if measurement.get("kind") == "library_generation":
+        objective = f"library generation ({measurement['generated_tokens']} generated tokens)"
     for w, clocks in report.step_ms.items():
         # the untouched model is re-measured beside the patched one at the end;
         # the job-start clock is a different window and never enters this line
         if clocks.get("speedup"):
             result = (f"{clocks['speedup']:.3f}x confirmed speedup" if clocks.get("win_confirmed")
                       else "no confirmed speedup")
-            print(f"  {w}: patched {clocks['after']:.3f} ms vs baseline "
+            print(f"  {w}: {objective}: patched {clocks['after']:.3f} ms vs baseline "
                   f"{clocks['baseline_at_end']:.3f} ms ({report.baseline.get('choice')}), "
                   f"measured together: {result} (pair agreement {clocks['stability']:.2f})")
         sequence = report.final.get("sequences", {}).get(w)
         if sequence and clocks.get("sequence_speedup"):
-            # the deployment-shaped number: whole runs of consecutive steps,
-            # each uninterrupted, the two models alternated in both orders
             result = (f"{clocks['sequence_speedup']:.3f}x confirmed speedup"
                       if clocks.get("sequence_win_confirmed") else "no confirmed speedup")
-            print(f"  {w}: {sequence['steps']} consecutive steps: patched "
+            kind = sequence.get("workload_kind", "repeated_forward")
+            description = {
+                "repeated_forward": "repeated forward passes",
+                "advancing_cache_fixed_tokens": "steps with advancing cache and fixed input tokens",
+                "library_generation": "generated tokens via library inference",
+            }.get(kind, kind)
+            print(f"  {w}: {sequence['steps']} {description}: patched "
                   f"{sequence['candidate_sequence_ms']:.1f} ms vs untouched "
                   f"{sequence['baseline_sequence_ms']:.1f} ms, run whole and alternated: {result}")
-    print(f"artifact: {artifact}" if artifact else "no artifact: no improvement was installed")
-    return 0
+    if artifact:
+        print(f"artifact: {artifact}")
 
 
 if __name__ == "__main__":

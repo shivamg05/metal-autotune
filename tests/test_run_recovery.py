@@ -196,7 +196,7 @@ def test_cli_summary_requires_explicit_confirmation(tmp_path, monkeypatch, capsy
     message = capsys.readouterr().out
     if confirmed:
         assert "1.020x confirmed speedup" in message
-        assert "20 consecutive steps: patched 1940.0 ms vs untouched 2000.0 ms" in message
+        assert "20 repeated forward passes: patched 1940.0 ms vs untouched 2000.0 ms" in message
         assert "1.030x confirmed speedup" in message
     else:
         assert message.count("no confirmed speedup") == 2
@@ -359,3 +359,71 @@ def test_no_win_cli_finishes_without_packaging(tmp_path, monkeypatch):
     assert saved["session"]["status"] == "complete"
     assert saved["session"]["outcome"] == "no_improvement"
     assert saved["session"]["artifact"] is None
+
+
+@pytest.mark.parametrize("accepted,confirmed", [(False, False), (True, False), (True, True)])
+def test_cli_reports_export_outcome(tmp_path, monkeypatch, capsys, accepted, confirmed):
+    from autotuner.cli import main
+    report = Report(regions=[{"s": 1.2}] if accepted else [])
+    if accepted:
+        report.accepted.append({"region": "example"})
+    work = tmp_path / "work"
+    def fake_runner(*args, **kwargs):
+        work.mkdir()
+        def export(path):
+            assert confirmed
+            path.mkdir()
+            return path
+        return SimpleNamespace(run=lambda: report, final_ok=confirmed, emit_artifact=export)
+    monkeypatch.setattr("autotuner.loop.JobRunner", fake_runner)
+    monkeypatch.setattr("autotuner.judge.agent.CliJudge.check_available", lambda self: None)
+    assert main(["run", "unused.yaml", "--work-dir", str(work), "--judge", "claude-cli"]) == 0
+    message = capsys.readouterr().out
+    if confirmed:
+        assert "verified artifact with 1/1 regions optimized" in message
+        assert f"artifact: {work / 'artifact'}" in message
+    else:
+        assert "no confirmed improvement; no artifact produced" in message
+        assert "regions optimized" not in message
+        assert ("Search accepted candidates" in message) == accepted
+
+
+@pytest.mark.parametrize("stage", ["run", "export"])
+def test_cli_failure_is_reported_and_reraised(tmp_path, monkeypatch, capsys, stage):
+    from autotuner.cli import main
+    report = Report(accepted=[{"region": "example"}])
+    def fail(*args):
+        raise RuntimeError("test validation failure")
+    monkeypatch.setattr("autotuner.loop.JobRunner", lambda *a, **kw: SimpleNamespace(
+        run=fail if stage == "run" else lambda: report, final_ok=True, emit_artifact=fail))
+    monkeypatch.setattr("autotuner.judge.agent.CliJudge.check_available", lambda self: None)
+    with pytest.raises(RuntimeError, match="test validation failure"):
+        main(["run", "unused.yaml", "--work-dir", str(tmp_path / "work"), "--judge", "claude-cli"])
+    captured = capsys.readouterr()
+    assert "job failed:" in captured.err
+    assert "job complete:" not in captured.out
+
+
+@pytest.mark.parametrize("kind,label", [
+    ("repeated_forward", "20 repeated forward passes"),
+    ("advancing_cache_fixed_tokens", "20 steps with advancing cache and fixed input tokens"),
+    ("library_generation", "20 generated tokens via library inference"),
+])
+def test_cli_sequence_label_matches_measurement(kind, label, capsys):
+    from autotuner.cli import _print_result
+    report = Report(step_ms={"main": {"sequence_speedup": 1.1}}, final={"sequences": {
+        "main": {"workload_kind": kind, "steps": 20,
+                 "candidate_sequence_ms": 90, "baseline_sequence_ms": 100}}})
+    _print_result(report, None)
+    assert label in capsys.readouterr().out
+
+
+def test_cli_generation_clock_is_not_called_forward_pass(capsys):
+    from autotuner.cli import _print_result
+    report = Report(constants={"measurement": {"kind": "library_generation", "generated_tokens": 10}},
+                    step_ms={"main": {"speedup": 1.1, "after": 90, "baseline_at_end": 100,
+                                      "stability": 1}})
+    _print_result(report, None)
+    message = capsys.readouterr().out
+    assert "library generation (10 generated tokens)" in message
+    assert "forward pass" not in message
