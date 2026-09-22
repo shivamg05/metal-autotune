@@ -12,6 +12,8 @@ a compatible model. Finding no confirmed improvement is a valid result.
 **19 of 35 MetalBench standard workloads improved beyond `mx.compile` on an
 Apple M4.** Of all 35, 17 exceeded 1.1× and 8 exceeded 1.25× against compiled MLX.
 
+Across all 35 workloads, geometric mean speedup was **1.16× over compiled MLX** and **1.46× over eager MLX**.
+
 | Workload | vs compiled MLX | vs eager MLX |
 |---|---:|---:|
 | Group normalization | **2.34×** | **3.12×** |
