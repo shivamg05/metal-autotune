@@ -7,27 +7,26 @@ kernels; an independent harness checks their outputs and measures the whole
 workload. Confirmed improvements become a portable code bundle you can apply to
 a compatible model. Finding no confirmed improvement is a valid result.
 
-## Results: up to 2.34× faster than compiled MLX
+## Results: up to 2.34× over compiled MLX, 3.12× over eager MLX
 
-**19 of 35 MetalBench standard workloads improved on an Apple M4.**
-17 of 35 exceeded 1.1×, and 8 exceeded 1.25×, against `mx.compile`.
+**19 of 35 MetalBench standard workloads improved beyond `mx.compile` on an
+Apple M4.** Of all 35, 17 exceeded 1.1× and 8 exceeded 1.25× against compiled MLX.
 
-| Workload | Speedup vs compiled MLX |
-|---|---:|
-| Group normalization | **2.34×** |
-| Instance normalization | **2.23×** |
-| Cross-entropy loss | **1.53×** |
-| Scaled dot-product | **1.47×** |
-| SwiGLU | **1.39×** |
+| Workload | vs compiled MLX | vs eager MLX |
+|---|---:|---:|
+| Group normalization | **2.34×** | **3.12×** |
+| Instance normalization | **2.23×** | **3.06×** |
+| Cross-entropy loss | **1.54×** | **1.83×** |
+| Scaled dot-product | **1.47×** | **1.47×** |
+| SwiGLU | **1.39×** | **1.45×** |
 
-These are whole-workload wall-clock speedups: **compiled original time ÷ compiled
-optimized time**, using warmed repeated calls. The other 16 workloads shipped no
-kernel and score 1.00×. This is a synthetic benchmark suite, not a claim that an
-entire language model or every input shape gets the same speedup.
+Both columns compare whole-workload wall-clock time against the compiled
+optimized version, using warmed repeated calls. The eager comparison includes
+compilation's own gains. The 16 workloads without a shipped kernel score 1.00×
+against compiled MLX. These are synthetic workloads, not full-model speedups.
 
-The run used MLX 0.32.2, `claude-fable-5-1` at low effort, and up to 30 attempts
-per problem. [All 35 results, raw timings, workload definitions and final kernels](metalbench/published/2026-09-19-m4/README.md)
-are included, along with the reproduction command and follow-up verification notes.
+MLX 0.32.2; `claude-fable-5-1` at low effort; up to 30 attempts per problem.
+[All 35 results, raw timings, kernels, and reproduction instructions](metalbench/published/2026-09-19-m4/README.md).
 
 ## Quickstart
 
@@ -132,5 +131,4 @@ optional measurement diagnostics live in `tools/`. Generated runs are ignored by
 
 ## License
 
-MIT. Vendored MetalBench problems retain their [upstream MIT notice](metalbench/problems/LICENSE).
-Pull requests are welcome; see the [development notes](docs/architecture.md#development).
+MIT.
