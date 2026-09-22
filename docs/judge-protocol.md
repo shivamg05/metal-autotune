@@ -5,7 +5,7 @@ and decides whether the whole model got faster. Each call contains a complete
 briefing and expects one JSON reply. These two ways to run the judge use your
 existing agent login, without `ANTHROPIC_API_KEY`.
 
-[DESIGN_SPEC.html](../DESIGN_SPEC.html) is the authority for the tool's behavior.
+See [the architecture](architecture.md) for the harness's correctness and measurement boundaries.
 
 ## Option 1: an agent CLI does the judging
 
@@ -145,8 +145,7 @@ again, and after one free re-ask every reply with nothing to evaluate costs an
 attempt, so spend the budget on kernels. A kernel the static checks reject (for
 example a `fallback_predicate` that is true on the workload being optimized, which
 would send every call to the library) is refused the same way, with the reasons,
-before it reaches the GPU. [DESIGN_SPEC.html](../DESIGN_SPEC.html)
-describes the judge's job; `autotuner/judge/schema.py` defines every reply
+before it reaches the GPU. `autotuner/judge/schema.py` defines every reply
 field and `autotuner/judge/prompts.py` every briefing field. The
 request files remain afterward, so a reviewer can audit what the judge was
 told and what it answered.

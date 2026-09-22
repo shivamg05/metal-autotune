@@ -33,7 +33,7 @@ packages = ["autotuner", "autotuner_runtime"]
 
 [tool.hatch.build.targets.sdist]
 include = ["/autotuner", "/autotuner_runtime", "/tests", "/models/*.py", "/models/README.md", "/models/workloads/*.yaml",
-           "/pyproject.toml", "/uv.lock", "/DESIGN_SPEC.html", "/RUNNING.md", "/README.md", "/LICENSE", "/docs", "/examples", "/tools", "/metalbench/*.py", "/metalbench/README.md", "/metalbench/problems", "/metalbench/published"]
+           "/pyproject.toml", "/uv.lock", "/RUNNING.md", "/README.md", "/LICENSE", "/docs", "/examples", "/tools", "/metalbench/*.py", "/metalbench/README.md", "/metalbench/problems", "/metalbench/published"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

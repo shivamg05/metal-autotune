@@ -4,8 +4,8 @@ Read [README.md](README.md) for the product and commands. If operating an
 optimization job, follow [RUNNING.md](RUNNING.md). If changing code, read
 [docs/architecture.md](docs/architecture.md), including its development notes.
 
-`DESIGN_SPEC.html` is authoritative for product behavior. Do not silently edit
-it to match an implementation or replace it with an implementation plan.
+Public behavior and compatibility guarantees belong in the user documentation
+and regression tests. Keep private planning documents local.
 
 Keep changes small, behaviorally correct, and general across models. Verify
 measured limitations before adding machinery. Preserve unrelated worktree edits.

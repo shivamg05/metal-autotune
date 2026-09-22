@@ -2,7 +2,7 @@
 
 The tool optimizes a declared workload on a particular machine. The AI proposes
 code; the harness independently decides whether that code is correct and faster.
-[DESIGN_SPEC.html](../DESIGN_SPEC.html) is the authoritative product vision.
+The invariants below describe the boundaries that implementation changes must preserve.
 
 1. **Load and trace.** `manifest.py` defines the model, inputs, budget and measurement
    objective. `trace/` records the operations and values crossing their boundaries.

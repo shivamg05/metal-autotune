@@ -96,7 +96,6 @@ uv run python metalbench/run.py --set standard --baseline compiled \
 - [Architecture and invariants](docs/architecture.md): how the harness works.
 - [Judge protocol](docs/judge-protocol.md): custom providers and file-based judging.
 - [Limitations](docs/limitations.md): what results and coverage do not guarantee.
-- [DESIGN_SPEC.html](DESIGN_SPEC.html): authoritative product vision.
 
 Source lives in `autotuner/` and `autotuner_runtime/`. Tests stay in `tests/`;
 optional measurement diagnostics live in `tools/`. Generated runs are ignored by Git.

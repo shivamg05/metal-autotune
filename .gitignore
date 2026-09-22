@@ -21,3 +21,6 @@ metalbench/generated/
 /ARTICULATE.md
 /.claude/
 .DS_Store
+
+# local product planning
+/DESIGN_SPEC.html
