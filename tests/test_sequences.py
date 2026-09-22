@@ -150,3 +150,15 @@ def test_bench_session_caps_a_reading_that_keeps_falling():
     session = _fake_session(durations, slept)
     kept = session.warm_until_stable(lambda: None)
     assert len(kept) == 60 and kept == pytest.approx(durations[1:61])
+
+
+def test_bench_session_normalizes_chained_warmup_but_cools_entire_sample():
+    slept = []
+    session = _fake_session([0.02, 0.03], slept)
+    warm = lambda: None
+    warm.steps = 10
+    assert session.timed(warm) == pytest.approx(0.002)
+    # The measured run remains a whole-run timing, without normalization.
+    assert session.timed(lambda: None) == pytest.approx(0.03)
+    session.settle()
+    assert slept == [pytest.approx(3 * 0.05)]

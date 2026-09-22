@@ -137,7 +137,10 @@ class BenchSession:
         mx.synchronize()
         elapsed = self._clock() - t0
         self._debt_s += elapsed
-        return elapsed
+        # Match the harness clock: chained warmups report time per call,
+        # while cooling accounts for the entire sample. Timed sequences have
+        # no steps attribute and keep their whole-run duration.
+        return elapsed / getattr(fn, "steps", 1)
 
     def settle(self) -> None:
         if self._debt_s <= 0:

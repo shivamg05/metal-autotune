@@ -312,6 +312,16 @@ def write_bundle(out: Path, bundle: ModelBundle, patches: Sequence[Mapping], rep
         file = f"workloads/{_file_label(label + '.sequence_golden', taken)}.safetensors"
         mx.save_safetensors(str(out / file), {f"o{k}": t for k, t in enumerate(tensors)})
         sequence_goldens[label] = file
+    final_benchmark = dict(bundle.final_benchmark)
+    measured_steps = {name: row["steps"]
+                      for name, row in report_dict.get("final", {}).get("sequences", {}).items()
+                      if name in declared and row.get("steps")}
+    if measured_steps:
+        final_benchmark["steps_by_workload"] = measured_steps
+        final_benchmark["warmup_steps_per_sample"] = {
+            name: report_dict.get("step_ms", {}).get(name, {}).get("steps_per_sample", 1)
+            for name in measured_steps
+        }
     metadata = {
         "format_version": FORMAT_VERSION,
         "entry": model_path.relative_to(root).as_posix(),
@@ -336,7 +346,7 @@ def write_bundle(out: Path, bundle: ModelBundle, patches: Sequence[Mapping], rep
         "weight_sources": [{key: pin.get(key) for key in ("source", "requested_revision", "revision")}
                            for pin in (bundle.checkpoint_pins or [])],
         "checkpoint_resources_included": False,
-        "final_benchmark": dict(bundle.final_benchmark),
+        "final_benchmark": final_benchmark,
         "patches": [{"module_path": p["scope_path"], "kernel_ids": list(p["kernel_ids"])} for p in patches],
         "source_files": sorted(p.relative_to(root).as_posix() for p in files),
         "resource_files": sorted(p.relative_to(root).as_posix() for p in resources),
@@ -552,7 +562,7 @@ shapes and dtypes the job recorded; any other call falls back to the original co
 
 ```sh
 python validate.py --sequences  # outputs and cache state, including consecutive steps
-python benchmark.py    # time: {steps} consecutive steps, original vs patched, {pairs} alternated pairs
+python benchmark.py    # repeat the saved experiment, original vs patched, {pairs} alternated pairs
 ```
 
 `validate.py` uses the job's correctness rule on every saved workload. Edits
@@ -567,7 +577,10 @@ mismatch. Older bundles with saved fp32 references retain their original rule.
 `benchmark.py` runs the correctness check first, then times whole runs of
 consecutive steps for both models, alternating their order and cooling between
 runs, and exits nonzero unless the patched model is faster by more than the
-measurement's own uncertainty. `--steps` and `--pairs` override the job's settings.
+measurement's own uncertainty. By default it uses each workload's actual final
+measurement length, including extra repetitions used for very short forward calls.
+Library inference uses the saved generated-token count. `--steps` overrides the
+length for every workload; `--pairs` overrides the number of comparison pairs.
 
 ## Change it
 

@@ -159,9 +159,10 @@ def test_bundle_loads_validates_and_benchmarks_without_the_harness(tmp_path):
     report = Report()
     report.baseline = {"choice": "plain"}
     report.step_ms = {"main": {"before": 0.4, "after": 0.301, "baseline_at_end": 0.312,
-                               "speedup": 1.037, "stability": 0.9, "win_confirmed": True}}
+                               "speedup": 1.037, "stability": 0.9, "win_confirmed": True,
+                               "steps_per_sample": 7}}
     report.final = {"passed": True, "sequences": {"main": {
-        "steps": 3, "baseline_sequence_ms": 0.9, "candidate_sequence_ms": 0.87, "win_confirmed": False}}}
+        "steps": 7, "baseline_sequence_ms": 0.9, "candidate_sequence_ms": 0.87, "win_confirmed": False}}}
     bundle = ModelBundle(
         model_path=FIXTURES / "repeated_layers.py", baseline="plain",
         workloads={"main": [x], "main@L=2": [x_small]},
@@ -189,7 +190,8 @@ def test_bundle_loads_validates_and_benchmarks_without_the_harness(tmp_path):
     assert meta["workloads"]["main"] == {"file": "workloads/main.safetensors", "role": "declared",
                                          "shapes": [[4, 16]], "dtypes": ["float32"]}
     assert meta["workloads"]["main@L=2"]["role"] == "sweep"
-    assert meta["final_benchmark"] == {"steps": 3, "pairs": 4, "warmup_steps": 1}
+    assert meta["final_benchmark"] == {"steps": 3, "pairs": 4, "warmup_steps": 1,
+                                       "steps_by_workload": {"main": 7}, "warmup_steps_per_sample": {"main": 7}}
     assert meta["patches"] == [{"module_path": "layers.3", "kernel_ids": ["k_art_add"]},
                                {"module_path": "layers.2", "kernel_ids": ["k_art_add"]}]
     saved = mx.load(str(out / "workloads/main.safetensors"))
@@ -206,7 +208,7 @@ def test_bundle_loads_validates_and_benchmarks_without_the_harness(tmp_path):
 
     readme = (out / "README.md").read_text()
     for text in ("k_art_add", "`layers.3`", "`layers.2`", "0.312 ms untouched", "0.301 ms patched",
-                 "3 consecutive steps", "from artifact import load", "python validate.py",
+                 "7 consecutive steps", "from artifact import load", "python validate.py",
                  "python benchmark.py", "plain model exactly as build() returns it"):
         assert text in readme, text
     assert "—" not in readme
@@ -251,20 +253,20 @@ def test_bundle_loads_validates_and_benchmarks_without_the_harness(tmp_path):
     assert proc.stdout.count("PASS ") == 2 and "2 of 2 workloads match" in proc.stdout
 
     summary = tmp_path / "bench.json"
-    proc = subprocess.run([sys.executable, str(out / "benchmark.py"), "--steps", "3", "--pairs", "4",
+    proc = subprocess.run([sys.executable, str(out / "benchmark.py"), "--pairs", "4",
                            "--json", str(summary)], capture_output=True, text=True, timeout=300, cwd=tmp_path)
     assert proc.returncode in (0, 1), proc.stderr
     stdout = proc.stdout
     assert stdout.count("PASS ") == 3  # both workloads and the consecutive trajectory checked first
-    assert "main: 3 consecutive steps, original " in stdout and "(patched over original)" in stdout
+    assert "main: 7 consecutive steps, original " in stdout and "(patched over original)" in stdout
     # on a toy model the verdict is noise; the exit code must follow whatever the verdict was
     confirmed = "benchmark: confirmed speedup on at least one workload; no detected regressions" in stdout
     assert confirmed or "benchmark: no confirmed speedup" in stdout
     assert proc.returncode == (0 if confirmed else 1)
     rows = json.loads(summary.read_text())
-    assert rows["steps"] == 3 and rows["pairs"] == 4 and list(rows["workloads"]) == ["main"]
+    assert rows["steps"] == 7 and rows["pairs"] == 4 and list(rows["workloads"]) == ["main"]
     row = rows["workloads"]["main"]
-    assert row["steps"] == 3 and len(row["observations"]) == 8 and row["win_confirmed"] is confirmed
+    assert row["steps"] == 7 and len(row["observations"]) == 8 and row["win_confirmed"] is confirmed
     assert row["timing"]["n"] == 4 and row["baseline_sequence_ms"] > 0
 
 
