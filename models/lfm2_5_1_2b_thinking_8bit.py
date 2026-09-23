@@ -1,0 +1,8 @@
+"""LFM2.5-1.2B-Thinking with pretrained 8-bit weights. See models/README.md."""
+
+
+def build():
+    from mlx_lm import load
+
+    model, _ = load("LiquidAI/LFM2.5-1.2B-Thinking-MLX-8bit")
+    return model

@@ -17,6 +17,7 @@ dependencies = [
 [dependency-groups]
 dev = [
     "mlx-lm>=0.31.3",
+    "mlx-vlm>=0.6.17",
     "mlx-whisper>=0.4.3",
     "pytest>=8.0",
 ]
