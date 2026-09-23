@@ -160,7 +160,10 @@ recovery checkpoints. There is no automatic resume command.
 
 The final summary reports a verified artifact, no confirmed improvement, or a
 failure. A speedup is **original time divided by optimized time**, for the stated
-workload and baseline. `1.25x` means 20% less execution time. A faster isolated
+workload and baseline. `1.25x` means 20% less execution time. Library-generation
+results also show baseline and optimized generated tokens/sec: output tokens
+divided by the complete request time, including prompt processing. This is not
+decode-only throughput. Forward-only workloads retain latency measurements. A faster isolated
 kernel or a temporary acceptance during search is not the final result.
 
 - `report.json`: measured workloads, baseline, attempts, final checks, and outcome.

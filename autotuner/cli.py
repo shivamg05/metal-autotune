@@ -143,6 +143,8 @@ def _execute(args, parser):
 
 
 def _print_result(report, artifact):
+    from autotuner_runtime.sequence import throughput_text
+
     if artifact:
         shipped = sum(bool(r.get("s")) for r in report.regions)
         print(f"job complete: verified artifact with {shipped}/{len(report.regions)} regions optimized")
@@ -176,6 +178,8 @@ def _print_result(report, artifact):
             print(f"  {w}: {sequence['steps']} {description}: patched "
                   f"{sequence['candidate_sequence_ms']:.1f} ms vs untouched "
                   f"{sequence['baseline_sequence_ms']:.1f} ms, run whole and alternated: {result}")
+            if rates := throughput_text(sequence):
+                print(f"    {rates}")
     if artifact:
         print(f"artifact: {artifact}")
 

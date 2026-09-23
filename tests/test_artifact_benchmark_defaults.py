@@ -54,3 +54,27 @@ def test_benchmark_times_each_declared_length(tmp_path, monkeypatch, override, e
     assert result["steps_by_workload"] == dict(zip(("small", "large"), expected))
     assert result["steps"] == override
 
+
+
+def test_generation_benchmark_reports_request_throughput(tmp_path, monkeypatch, capsys):
+    metadata = {"use_library_inference": True, "final_benchmark": {"steps": 32}}
+    (tmp_path / "bundle.json").write_text(json.dumps(metadata))
+    monkeypatch.setattr(benchmark, "_HERE", tmp_path)
+    loads = []
+    def load(**settings):
+        loads.append(settings)
+        return SimpleNamespace(model=None)
+    validator = SimpleNamespace(validate=lambda *a: [],
+        saved_workloads=lambda m: [("prompt", [], "declared")])
+    monkeypatch.setattr(benchmark, "_module", lambda name, path:
+        SimpleNamespace(load=load) if "load" in name else validator)
+    timing = asdict(comparison_from_samples([1000.] * 8, [800.] * 8))
+    monkeypatch.setattr(benchmark, "compare_sequences", lambda *a, **kw: {
+        "timing": timing, "baseline_sequence_ms": 1000., "candidate_sequence_ms": 800.})
+    output = tmp_path / "result.json"
+    assert benchmark.main(["--json", str(output)]) == 0
+    assert all(settings['generated_tokens'] == 32 for settings in loads)
+    row = json.loads(output.read_text())["workloads"]["prompt"]
+    assert row["baseline_tokens_per_second"] == 32
+    assert row["candidate_tokens_per_second"] == 40
+    assert "baseline 32.00, optimized 40.00" in capsys.readouterr().out

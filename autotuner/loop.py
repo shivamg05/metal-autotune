@@ -66,7 +66,7 @@ from .workload import context_tokens, materialize, workload_seeds
 from autotuner_runtime.kernels import KernelSpec
 from autotuner_runtime.exact import bitwise_equal
 from autotuner_runtime.swap import require_independent_models
-from autotuner_runtime.sequence import make_sequence
+from autotuner_runtime.sequence import make_sequence, generation_throughput
 from autotuner_runtime.state import ContextSequence, context_step
 from autotuner_runtime.stats import workload_win
 
@@ -2448,6 +2448,7 @@ class JobRunner:
                                                     row["timing"]["candidate_ms"])
             row["steps"] = length if kind == "repeated_forward" else config.steps
             row["workload_kind"] = kind
+            row.update(generation_throughput(row))
             row["prefix_copy_included"] = self.context is not None
             results[name] = row
             self.log.append("sequence_comparison", workload=name, **row)

@@ -162,3 +162,17 @@ def test_bench_session_normalizes_chained_warmup_but_cools_entire_sample():
     assert session.timed(lambda: None) == pytest.approx(0.03)
     session.settle()
     assert slept == [pytest.approx(3 * 0.05)]
+
+
+def test_generation_throughput_uses_complete_request_time():
+    from autotuner_runtime.sequence import generation_throughput, throughput_text
+    row = {"workload_kind": "library_generation", "steps": 32,
+           "baseline_sequence_ms": 1000, "candidate_sequence_ms": 800}
+    assert generation_throughput(row) == {
+        "baseline_tokens_per_second": 32, "candidate_tokens_per_second": 40}
+    assert "baseline 32.00, optimized 40.00" in throughput_text(row)
+    assert "includes prompt processing" in throughput_text(row)
+    for kind in ("repeated_forward", "advancing_cache_fixed_tokens", None):
+        row["workload_kind"] = kind
+        assert generation_throughput(row) == {}
+        assert throughput_text(row) == ""

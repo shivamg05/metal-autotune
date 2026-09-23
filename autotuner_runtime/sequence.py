@@ -13,6 +13,26 @@ from mlx.utils import tree_flatten
 from .stats import comparison_from_samples
 
 
+def generation_throughput(row):
+    """Generated tokens per total request second, including prompt processing."""
+    if row.get("workload_kind") != "library_generation":
+        return {}
+    count = row["steps"]
+    return {
+        "baseline_tokens_per_second": count * 1000 / row["baseline_sequence_ms"],
+        "candidate_tokens_per_second": count * 1000 / row["candidate_sequence_ms"],
+    }
+
+
+def throughput_text(row):
+    rates = generation_throughput(row)
+    if not rates:
+        return ""
+    return (f"generated tokens/sec: baseline {rates['baseline_tokens_per_second']:.2f}, "
+            f"optimized {rates['candidate_tokens_per_second']:.2f} "
+            "(includes prompt processing; not decode-only throughput)")
+
+
 def make_sequence(step, inputs, steps: int):
     """A run of consecutive model calls on the same inputs, as one graph. Each
     call's smallest input carries a zero taken from the previous call's first

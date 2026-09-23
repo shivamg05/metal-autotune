@@ -415,7 +415,13 @@ def test_cli_sequence_label_matches_measurement(kind, label, capsys):
         "main": {"workload_kind": kind, "steps": 20,
                  "candidate_sequence_ms": 90, "baseline_sequence_ms": 100}}})
     _print_result(report, None)
-    assert label in capsys.readouterr().out
+    message = capsys.readouterr().out
+    assert label in message
+    if kind == "library_generation":
+        assert "baseline 200.00, optimized 222.22" in message
+        assert "not decode-only throughput" in message
+    else:
+        assert "tokens/sec" not in message
 
 
 def test_cli_generation_clock_is_not_called_forward_pass(capsys):

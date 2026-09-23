@@ -99,6 +99,10 @@ and required facts above are not.
   Gains are not averaged across shapes. Name the workloads that improved and
   distinguish unresolved measurements from proof that performance is unchanged.
   Final validation requires at least one resolved win and no resolved losses.
+- For library generation, report baseline and optimized generated tokens/sec
+  alongside speedup. Use the final sequence's `baseline_tokens_per_second` and
+  `candidate_tokens_per_second`; these include prompt processing and are not
+  decode-only throughput. Do not infer token counts from arbitrary workload names.
 - The final consecutive-step comparison measures the original against all edits
   together. Give the recorded number of steps and both total latencies. If you
   quote per-step averages, label them as averages. Keep this distinct from a

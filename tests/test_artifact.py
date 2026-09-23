@@ -570,3 +570,17 @@ def test_run_weight_sharing_copies_the_matching_prefix_state():
     assert check_outputs(lambda: a.correctness(x), lambda: b.correctness(x), 'same weights')['passed']
     b._cache[0].offset += 1
     assert a._cache[0].offset == 3
+
+
+def test_artifact_readme_reports_generation_throughput():
+    from autotuner.artifact.bundle import _result_lines
+    metadata = {"baseline": "compiled", "patches": [{}], "use_library_inference": True}
+    report = {"step_ms": {"prompt": {"after": 800, "before": 1000}},
+              "final": {"sequences": {"prompt": {
+                  "workload_kind": "library_generation", "steps": 32,
+                  "baseline_sequence_ms": 1000, "candidate_sequence_ms": 800}}}}
+    text = "\n".join(_result_lines(metadata, report))
+    assert "one generation request" in text
+    assert "32 generated tokens" in text
+    assert "baseline 32.00, optimized 40.00" in text
+    assert "not decode-only throughput" in text

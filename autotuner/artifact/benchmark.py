@@ -18,7 +18,7 @@ import mlx.core as mx
 _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE / "runtime"))
 
-from autotuner_runtime.sequence import BenchSession, compare_sequences, make_sequence  # noqa: E402
+from autotuner_runtime.sequence import BenchSession, compare_sequences, make_sequence, generation_throughput, throughput_text  # noqa: E402
 from autotuner_runtime.stats import PairedComparison, workload_win  # noqa: E402
 
 
@@ -118,6 +118,7 @@ def main(argv=None):
                                 warmup_steps=args.warmup_steps, label=label)
         row["steps"] = steps
         row["workload_kind"] = kind
+        row.update(generation_throughput(row))
         row["prefix_copy_included"] = bool(metadata.get("context"))
         rows[label] = row
         comparison = PairedComparison(**row["timing"])
@@ -128,6 +129,8 @@ def main(argv=None):
         print(f"{label}: {amount}, original {row['baseline_sequence_ms']:.1f} ms, "
               f"patched {row['candidate_sequence_ms']:.1f} ms, ratio {row['timing']['median_ratio']:.3f} "
               f"(patched over original), {verdict}")
+        if rates := throughput_text(row):
+            print(f"  {rates}")
     confirmed = workload_win(comparisons)
     if args.json:
         lengths = {row["steps"] for row in rows.values()}

@@ -364,6 +364,8 @@ def _ms(value: float) -> str:
 
 
 def _result_lines(metadata: dict, report: dict) -> list[str]:
+    from autotuner_runtime.sequence import throughput_text
+
     baseline = ("the model run under mx.compile" if metadata["baseline"] == "compiled"
                 else "the plain model exactly as build() returns it")
     lines = [f"Every timing below compares the patched model against {baseline}, "
@@ -380,14 +382,18 @@ def _result_lines(metadata: dict, report: dict) -> list[str]:
         verdict = ("confirmed above the timing noise" if clocks.get("win_confirmed")
                    else "not resolved above the timing noise, so treat it as no change")
         speedup = f", a {clocks['speedup']:.3f}x speedup" if clocks.get("speedup") else ""
-        lines.append(f"\n- `{name}`: one step took {_ms(untouched)} untouched and "
+        task = "one generation request" if metadata.get("use_library_inference") else "one step"
+        lines.append(f"\n- `{name}`: {task} took {_ms(untouched)} untouched and "
                      f"{_ms(clocks['after'])} patched{speedup}, {verdict}.")
         row = sequences.get(name)
         if row and row.get("steps"):
             verdict = ("confirmed" if row.get("win_confirmed") else "not resolved above the timing noise")
-            lines.append(f"  {row['steps']} consecutive steps, run whole and alternated: "
+            unit = "generated tokens" if row.get("workload_kind") == "library_generation" else "consecutive steps"
+            lines.append(f"  {row['steps']} {unit}, run whole and alternated: "
                          f"{_ms(row['baseline_sequence_ms'])} untouched, "
                          f"{_ms(row['candidate_sequence_ms'])} patched, {verdict}.")
+            if rates := throughput_text(row):
+                lines.append(f"  {rates}.")
     return lines
 
 
