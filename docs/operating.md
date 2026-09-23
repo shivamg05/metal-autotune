@@ -13,14 +13,16 @@ bind as much as the steps.
   honestly, which hides real wins. Before and during a run, the only thing
   that should touch the GPU is the run itself.
 - **The whole flow is the numbered steps.** Confirm the manifest names the
-  model and input shapes you mean (section 2), start the run (section 3),
-  watch it (section 4), report back (section 7). A ready-made manifest such as
-  `manifest.yaml` needs only sections 3, 4, and 7. Do not invent a different
-  sequence.
+  model and input shapes you mean (usage guide section 2), start the run
+  (usage guide section 3), then watch it and report back
+  ([section 7 below](#7-how-to-talk-to-the-person)). A ready-made manifest
+  such as `manifest.yaml` needs only usage guide section 3 and section 7 below.
+  Do not invent a different sequence.
 - **Do not edit the tool to make a run work.** If the job refuses to start,
   the message names the fix, which may involve the manifest, model file,
   or judge login/configuration. If the tool itself crashes or hangs, that is a bug:
-  capture the logs (section 5) and hand them to the maintainer; never patch it
+  capture the logs (see the usage guide's [troubleshooting](usage.md#troubleshooting))
+  and hand them to the maintainer; never patch it
   and rerun.
 - **Files you may create or edit:** a model file under `models/`, a manifest
   (a `*.yaml` file), and your own `--work-dir` (the run creates it; you only
@@ -34,7 +36,7 @@ bind as much as the steps.
 ### Required milestone monitoring
 
 When operating for a person, start a read-only background watcher as soon as
-section 3 launches the job. Use the session's existing process/wait facilities;
+the job launches (usage guide section 3). Use the session's existing process/wait facilities;
 no installed service or separate optimization process is needed. Watching is
 part of running the job, not something to wait for the person to request.
 
