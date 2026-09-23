@@ -1,19 +1,23 @@
 # Using an artifact
 
-A successful run prints `verified artifact` and its folder path. This is the
-code bundle to use in your application. A checkpoint saved during search has
-not passed final validation and is not the finished artifact.
+When a run succeeds, it prints `verified artifact` and a folder path. That
+folder is the artifact: a self-contained code bundle that makes your model use
+the faster kernels. You don't need this optimizer installed to use it.
 
-Copy the folder into your project as `artifact/`, then install its dependencies
-in your application's environment:
+(The `checkpoints/` folder is not the artifact. Checkpoints are saved during the
+search in case the run dies, and haven't passed the final checks.)
+
+## Apply it to your model
+
+Copy the folder into your project as `artifact/` and install its pinned
+dependencies:
 
 ```sh
 python -m pip install -r artifact/requirements.txt
 ```
 
-For normal inference, copy `artifact/` into your project, install its
-`requirements.txt`, load your chosen compatible weights, then apply the patch.
-For an MLX-LM model whose original `build()` returns the model directly:
+Then load your model the way you normally do and patch it. For an MLX-LM model
+whose `build()` returns the model directly:
 
 ```python
 from mlx_lm import load, generate
@@ -24,119 +28,132 @@ model = apply(model)
 text = generate(model, tokenizer, prompt="Explain gravity simply.")
 ```
 
-For custom models, use the original `build()` and weight-loading API before
-`apply(model)`. Always use the return value. The operations, module layout,
-weight shapes, dtypes, and quantization must remain compatible with the model
-that was optimized. If the original builder adds a wrapper, recreate it too.
-Different weight values do not require copying weights into the artifact;
-architecture or quantization changes require another optimization run. Verify
-correctness and speed on the weights and workload you actually deploy.
+For a custom model, build and load it the same way your original `build()`
+does, then call `apply(model)`. **Always use the returned model.** If your
+`build()` wraps the model in something, recreate that wrapper too.
 
-Alternatively, `from artifact import load` followed by
-`load().inference_model` builds from the bundled source and exposes the patched
-model for normal inference. This uses `build()`'s original weight selection;
-`load()` has no separate checkpoint-path argument. Each artifact's `README.md`
-includes both loading routes and a custom-model example.
+**What has to match.** The kernels were built for one exact model structure, so
+the operations, module layout, weight shapes, dtypes and quantization all have
+to match the model that was optimized:
 
-For workloads with `context`, `load()` is the repeatable benchmark step. Use
-`load().inference_model` for normal inference with an advancing caller-owned
-cache. A wrapper that includes cache-dependent work falls back to the
-original module at untested positions or cache layouts; stateless projection kernels remain
-usable as the cache grows. The final sequence measurement includes those
-fallbacks.
+- **Different weight values, same everything else** (e.g. a fine-tune that
+  keeps the same layers and quantization): fine as is.
+- **Different architecture or quantization** (e.g. 4-bit → 8-bit): run the
+  optimizer again.
 
-`build()` retains its original weight-loading behavior: pretrained checkpoints
-come from their usual cache, download or local path, and random initialization
-remains random. No weights are automatically copied into final artifacts or
-recovery packages. `ARTIFACT_FILES` is an explicit opt-in for local resources
-that the author wants included; other external paths/settings must be available
-where the model runs. Dynamic checkpoint paths and adapter options remain the
-builder's responsibility rather than being rewritten by export.
+Either way, check correctness and speed on the weights and workload you'll
+actually ship.
 
-Before loading, the tool checks that model imports can be packaged. External
-dependencies need an installed distribution or source in the model project.
-Actual MLX-LM snapshots are captured during loading and held fixed for later
-comparison builds within the same run. The bundle records those sources and
-revisions as provenance, without redirecting its loader to the original
-machine's cache paths. Pin a checkpoint revision in the model source when you
-need future builds to select that exact revision.
+**Or let the bundle build the model.** `from artifact import load`, then use
+`load().inference_model`. This runs the bundled copy of your `build()` and
+gives you the patched model. It loads whatever weights `build()` picks; there's
+no argument to point it at a different checkpoint. Each artifact's own
+`README.md` shows both routes, plus a custom-model example.
 
-Export writes into a temporary sibling directory and validates there before
-publication. A write or validation failure preserves accepted checkpoints and
-any existing artifact; a failed publication restores the previous artifact.
-The bundle records whether outputs must match exactly or within the manifest
-rtol/atol allowance. Validation always compares against the bundled original;
-new runs do not require fp32 reference files.
-Fresh-process validation builds original and patched models with identical
-fresh weights and checks the recorded workloads and cache state. Weight sharing
-happens before prefix caches are filled. This supports random initialization
-without freezing weights or comparing unrelated random models. Saved test inputs
-remain in the bundle for repeatable validation and benchmarking; model weights
-do not. Validation uses the existing Hugging Face cache in offline mode, so it
-will report missing external resources instead of downloading during export.
+### Decode (`context`) runs
 
-From inside the artifact folder, run:
+If the run optimized a decode step (a workload with `context`), `load()` rebuilds
+exactly the step that was measured. It's what the benchmark uses. For real
+generation, where your code owns the cache and it keeps growing, use
+`load().inference_model`.
+
+As the cache grows past the positions the run tested:
+
+- **Replaced parts that touch the cache** (e.g. an attention block that reads
+  or writes it) fall back to the original code at any position or cache layout
+  that wasn't tested.
+- **Replaced parts that don't** (e.g. weight projections) keep using their
+  kernels as the cache grows.
+
+The final multi-step measurement already includes those fallbacks.
+
+## Weights and other files
+
+**Weights are never copied into the bundle automatically**, and that includes
+the recovery checkpoints. The bundled `build()` loads weights exactly as your
+original did: a pretrained checkpoint comes from the usual Hugging Face cache,
+download or local path, and random weights stay random.
+
+So whatever `build()` needs has to exist on the machine where you run the
+bundle: checkpoints, local files, environment settings, extra libraries.
+
+- **Want a local data file included?** Add `ARTIFACT_FILES = [...]` to your
+  model file, as a plain list of relative paths. Your model's local Python
+  imports are copied automatically; other files are only bundled if they're
+  listed there.
+- **Checkpoint paths and adapter options** that `build()` works out at runtime
+  stay as they are. Export doesn't rewrite them.
+
+**Code dependencies.** Before loading the model, the tool checks that
+everything your model file imports can be packaged. Anything outside the
+standard setup must be either an installed package or source code inside your
+model project.
+
+**Checkpoint versions.** During a run, the tool records which MLX-LM checkpoint
+snapshot it loaded and uses that same snapshot for every comparison copy. The
+bundle notes the source and revision for reference, but it doesn't force that
+revision or point at the original machine's cache. If future builds must get
+exactly that revision, pin it in your model file.
+
+## Check it yourself
+
+The bundle carries the exact inputs the run measured, so you can re-check it
+on your own machine. From inside the artifact folder:
 
 ```sh
 python validate.py     # patched vs original outputs on the saved inputs, the job's own rule
 python benchmark.py    # repeat the saved final measurement; exits 1 unless a win is confirmed
 ```
 
-The bundle preserves the measured execution mode, including compiled model
-scopes where applicable. Its benchmark defaults to the actual repetition count
-recorded for each workload, even when short forward workloads needed more
-repetitions than the manifest requested. `--steps` explicitly overrides that
-count and changes the experiment; older bundles without recorded counts use
-their manifest setting. Timing noise and a different machine can still change
-the measured result.
+- **`validate.py`** compares the patched model with the bundled original, using
+  the run's own rule: exact match, or within the manifest's `rtol`/`atol`.
+  It doesn't need any fp32 reference files.
+- **`benchmark.py`** reruns the final measurement the way it was done: same
+  execution mode (including compiled parts of the model) and, by default, the
+  same number of repetitions the run actually used. That can be more than the
+  manifest asked for, because short direct-call workloads get extra repetitions.
+  Passing `--steps` changes that count, which makes it a different experiment.
+  Older bundles that didn't record a count use the manifest's.
 
-Keep the pinned runtime dependencies. To change model architecture or
-quantization, run the optimizer again.
+Timing noise, or a different machine, can still move the number.
 
-## What the bundle contains
+Keep the pinned dependencies in `requirements.txt`.
 
-Before publishing the artifact, the tool loads it in a fresh process and
-checks every declared workload and sweep against the patched model, both
-through `apply()` and through the bundle's own `load()`. A failed check never
-publishes the staged result. The CLI requires a fresh destination and defaults
-to `<work-dir>/artifact/`. It rejects paths that overlap the run's logs,
-kernels, or checkpoints before starting GPU work.
+## How the bundle is checked before you get it
 
-The artifact folder is a code bundle that needs no optimizer installation:
-the model's source copied unchanged, the input
-tensors the job measured on (and, for a workload with a `context`, the tokens
-that filled the cache, so `load()` rebuilds the same step), the kernels and
-generated wrappers, a pinned `requirements.txt`, and a `README.md` written for
-that job that states the measured result in plain words and lists which part
-of the model got which kernel. It loads, verifies, and re-times itself:
+Export builds the bundle in a temporary folder next to the destination and only
+moves it into place once it passes. If writing or checking fails, your accepted
+checkpoints and any earlier artifact are left untouched. If the final move
+fails, the previous artifact is restored.
 
+The check runs in a fresh process:
 
-## Reading the detailed report
+- It builds the original and the patched model with the **same freshly loaded
+  weights**. (Weights are shared before any decode cache is filled.) That way
+  randomly initialized models compare fairly, without freezing their weights
+  or comparing two unrelated random models.
+- It checks every workload and every sweep size in the manifest, through both
+  `apply()` and the bundle's own `load()`, including the cache state for
+  decode runs.
+- It runs **offline**, using your existing Hugging Face cache. If something the
+  model needs is missing, it reports that instead of downloading it mid-export.
 
-The job prints how many spots got a proven speedup, the model's time per
-step before and after, and the time for a whole sequence of consecutive
-steps before and after, both against the baseline the manifest chose
-(compiled unless you said otherwise). The final comparison decides whether a win ships. Its task is the one
-selected by the manifest; it need not represent an entire application.
-`<work-dir>/report.json` has the full account: every spot, why work on it
-ended, every attempt with its verdict (each with `floor_ms`, the physical
-floor timed beside that kernel), and both step timings, plain and compiled.
-`step_ms[workload].win_confirmed` says whether the final measurement resolved
-a speedup for an installed replacement. The finished model is also measured
-against the baseline the job did not ship against, paired at the end of the job:
-under the compiled baseline `step_ms[workload].speedup_vs_plain` (against eager
-MLX, compile's own gain included), under the plain baseline `speedup_vs_compiled`
-(eager plus its kernels against the untouched model under mx.compile; under 1
-means compile alone is faster). `plain_win_confirmed` and its siblings say
-whether that comparison resolved. When the final check finds the outputs
-right and cannot confirm the win, the job still ends normally: `final.passed` is
-false with a `reason`, the session's `outcome` is `unconfirmed`, every measured
-number stays in the report, and no artifact is written, since only a confirmed
-win ships. Wrong outputs end the job with an error. `step_ms[workload].min_win_ms` is
-the least a region win had to save per step there (1% of the step, at most
-30 us). `step_ms[workload].steps_per_sample`
-is how many dependent steps one timed sample held; more than one means the
-step was too short to bring the GPU clock up on its own, and every
-whole-model number is still per step. A nominal `speedup` ratio alone can
-be noise, especially when nothing was installed. The final timing record
-comes from the same comparison as the final whole-model validation.
+If any check fails, nothing is published.
+
+**Where it goes.** By default, `<work-dir>/artifact/`. You can pick another
+destination, but it has to be new, and it can't overlap the run's logs,
+kernels or checkpoints. The tool rejects a bad path before any GPU work starts.
+
+## What's in the bundle
+
+- Your model's source code, copied unchanged.
+- The exact inputs the run measured. For decode runs, this includes the tokens
+  that filled the cache, so `load()` rebuilds the same step.
+- The kernels and the generated code that plugs them into your model.
+- A pinned `requirements.txt`.
+- `validate.py` and `benchmark.py`, so the bundle can check and re-time itself.
+- A `README.md` written for that run. It states the measured result in plain
+  words and lists which part of the model got which kernel.
+
+What each number in `report.json` means is covered in the
+[usage guide](usage.md#whats-in-reportjson).

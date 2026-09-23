@@ -1,48 +1,37 @@
 # metal-autotune
 
-Optimize GPU kernels inside an MLX model on Apple Silicon.
+Make an MLX model faster on Apple Silicon without changing its answers.
 
-Give the tool a model and the input shapes you care about. An AI proposes Metal
-kernels; an independent harness checks their outputs and measures the whole
-workload. Confirmed improvements become a portable code bundle you can apply to
-a compatible model. Finding no confirmed improvement is a valid result.
+You give the tool a model and the inputs you care about. An AI writes custom
+Metal GPU code (kernels) for parts of the model. A separate harness tests every
+one, and keeps it only if the outputs still match the original (bit for bit,
+or within a tolerance you control when the math is reordered) and the **whole
+workload** gets measurably faster. Whatever survives is packaged as a code bundle you
+apply to your model.
 
-## Results: up to 2.34× over compiled MLX, 3.12× over eager MLX
+Sometimes nothing survives. That's a real answer, not a crash: no candidate
+beat the baseline by a margin the tool could confirm within its attempt budget.
 
-**19 of 35 MetalBench standard workloads improved beyond `mx.compile` on an
-Apple M4.** Of all 35, 17 exceeded 1.1× and 8 exceeded 1.25× against compiled MLX.
-
-Across all 35 workloads, geometric mean speedup was **1.16× over compiled MLX** and **1.46× over eager MLX**.
-
-| Workload | vs compiled MLX | vs eager MLX |
-|---|---:|---:|
-| Group normalization | **2.34×** | **3.12×** |
-| Instance normalization | **2.23×** | **3.06×** |
-| Cross-entropy loss | **1.54×** | **1.83×** |
-| Scaled dot-product | **1.47×** | **1.47×** |
-| SwiGLU | **1.39×** | **1.45×** |
-
-Both columns compare whole-workload wall-clock time against the compiled
-optimized version, using warmed repeated calls. The eager comparison includes
-compilation's own gains. The 16 workloads without a shipped kernel score 1.00×
-against compiled MLX. These are synthetic workloads, not full-model speedups.
-
-MLX 0.32.2; `claude-fable-5-1` at low effort; up to 30 attempts per problem.
-[All 35 results, raw timings, kernels, and reproduction instructions](metalbench/published/2026-09-19-m4/README.md).
+**Does it work?** On MetalBench, a set of 35 small synthetic GPU workloads, one
+run on an Apple M4 made 19 of them faster than MLX's own compiler
+(`mx.compile`). The best was 2.34× faster, and the average (geometric mean) across all
+35 was 1.16×, counting the ones it couldn't speed up as 1.00×. That's what one
+benchmark run found, not a ceiling. See [MetalBench results](#metalbench-results)
+for the full breakdown.
 
 ## Quickstart
 
-Use an Apple Silicon Mac. The project uses Python 3.12 and MLX 0.32.2;
-`uv` installs the pinned Python dependencies for you.
+You need an Apple Silicon Mac. `uv` installs the pinned Python 3.12 and
+MLX 0.32.2 setup for you.
 
-1. Install [Apple's Command Line Tools](https://developer.apple.com/library/archive/technotes/tn2339/_index.html)
-   if needed: run `xcode-select --install` in Terminal and finish the installer.
-   They provide the C++ compiler used by the graph extension.
-2. Install [uv](https://docs.astral.sh/uv/getting-started/installation/) and
-   [Claude Code](https://code.claude.com/docs/en/setup). Run `claude` once,
-   complete sign-in, then exit its session. You need an account with Claude Code
-   access. Existing Codex and Gemini CLI logins are also supported.
-3. Get the repo and run the small example:
+1. **Install [Apple's Command Line Tools](https://developer.apple.com/library/archive/technotes/tn2339/_index.html)**
+   if you don't have them: run `xcode-select --install` and finish the
+   installer. The tool needs their C++ compiler to build a small extension.
+2. **Install [uv](https://docs.astral.sh/uv/getting-started/installation/) and
+   [Claude Code](https://code.claude.com/docs/en/setup).** Run `claude` once,
+   sign in, and exit. Claude Code is the AI that writes the kernels, so your
+   account needs Claude Code access. A signed-in Codex or Gemini CLI works too.
+3. **Clone the repo and run the small example:**
 
 ```sh
 git clone https://github.com/shivamg05/metal-autotune.git
@@ -51,30 +40,39 @@ uv sync --locked
 uv run autotune run examples/tiny_mlp.yaml --judge claude-cli
 ```
 
-Already have the checkout? Run the last two commands from its root directory.
-Keep this terminal open until the job finishes. The tool checks the judge
-connection before loading the model and builds its graph extension on first use.
+If you already have the repo, just run the last two commands from its root.
 
-This example uses a small randomly initialized model and downloads no weights.
-Judge calls may consume your provider's subscription allowance or API credits.
-Keep other GPU work quiet. Search and validation take longer than a single model
-call, and an attempt budget is not a time limit.
+This example is a tiny model with random weights, so nothing downloads. A few
+things to know while it runs:
 
-The CLI prints its output paths. New jobs default to a unique folder under
-`runs/`; use `--work-dir /your/output/path` to choose another location.
+- **Leave the terminal open** until it finishes. Expect it to take a while:
+  each attempt gets checked and timed, and the budget counts attempts, not
+  minutes.
+- **Keep other GPU work quiet.** Background load makes the timings noisy.
+- **Kernel requests use your AI provider's allowance** (subscription or API
+  credits).
+- Before it loads the model, the tool checks that it can reach the AI. It also
+  builds its extension the first time you run it.
 
-- `report.json`: measurements, attempts, failures, and final outcome.
-- `run.jsonl` and `candidates.log`: progress and per-candidate results.
-- `artifact/`: produced only when a final improvement is confirmed and export passes.
+**What you get.** Results go to a new folder under `runs/`, and the tool prints
+its path. Use `--work-dir /your/path` to pick a different folder.
 
-The final summary tells you whether an artifact was verified, no improvement
-was confirmed, or the job failed. An isolated kernel speedup is not a shipped
-model speedup. Use [the artifact guide](docs/artifacts.md) after a verified win.
+- `report.json`: every measurement, attempt and failure, plus the final outcome.
+- `run.jsonl` and `candidates.log`: progress and a result for each attempt.
+- `artifact/`: the optimized code bundle. It only appears when the final check
+  confirms a speedup and the bundle passes its own validation.
+
+The final summary tells you which of three things happened: a verified
+artifact (`job complete: verified artifact ...`), no confirmed improvement, or
+a failure. A kernel that
+is fast on its own doesn't count; only a confirmed whole-model speedup ships.
+If you got an artifact, see [the artifact guide](docs/artifacts.md).
 
 ## Run through an AI agent
 
-For progress updates without reading logs yourself, open this repo in a coding
-agent after completing setup and give it this prompt:
+Don't want to watch logs? Once setup is done, open this repo in a coding agent
+(Claude Code, Codex, …) and paste this. The agent starts the run, watches it,
+and messages you when something happens:
 
 ```text
 Follow RUNNING.md to run metal-autotune on manifest.yaml with --judge claude-cli
@@ -85,40 +83,57 @@ improvements, errors, and final validation. Report the final result and artifact
 path, or explain why nothing shipped.
 ```
 
-Replace `manifest.yaml` with your chosen workload; use `examples/tiny_mlp.yaml`
-for the download-free example. The supervising agent launches and monitors the
-run. `--judge claude-cli` selects the separate AI that proposes kernel changes;
-it does not have to be the same provider as your supervising agent.
+Swap `manifest.yaml` for your own manifest, or use `examples/tiny_mlp.yaml`
+for the download-free example.
+
+There are two AIs here, and they can come from different providers. The agent
+you're chatting with runs and watches the job. The one named by `--judge`
+(`claude-cli` here) is the one that writes kernels.
 
 ## Model examples
 
-The repo includes [model definitions and workload manifests](models/README.md)
-for Qwen, Llama, Mamba, RecurrentGemma, and Whisper, plus a randomly initialized
-FLUX transformer. The Stable Diffusion integration requires extra setup. These show how to target language,
-audio, and image models. Model weights are downloaded when needed, not committed.
+The [model catalog](models/README.md) has ready-made targets for language,
+audio and image models:
 
-For example, optimize an MLX-LM request with a 128-token Qwen3-4B prompt and
-one generated token, against the compiled baseline:
+- **Language:** Qwen3, Qwen3.5, Llama 3, Mamba, RecurrentGemma
+- **Audio:** the Whisper encoder
+- **Image:** a FLUX transformer with random weights
+
+It also has newer targets, including LFM2.5, Qwen3.5-9B, Qwen3.8-27B and Muse Glimmer 30B.
+These haven't been through a full optimization run yet. Stable Diffusion is
+there too, but needs extra setup. Weights download the first time you use a
+model and are never committed to the repo.
+
+For example, this makes Qwen3-4B faster at reading a 128-token prompt and
+producing one token, measured against compiled MLX:
 
 ```sh
 uv run autotune run models/workloads/qwen3_4b_prefill_128.yaml --judge claude-cli
 ```
 
-Check the example index for dependencies and workload limits. The small MLP in
-the quickstart is the simplest starting point and needs no download.
+The catalog lists each model's dependencies and limits. If you just want to try
+the tool, the tiny example in the quickstart is still the easiest start.
 
 ## Use your own model
 
-Provide a Python file with `build()` returning a callable MLX model, and a YAML
-manifest describing inputs, correctness tolerances, and attempt budgets.
-The [usage guide](docs/usage.md) explains the contract. Existing model adapters
-and their dependencies are listed in [models/README.md](models/README.md).
+You need two files:
+
+1. **A Python file** with a `build()` function that returns your MLX model.
+   The [usage guide](docs/usage.md#1-provide-a-model) has the rules, and
+   [models/](models/README.md) has working examples to copy.
+2. **A manifest**, a short YAML file saying which inputs to speed up, how many
+   attempts to allow and, if you want, how strict the correctness check is.
+   [Write a manifest](docs/manifest.md) has examples you can copy.
+
+Then run it. Any supported AI can write the kernels. Here Codex does, with
+`--model` picking which Codex model:
 
 ```sh
 uv run autotune run path/to/manifest.yaml --judge codex --model YOUR_MODEL_ID
 ```
 
-To stop searching while still finishing validation and packaging:
+Found enough and want to wrap up early? This stops new attempts but still runs
+the final checks and packages the result:
 
 ```sh
 uv run autotune finish --work-dir runs/YOUR_RUN
@@ -126,29 +141,77 @@ uv run autotune finish --work-dir runs/YOUR_RUN
 
 ## Use the optimized model
 
-Copy the resulting artifact into your application and install its
-`requirements.txt`. Load a compatible model with your normal weight-loading API,
-then use the return value of `artifact.apply(model)`. The bundle does not copy
-weights by default. Shapes outside verified coverage use the original computation.
-See [artifact usage and compatibility](docs/artifacts.md) and the README generated
-inside each artifact.
+Copy the `artifact/` folder into your app and install its `requirements.txt`.
+Load your model the way you normally do, then patch it:
 
-## Benchmark and develop
+```python
+from artifact import apply
+model = apply(model)   # always use the returned model
+```
 
-[MetalBench](metalbench/README.md) runs a suite of small workloads:
+Keep in mind:
+
+- **Weights aren't included by default.** You load them yourself as usual. The model's
+  architecture and quantization have to match what was optimized, but the
+  weight values can differ.
+- **Only tested input sizes get the new kernels.** Anything else quietly runs
+  the original code, so it's still correct, just not faster.
+
+More in [the artifact guide](docs/artifacts.md) and the README inside each
+artifact.
+
+## MetalBench results
+
+[MetalBench](https://github.com/Lazarus-931/MetalBench) is a Metal adaptation
+of KernelBench. We ran the 35 workloads in its standard set on an Apple M4.
+They're small synthetic problems, like a norm followed by a matmul, not full
+models. The numbers are what one run found on this benchmark, not a ceiling:
+other models and workloads can gain more, or less.
+
+- **19 of 35 got faster than `mx.compile`.** 17 of them beat 1.1×, and 8 beat 1.25×.
+- **Geometric mean across all 35: 1.16× vs compiled MLX, 1.46× vs eager MLX.**
+  The 16 workloads with no win count as 1.00×.
+
+| Workload | vs compiled MLX | vs eager MLX |
+|---|---:|---:|
+| Group normalization | **2.34×** | **3.12×** |
+| Instance normalization | **2.23×** | **3.06×** |
+| Cross-entropy loss | **1.54×** | **1.83×** |
+| Scaled dot-product | **1.47×** | **1.47×** |
+| SwiGLU | **1.39×** | **1.45×** |
+
+How to read the columns:
+
+- **vs compiled MLX** is the harder bar. `mx.compile` is MLX's own optimizer,
+  so a win here comes on top of what MLX already does for you.
+- **vs eager MLX** compares against plain, uncompiled MLX, so it includes the
+  gain from compiling as well.
+
+Both columns measure the same optimized model, timing the whole workload with
+warmed-up, repeated calls. Only the baseline changes.
+
+Setup: MLX 0.32.2; judge `claude-fable-5-1` at low effort; up to 30 attempts per problem.
+[All 35 results, raw timings, kernels, and reproduction instructions](metalbench/published/2026-09-19-m4/README.md).
+
+To run the same suite yourself ([MetalBench guide](metalbench/README.md)):
 
 ```sh
 uv run python metalbench/run.py --set standard --baseline compiled \
   --budget-per-region 10 --budget-total 30 --judge claude-cli --tag first-run
 ```
 
-- [RUNNING.md](RUNNING.md): starting point for an agent operating a run.
-- [Architecture and invariants](docs/architecture.md): how the harness works.
-- [Judge protocol](docs/judge-protocol.md): custom providers and file-based judging.
-- [Limitations](docs/limitations.md): what results and coverage do not guarantee.
+## Further reading
 
-Source lives in `autotuner/` and `autotuner_runtime/`. Tests stay in `tests/`;
-optional measurement diagnostics live in `tools/`. Generated runs are ignored by Git.
+- [Limitations](docs/limitations.md): what a result does and doesn't promise.
+  Worth reading before you quote a number.
+- [RUNNING.md](RUNNING.md): where an agent running a job for you should start.
+- [Architecture](docs/architecture.md): how the harness works and the rules it never breaks.
+- [Judge protocol](docs/judge-protocol.md): how to plug in another AI provider,
+  or answer kernel requests by hand.
+
+Code lives in `autotuner/` and `autotuner_runtime/`, tests in `tests/`, and
+optional measurement scripts in `tools/`. Run output under `runs/` is ignored
+by Git.
 
 ## License
 

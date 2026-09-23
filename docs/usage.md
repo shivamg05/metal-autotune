@@ -1,12 +1,14 @@
 # Running an optimization
 
-Start with the [quickstart](../README.md#quickstart) for installation and a small
-example. Commands below run from the repository root. For a larger target,
-choose a [model example](../models/README.md).
+This is the full path from "I have a model" to "I have a faster model". If you
+haven't installed anything yet, do the [quickstart](../README.md#quickstart)
+first. Run every command here from the repo root. Want a ready-made target
+instead of your own? Pick one from the [model catalog](../models/README.md).
 
 ## 1. Provide a model
 
-Write a Python file with a `build()` function that returns a callable MLX model:
+Write a Python file with a `build()` function that returns your MLX model,
+ready to call:
 
 ```python
 def build():
@@ -15,112 +17,30 @@ def build():
     return model
 ```
 
-Put downloads and weight loading inside `build()`, not at import time. Resolve
-local file paths relative to `__file__`, so the model works from another working
-directory. Return fresh model and layer instances each time; do not reuse a
-module-global model. The harness builds independent comparison models and shares
-their weights. Seeding random initialization inside `build()` also makes separate
-runs repeatable.
+The tool calls `build()` several times, to get separate "original" and
+"optimized" copies it can compare. That's where these rules come from:
 
-The tool keeps the model's precision and quantization. It captures supported
-MLX operations and custom Metal kernels automatically; no tracing hooks are
-needed in your model. Unsupported regions are reported and skipped.
+- **Load inside `build()`, not at import time.** That includes downloads and
+  weight loading.
+- **Return a new model every call.** Don't keep one model in a global and hand
+  it back each time. (The tool shares weights between the copies itself.)
+- **Resolve local file paths relative to `__file__`**, so the file still works
+  when it's run from another directory.
+- **Using random weights?** Seed them inside `build()` so separate runs get the
+  same model.
 
-## 2. Define what to measure
+You don't have to change your model code. The tool finds the MLX operations,
+and any custom Metal kernels you already use, on its own; no hooks needed. It
+never changes your model's precision or quantization. Parts of the model it
+can't handle are skipped and listed in the report.
 
-A manifest is a YAML file describing the model, its inputs, and the search
-budget. Save this example in the repo root as `my_run.yaml`:
+## 2. Write a manifest
 
-```yaml
-model: models/llama8b.py
-baseline: compiled
-use_library_inference: true
-workloads:
-  - name: first_token
-    inputs:
-      - shape: [1, 512]
-        dtype: int32
-        low: 0
-        high: 128000
-budget: {per_region: 8, total: 24}
-final_benchmark: {steps: 1, pairs: 4, warmup_steps: 3}
-```
-
-This measures a complete MLX-LM request for one output token from a 512-token
-prompt, including sampling and any work the library queues before returning.
-It is not a pure prefill-only timer. Loading and tokenization are excluded. Token IDs are
-synthetic, sampled from `[low, high)`; keep that range within the vocabulary.
-Model paths are relative to the manifest's directory.
-
-Choose the measurement explicitly:
-
-| Setting | What gets timed |
-|---|---|
-| `use_library_inference: true` | MLX-LM processes the prompt and produces `final_benchmark.steps` tokens, including sampling and cache updates. `steps: 1` targets the first token; `steps: 32` includes generating 32 tokens. |
-| `use_library_inference: false` | Calls the model directly with the declared inputs. For example, one encoder call or one denoiser call. This does not include a surrounding transcription or image-generation pipeline. |
-
-Library inference currently supports complete MLX-LM language models with one
-input shaped `[T]` or `[1, T]`. Explicit `true` fails preflight when unsupported.
-If omitted, the tool selects a mode based on model/input support and records it.
-Workload names are labels, not instructions: naming a workload `prefill` or
-`decode` does not configure its behavior.
-
-`baseline: compiled` is the default. Stateless forward calls run under
-`mx.compile`. For library inference, the harness compiles supported model scopes
-while the library handles generation. Stateful forward calls that cannot safely
-be compiled use a plain baseline. The report records the actual choice and
-reason; requesting compilation does not guarantee every part can be compiled.
-`baseline: plain` compares against the model's existing execution instead.
-
-### Cache and decode
-
-In library inference mode, each measurement starts with a fresh empty cache
-unless `context` supplies an existing prefix. In forward mode, no `context`
-means no cache is supplied.
-
-- `context: 0` supplies an empty cache.
-- `context: 512` prepares a cache containing 512 synthetic tokens before timing.
-- A controlled single decode step uses `use_library_inference: false`, token
-  input shape `[1, 1]`, and `context: 512`.
-
-During candidate comparisons, the cache is restored between trials so both
-models start in the same state. For final forward benchmarks with a cache,
-`steps` consecutive calls advance independent copies of that state, using the
-same input tokens in both arms. With `steps: 1`, the final check measures one
-call. Prefix-copy setup is included equally in these sequence timings.
-Currently a manifest with `context` must contain only one workload with one
-token input. Supported cache APIs and model-specific limits are listed in the
-[model examples](../models/README.md).
-
-### Shapes, correctness, and budget
-
-- Add entries under `workloads` to optimize several specific input shapes.
-  A candidate names one workload to improve and must show no resolved slowdown
-  on the others. Final confirmation requires at least one resolved improvement
-  and no resolved regressions; gains are not averaged across workloads.
-- Named dimensions such as `shape: [1, L]` use `primary: {L: 512}` for search.
-  `sweep: {L: [32, 128, 512]}` adds correctness checks, not extra optimization
-  targets. Without an explicit primary, the largest sweep value is used;
-  the default sweep is `[1, 13, 50, 4096]`. Untested signatures use the original
-  computation. Workload names cannot contain `@`, reserved for sweep labels.
-- `budget: {per_region: 8, total: 24}` permits up to eight attempts on each
-  region and 24 overall. A region is a replaceable group of operations. Budgets
-  count attempts, not minutes or provider tokens. Defaults are 25 and 250.
-  The first up to four attempts explore different designs proposed by the AI;
-  later attempts can refine, revisit, or combine designs. See the
-  [architecture](architecture.md) for the search flow.
-- Arithmetic-preserving changes require bit-identical outputs. Reordered
-  floating-point arithmetic uses per-dtype tolerances, or your explicit
-  `tolerances: {rtol: ..., atol: ...}`. The check is
-  `abs(new - original) <= atol + rtol * abs(original)`. Integer outputs remain
-  exact. Tolerances must be finite, nonnegative, and representable in float32.
-- `final_benchmark` defaults to `{steps: 10, pairs: 4, warmup_steps: 3}`.
-  Forward benchmarks repeat complete calls; short stateless workloads may use
-  more repetitions to make timing meaningful. Library inference keeps the
-  requested generated-token count. Each pair compares original and patched
-  execution, with order balanced across pairs. `pairs` must be even and at
-  least four. Warmup and cooling are handled by the tool. Actual repetition
-  counts are saved with the result and reused by the exported benchmark.
+The manifest is a short YAML file that says which inputs to make faster and how
+many attempts to allow. [Write a manifest](manifest.md) has examples to copy,
+including time to first token, a single decode step and a plain model call, plus
+every available field. Save one as `my_run.yaml` in the repo root and change its
+model path and inputs. Paths inside the manifest are relative to the manifest file.
 
 ## 3. Run it
 
@@ -128,62 +48,115 @@ token input. Supported cache APIs and model-specific limits are listed in the
 uv run autotune run my_run.yaml --judge claude-cli
 ```
 
-The command checks judge readiness before loading the model. Keep the terminal
-open and other GPU work quiet. Runs can take hours depending on the model and
-budget; cooling pauses and judge requests are normal. The tool prints its log
-paths and uses a fresh folder under `runs/` by default. An explicit `--work-dir`
-must be empty. Only one CLI optimization job may run at a time.
+What to expect:
 
-| Judge | Setup |
+- **It takes a while.** Depending on the model and budget, a run can take hours.
+  Long pauses are normal: the tool rests the GPU between timings so heat
+  doesn't skew them, and it waits on the AI for each new kernel.
+- **Keep the terminal open and other GPU work quiet.**
+- **One job at a time.** The tool refuses to start a second one.
+- **Output goes to a new folder under `runs/`**, and the tool prints the path.
+  If you pick your own with `--work-dir`, it has to be empty.
+- With a CLI judge or `--judge-cmd`, the tool sends one small test request
+  before loading the model to make sure the AI is reachable. That doesn't count
+  as an attempt.
+
+**Choosing the AI (the "judge").** The judge is the AI that writes kernels.
+
+| `--judge` | What you need |
 |---|---|
-| `claude-cli`, `codex`, `gemini` | Install and sign in to the selected CLI first. `--model` selects its model. |
-| `api` (default if omitted) | Requires `ANTHROPIC_API_KEY`; `--model` selects the Anthropic model. |
-| `--judge-cmd "<command>"` | Custom headless command; see the [judge protocol](judge-protocol.md). |
-| `agent` | File-based requests answered by an external operator; see the [judge protocol](judge-protocol.md). |
+| `claude-cli`, `codex`, `gemini` | That CLI installed and signed in. `--model` picks its model. `--judge-effort` sets effort for `claude-cli`. |
+| `api` (the default if you leave it out) | `ANTHROPIC_API_KEY` set. `--model` picks the Anthropic model. |
+| `--judge-cmd "<command>"` | Any headless command you like. See the [judge protocol](judge-protocol.md). |
+| `agent` | Requests are written to files and someone (or some agent) answers them by hand. See the [judge protocol](judge-protocol.md). |
 
-For CLI judges, the readiness request costs one small provider call, not a
-search attempt. `--judge-effort` controls Claude CLI effort. To have an agent
-run and monitor the job, give it [RUNNING.md](../RUNNING.md); the
-[operator guide](operating.md) defines milestone updates.
+To have a coding agent run and watch the job for you, point it at
+[RUNNING.md](../RUNNING.md). The [operator guide](operating.md) lists the
+updates it should send you.
 
-To stop new attempts while keeping final validation and packaging, use another
-terminal:
+**Stopping early.** To stop new attempts but still get the final checks and the
+packaged result, run this from another terminal:
 
 ```sh
 uv run autotune finish --work-dir runs/YOUR_RUN
 ```
 
-The current work finishes first. Killing the process instead may leave only
-recovery checkpoints. There is no automatic resume command.
+Whatever is in progress finishes first. Don't just kill the process: you'd lose
+the final checks and be left with only the recovery checkpoints. There's no
+resume command.
 
 ## 4. Read the result
 
-The final summary reports a verified artifact, no confirmed improvement, or a
-failure. A speedup is **original time divided by optimized time**, for the stated
-workload and baseline. `1.25x` means 20% less execution time. Library-generation
-results also show baseline and optimized generated tokens/sec: output tokens
-divided by the complete request time, including prompt processing. This is not
-decode-only throughput. Forward-only workloads retain latency measurements. A faster isolated
-kernel or a temporary acceptance during search is not the final result.
+A run ends in one of three ways:
 
-- `report.json`: measured workloads, baseline, attempts, final checks, and outcome.
-- `run.jsonl`: progress events; `candidates.log`: readable per-attempt records.
-- `checkpoints/`: accepted work saved during search, still awaiting final checks.
-- `artifact/`: the deployable bundle, only after confirmation and export validation.
+- **Verified artifact.** You have a faster model. See [Using an artifact](artifacts.md).
+- **No confirmed improvement.** The run worked, but nothing it found beat the
+  baseline by a margin it could confirm.
+- **Failure.** Something broke. See [troubleshooting](#troubleshooting).
 
-See [Using an artifact](artifacts.md) to apply a result. For timing details and
-internal log fields, see the [measurement reference](measurement.md).
+**How to read the speedup.** Speedup = original time ÷ optimized time, for that
+workload against that baseline. So `1.25x` means the work takes 20% less time,
+not 25% less.
+
+For MLX-LM generation runs, you'll also see generated tokens/sec before and
+after. That's output tokens divided by the *whole* request time, prompt
+processing included, so it isn't pure decode speed. Direct model-call runs
+report time per call instead.
+
+**Only the final result counts.** During the search you'll see kernels that
+are fast on their own, and changes that get accepted along the way. Neither is
+the result. The result is the final whole-workload comparison.
+
+What's in the output folder:
+
+- `report.json`: every measured workload, the baseline, all attempts, the final
+  checks and the outcome.
+- `run.jsonl`: progress events, one per line. `candidates.log`: a readable
+  record of each attempt.
+- `checkpoints/`: changes accepted during the search, saved in case the run
+  dies. They haven't passed the final checks.
+- `artifact/`: the bundle you actually use. It's only written after the final
+  comparison confirms a win and the bundle passes validation.
+
+### What's in `report.json`
+
+At the end, the tool prints how many regions got a confirmed speedup, and two
+before/after timings: one step of the model, and a longer sequence of
+consecutive steps. Both are measured against the baseline in your manifest
+(compiled unless you changed it). The final comparison is what decides whether
+anything ships. It measures the task your manifest describes, which may be
+narrower than your whole application.
+
+`report.json` has the full story: every region and why work on it stopped,
+every attempt and its verdict, and the step timings for both plain and compiled
+MLX. The fields you'll most likely look at:
+
+| Field | What it tells you |
+| --- | --- |
+| `step_ms[workload].win_confirmed` | Whether the final measurement confirmed a speedup from an installed kernel. **This is the one to trust.** A `speedup` ratio on its own can be noise, especially when nothing was installed. |
+| `step_ms[workload].speedup_vs_plain` | With the compiled baseline: the finished model against plain, uncompiled MLX. This includes what compiling alone buys you. |
+| `step_ms[workload].speedup_vs_compiled` | With the plain baseline: plain MLX plus the new kernels, against the untouched model under `mx.compile`. Below 1 means compiling alone would have been faster. |
+| `plain_win_confirmed` (and its siblings) | Whether that cross-baseline comparison was confirmed. It's measured in pairs at the end of the job. |
+| `final.passed`, `reason`, `outcome` | If outputs were right but the win couldn't be confirmed, the job still ends normally: `final.passed` is false with a `reason`, `outcome` is `unconfirmed`, all measurements are kept, and no artifact is written. Wrong outputs end the job with an error instead. |
+| `step_ms[workload].min_win_ms` | The smallest per-step saving a region's change needed to count as a win there: 1% of the step, capped at 30 µs. |
+| `step_ms[workload].steps_per_sample` | How many back-to-back steps went into each timed sample. More than 1 means a single step was too short to bring the GPU up to full speed on its own. Every whole-model number is still reported per step. |
+| `floor_ms` (on each attempt) | A physical floor timed right next to that kernel: an estimate of how fast the hardware could do that work. It's used for ranking, not a hard limit. |
+
+The final timing comes from the same comparison as the final correctness check.
+
+For timing details and what each log field means, see the
+[measurement reference](measurement.md).
 
 ## Troubleshooting
 
-| Situation | Next step |
+| What happened | What to do |
 |---|---|
-| Missing judge or expired login | Follow the printed diagnostic, sign in, and start a fresh run. |
-| Missing compiler or graph build failure | Install Apple's Command Line Tools; see the [setup steps](../README.md#quickstart). Preserve the compiler diagnostic if it still fails. |
-| Unsupported region | Other regions may still be searched. The report records the coverage limit. |
-| No confirmed improvement | A valid outcome: no candidate passed correctness and final performance confirmation within the budget. Inconclusive timing is not proof that no improvement exists. |
-| Judge becomes unavailable | Three consecutive transport failures stop search and preserve accepted checkpoints. Resolve the provider error before another run. |
-| Crash, worker failure, or GPU timeout | Preserve console output, `report.json`, and `run.jsonl`; report the failing stage and traceback. Do not immediately retry a timed-out GPU candidate. |
+| Judge missing or login expired | Follow the printed message, sign in again, and start a fresh run. |
+| Compiler missing or extension build failed | Install Apple's Command Line Tools (see the [quickstart](../README.md#quickstart)). If it still fails, keep the compiler error; you'll need it. |
+| A region is unsupported | Nothing to do. The tool skips it, keeps searching the others, and notes it in the report. |
+| No confirmed improvement | Not an error: nothing passed both the correctness check and the final timing within the budget. It also doesn't prove there's no speedup to find. The timing may just have been too noisy to call. |
+| Judge stops responding mid-run | After three requests in a row fail to get through (connection or provider errors, not bad kernels), the search stops and keeps any accepted checkpoints. Fix the provider problem before running again. |
+| Crash, worker failure or GPU timeout | Keep the console output, `report.json` and `run.jsonl`, and report which stage failed with its traceback. Don't immediately retry a kernel that timed out on the GPU. |
 
-Background load and temperature can hide small differences. The tool accounts
-for uncertainty; it cannot promise a win on every model. See [limitations](limitations.md).
+Background load and heat can hide small speedups. The tool accounts for timing
+noise, but it can't promise a win on every model. See [limitations](limitations.md).

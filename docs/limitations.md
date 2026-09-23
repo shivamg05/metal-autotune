@@ -1,23 +1,42 @@
 # Limits and interpreting results
 
-- This project targets MLX on Apple Silicon. Other GPU backends are unsupported.
-- Declaring a model does not guarantee that every operation can be traced, lowered
-  or safely replaced. The report records skipped regions and the reasons.
-- Kernels are verified for declared workloads and applicable runtime guards.
-  Untested shapes or cache layouts can fall back to the original implementation.
-  One result does not establish a speedup at every shape or on another machine.
-- Small gains may remain inconclusive under measurement noise. Background GPU
-  activity, temperature and power state affect timing. More attempts do not
-  guarantee a confirmed improvement.
-- Cache handling and library-inference integration depend on supported model APIs.
-  Unsupported explicitly requested behavior should fail preflight, not silently
-  benchmark a different task. See the model-specific notes in
-  [models/README.md](../models/README.md).
-- Final artifacts do not automatically bundle weights. They require compatible
-  architecture, dtypes, quantization, dependencies and the builder's external
-  resources. See [artifact compatibility](artifacts.md).
-- A budget controls candidate attempts, not wall-clock time. Worker failures and
-  timeouts can stop a job; preserve its report, console output and checkpoints.
+The short version: **only the final, confirmed whole-workload measurement
+counts as a speedup.** Everything you see during the search, such as a region's
+estimated gain or a kernel that's fast on its own, is a clue the search uses,
+not the result.
 
-Only final confirmed workload measurements establish a shipped improvement.
-Region estimates and faster isolated kernels are search evidence, not that result.
+## What the tool covers
+
+- **MLX on Apple Silicon only.** Other GPU backends aren't supported.
+- **Not every part of every model.** Some operations can't be captured,
+  rewritten or safely replaced yet. Those regions are skipped, and the report
+  lists them with the reason.
+- **Cache handling and MLX-LM generation depend on the model's API.** If you
+  explicitly ask for something the model doesn't support, the run should refuse
+  to start rather than quietly time a different task. See the notes for each
+  model in [models/README.md](../models/README.md).
+
+## What a result does and doesn't prove
+
+- **Kernels are verified only for the workloads you declared** (plus any
+  runtime checks that apply). At an untested input size or cache layout, the
+  model falls back to its original code. One result doesn't prove a speedup at
+  every size or on another machine.
+- **Small gains can stay unconfirmed.** Timing noise, background GPU work, heat
+  and power state all affect measurements. When the tool can't separate a small
+  gain from noise, it doesn't ship it. More attempts don't guarantee a
+  confirmed win.
+
+## Using the result
+
+- **Artifacts don't include weights by default.** They need a compatible
+  architecture, dtypes and quantization, the same dependencies, and whatever
+  external files your `build()` loads. See
+  [artifact compatibility](artifacts.md#apply-it-to-your-model).
+
+## Running a job
+
+- **The budget counts attempts, not time.** A run's length depends on the
+  model, and can be hours.
+- **Jobs can stop early** on a worker failure or a timeout. If that happens,
+  keep the report, the console output and the checkpoints.
