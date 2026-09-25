@@ -1,0 +1,491 @@
+{
+ "format_version": 1,
+ "entry": "models/flux2_4b.py",
+ "baseline": "compiled",
+ "use_library_inference": false,
+ "measurement": {
+  "kind": "forward",
+  "generated_tokens": null
+ },
+ "mlx": "0.32.2",
+ "python": "3.12.13",
+ "declared_workloads": {
+  "denoise": [
+   {
+    "shape": [
+     1,
+     "I",
+     128
+    ],
+    "dtype": "bfloat16"
+   },
+   {
+    "shape": [
+     1,
+     256,
+     7680
+    ],
+    "dtype": "bfloat16"
+   },
+   {
+    "shape": [
+     1
+    ],
+    "dtype": "float32"
+   }
+  ],
+  "long_prompt": [
+   {
+    "shape": [
+     1,
+     "I",
+     128
+    ],
+    "dtype": "bfloat16"
+   },
+   {
+    "shape": [
+     1,
+     512,
+     7680
+    ],
+    "dtype": "bfloat16"
+   },
+   {
+    "shape": [
+     1
+    ],
+    "dtype": "float32"
+   }
+  ]
+ },
+ "workloads": {
+  "denoise": {
+   "file": "workloads/denoise.safetensors",
+   "role": "declared",
+   "shapes": [
+    [
+     1,
+     256,
+     128
+    ],
+    [
+     1,
+     256,
+     7680
+    ],
+    [
+     1
+    ]
+   ],
+   "dtypes": [
+    "bfloat16",
+    "bfloat16",
+    "float32"
+   ]
+  },
+  "long_prompt": {
+   "file": "workloads/long_prompt.safetensors",
+   "role": "declared",
+   "shapes": [
+    [
+     1,
+     256,
+     128
+    ],
+    [
+     1,
+     512,
+     7680
+    ],
+    [
+     1
+    ]
+   ],
+   "dtypes": [
+    "bfloat16",
+    "bfloat16",
+    "float32"
+   ]
+  },
+  "denoise@I=64": {
+   "file": "workloads/denoise_I_64.safetensors",
+   "role": "sweep",
+   "shapes": [
+    [
+     1,
+     64,
+     128
+    ],
+    [
+     1,
+     256,
+     7680
+    ],
+    [
+     1
+    ]
+   ],
+   "dtypes": [
+    "bfloat16",
+    "bfloat16",
+    "float32"
+   ]
+  },
+  "denoise@I=1024": {
+   "file": "workloads/denoise_I_1024.safetensors",
+   "role": "sweep",
+   "shapes": [
+    [
+     1,
+     1024,
+     128
+    ],
+    [
+     1,
+     256,
+     7680
+    ],
+    [
+     1
+    ]
+   ],
+   "dtypes": [
+    "bfloat16",
+    "bfloat16",
+    "float32"
+   ]
+  },
+  "long_prompt@I=64": {
+   "file": "workloads/long_prompt_I_64.safetensors",
+   "role": "sweep",
+   "shapes": [
+    [
+     1,
+     64,
+     128
+    ],
+    [
+     1,
+     512,
+     7680
+    ],
+    [
+     1
+    ]
+   ],
+   "dtypes": [
+    "bfloat16",
+    "bfloat16",
+    "float32"
+   ]
+  },
+  "long_prompt@I=1024": {
+   "file": "workloads/long_prompt_I_1024.safetensors",
+   "role": "sweep",
+   "shapes": [
+    [
+     1,
+     1024,
+     128
+    ],
+    [
+     1,
+     512,
+     7680
+    ],
+    [
+     1
+    ]
+   ],
+   "dtypes": [
+    "bfloat16",
+    "bfloat16",
+    "float32"
+   ]
+  }
+ },
+ "context": null,
+ "correctness_rule": "baseline_tolerance",
+ "tolerances": null,
+ "tolerance_defaults": {
+  "float16": {
+   "rtol": 0.01,
+   "atol": 0.02
+  },
+  "bfloat16": {
+   "rtol": 0.02,
+   "atol": 0.04
+  },
+  "float32": {
+   "rtol": 1e-05,
+   "atol": 1e-06
+  }
+ },
+ "goldens": {},
+ "sequence_goldens": {},
+ "weight_policy": "model_source",
+ "weight_sources": [],
+ "checkpoint_resources_included": false,
+ "final_benchmark": {
+  "steps": 10,
+  "pairs": 4,
+  "warmup_steps": 3
+ },
+ "patches": [
+  {
+   "module_path": "double_blocks.0.attn",
+   "kernel_ids": [
+    "r49ca8c4c87ffe25b_tg256_denoise"
+   ]
+  },
+  {
+   "module_path": "double_blocks.1.attn",
+   "kernel_ids": [
+    "r49ca8c4c87ffe25b_tg256_denoise"
+   ]
+  },
+  {
+   "module_path": "double_blocks.2.attn",
+   "kernel_ids": [
+    "r49ca8c4c87ffe25b_tg256_denoise"
+   ]
+  },
+  {
+   "module_path": "double_blocks.3.attn",
+   "kernel_ids": [
+    "r49ca8c4c87ffe25b_tg256_denoise"
+   ]
+  },
+  {
+   "module_path": "double_blocks.4.attn",
+   "kernel_ids": [
+    "r49ca8c4c87ffe25b_tg256_denoise"
+   ]
+  },
+  {
+   "module_path": "single_blocks.0.attn",
+   "kernel_ids": [
+    "r52a9dd684fcb7af4_h1",
+    "r49ca8c4c87ffe25b_tg256_denoise",
+    "r61a68b6b5360d461_tile64"
+   ]
+  },
+  {
+   "module_path": "single_blocks.1.attn",
+   "kernel_ids": [
+    "r52a9dd684fcb7af4_h1",
+    "r49ca8c4c87ffe25b_tg256_denoise",
+    "r61a68b6b5360d461_tile64"
+   ]
+  },
+  {
+   "module_path": "single_blocks.10.attn",
+   "kernel_ids": [
+    "r52a9dd684fcb7af4_h1",
+    "r49ca8c4c87ffe25b_tg256_denoise",
+    "r61a68b6b5360d461_tile64"
+   ]
+  },
+  {
+   "module_path": "single_blocks.11.attn",
+   "kernel_ids": [
+    "r52a9dd684fcb7af4_h1",
+    "r49ca8c4c87ffe25b_tg256_denoise",
+    "r61a68b6b5360d461_tile64"
+   ]
+  },
+  {
+   "module_path": "single_blocks.12.attn",
+   "kernel_ids": [
+    "r52a9dd684fcb7af4_h1",
+    "r49ca8c4c87ffe25b_tg256_denoise",
+    "r61a68b6b5360d461_tile64"
+   ]
+  },
+  {
+   "module_path": "single_blocks.13.attn",
+   "kernel_ids": [
+    "r52a9dd684fcb7af4_h1",
+    "r49ca8c4c87ffe25b_tg256_denoise",
+    "r61a68b6b5360d461_tile64"
+   ]
+  },
+  {
+   "module_path": "single_blocks.14.attn",
+   "kernel_ids": [
+    "r52a9dd684fcb7af4_h1",
+    "r49ca8c4c87ffe25b_tg256_denoise",
+    "r61a68b6b5360d461_tile64"
+   ]
+  },
+  {
+   "module_path": "single_blocks.15.attn",
+   "kernel_ids": [
+    "r52a9dd684fcb7af4_h1",
+    "r49ca8c4c87ffe25b_tg256_denoise",
+    "r61a68b6b5360d461_tile64"
+   ]
+  },
+  {
+   "module_path": "single_blocks.16.attn",
+   "kernel_ids": [
+    "r52a9dd684fcb7af4_h1",
+    "r49ca8c4c87ffe25b_tg256_denoise",
+    "r61a68b6b5360d461_tile64"
+   ]
+  },
+  {
+   "module_path": "single_blocks.17.attn",
+   "kernel_ids": [
+    "r52a9dd684fcb7af4_h1",
+    "r49ca8c4c87ffe25b_tg256_denoise",
+    "r61a68b6b5360d461_tile64"
+   ]
+  },
+  {
+   "module_path": "single_blocks.18.attn",
+   "kernel_ids": [
+    "r52a9dd684fcb7af4_h1",
+    "r49ca8c4c87ffe25b_tg256_denoise",
+    "r61a68b6b5360d461_tile64"
+   ]
+  },
+  {
+   "module_path": "single_blocks.19.attn",
+   "kernel_ids": [
+    "r52a9dd684fcb7af4_h1",
+    "r49ca8c4c87ffe25b_tg256_denoise",
+    "r61a68b6b5360d461_tile64"
+   ]
+  },
+  {
+   "module_path": "single_blocks.2.attn",
+   "kernel_ids": [
+    "r52a9dd684fcb7af4_h1",
+    "r49ca8c4c87ffe25b_tg256_denoise",
+    "r61a68b6b5360d461_tile64"
+   ]
+  },
+  {
+   "module_path": "single_blocks.3.attn",
+   "kernel_ids": [
+    "r52a9dd684fcb7af4_h1",
+    "r49ca8c4c87ffe25b_tg256_denoise",
+    "r61a68b6b5360d461_tile64"
+   ]
+  },
+  {
+   "module_path": "single_blocks.4.attn",
+   "kernel_ids": [
+    "r52a9dd684fcb7af4_h1",
+    "r49ca8c4c87ffe25b_tg256_denoise",
+    "r61a68b6b5360d461_tile64"
+   ]
+  },
+  {
+   "module_path": "single_blocks.5.attn",
+   "kernel_ids": [
+    "r52a9dd684fcb7af4_h1",
+    "r49ca8c4c87ffe25b_tg256_denoise",
+    "r61a68b6b5360d461_tile64"
+   ]
+  },
+  {
+   "module_path": "single_blocks.6.attn",
+   "kernel_ids": [
+    "r52a9dd684fcb7af4_h1",
+    "r49ca8c4c87ffe25b_tg256_denoise",
+    "r61a68b6b5360d461_tile64"
+   ]
+  },
+  {
+   "module_path": "single_blocks.7.attn",
+   "kernel_ids": [
+    "r52a9dd684fcb7af4_h1",
+    "r49ca8c4c87ffe25b_tg256_denoise",
+    "r61a68b6b5360d461_tile64"
+   ]
+  },
+  {
+   "module_path": "single_blocks.8.attn",
+   "kernel_ids": [
+    "r52a9dd684fcb7af4_h1",
+    "r49ca8c4c87ffe25b_tg256_denoise",
+    "r61a68b6b5360d461_tile64"
+   ]
+  },
+  {
+   "module_path": "single_blocks.9.attn",
+   "kernel_ids": [
+    "r52a9dd684fcb7af4_h1",
+    "r49ca8c4c87ffe25b_tg256_denoise",
+    "r61a68b6b5360d461_tile64"
+   ]
+  },
+  {
+   "module_path": "double_blocks.0.ff.linear_in",
+   "kernel_ids": [
+    "rf4ff944e9e62e804_h1_tile64"
+   ]
+  },
+  {
+   "module_path": "double_blocks.1.ff.linear_in",
+   "kernel_ids": [
+    "rf4ff944e9e62e804_h1_tile64"
+   ]
+  },
+  {
+   "module_path": "double_blocks.2.ff.linear_in",
+   "kernel_ids": [
+    "rf4ff944e9e62e804_h1_tile64"
+   ]
+  },
+  {
+   "module_path": "double_blocks.3.ff.linear_in",
+   "kernel_ids": [
+    "rf4ff944e9e62e804_h1_tile64"
+   ]
+  },
+  {
+   "module_path": "double_blocks.4.ff.linear_in",
+   "kernel_ids": [
+    "rf4ff944e9e62e804_h1_tile64"
+   ]
+  },
+  {
+   "module_path": "double_blocks.0.ff_context.linear_in",
+   "kernel_ids": [
+    "rf4ff944e9e62e804_h1_tile64"
+   ]
+  },
+  {
+   "module_path": "double_blocks.1.ff_context.linear_in",
+   "kernel_ids": [
+    "rf4ff944e9e62e804_h1_tile64"
+   ]
+  },
+  {
+   "module_path": "double_blocks.2.ff_context.linear_in",
+   "kernel_ids": [
+    "rf4ff944e9e62e804_h1_tile64"
+   ]
+  },
+  {
+   "module_path": "double_blocks.3.ff_context.linear_in",
+   "kernel_ids": [
+    "rf4ff944e9e62e804_h1_tile64"
+   ]
+  },
+  {
+   "module_path": "double_blocks.4.ff_context.linear_in",
+   "kernel_ids": [
+    "rf4ff944e9e62e804_h1_tile64"
+   ]
+  }
+ ],
+ "source_files": [
+  "models/flux2_4b.py"
+ ],
+ "resource_files": []
+}

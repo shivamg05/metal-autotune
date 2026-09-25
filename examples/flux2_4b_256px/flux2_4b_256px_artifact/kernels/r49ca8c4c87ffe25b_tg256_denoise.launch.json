@@ -1,0 +1,41 @@
+{
+ "kernel_id": "r49ca8c4c87ffe25b_tg256_denoise",
+ "name": "at_r49ca8c4c87ffe25b_tg256_denoise",
+ "input_names": [
+  "in0",
+  "in1"
+ ],
+ "output_names": [
+  "out0"
+ ],
+ "header": "",
+ "grid": [
+  "256 * ceil_div(32 * 24 * in0.shape[2], 256)",
+  "1",
+  "1"
+ ],
+ "threadgroup": [
+  "256",
+  "1",
+  "1"
+ ],
+ "output_shapes": [
+  [
+   "1",
+   "24",
+   "in0.shape[2]",
+   "128"
+  ]
+ ],
+ "output_dtypes": [
+  "bfloat16"
+ ],
+ "template": [],
+ "fallback_predicate": null,
+ "ensure_row_contiguous": true,
+ "atomic_outputs": false,
+ "native_call": null,
+ "input_signature": null,
+ "reference_sequence": null,
+ "stages": []
+}

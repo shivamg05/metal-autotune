@@ -1,0 +1,18 @@
+# The job that produced artifact/ (2026-09-16): FLUX.2 Klein 4B denoiser, random weights, 4-bit.
+model: ../../models/flux2_4b.py
+use_library_inference: false
+baseline: compiled
+workloads:
+  - name: denoise
+    inputs:
+      - {shape: [1, I, 128], dtype: bfloat16}
+      - {shape: [1, 256, 7680], dtype: bfloat16}
+      - {shape: [1], dtype: float32}
+  - name: long_prompt
+    inputs:
+      - {shape: [1, I, 128], dtype: bfloat16}
+      - {shape: [1, 512, 7680], dtype: bfloat16}
+      - {shape: [1], dtype: float32}
+primary: {I: 256}
+sweep: {I: [64, 256, 1024]}
+budget: {per_region: 12, total: 60}

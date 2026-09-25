@@ -1,0 +1,407 @@
+[
+ {
+  "scope_path": "double_blocks.0.attn",
+  "wrapper_class": "W_r49ca8c4c87ffe25b_tg256_denoise",
+  "kernel_ids": [
+   "r49ca8c4c87ffe25b_tg256_denoise"
+  ],
+  "span_map": []
+ },
+ {
+  "scope_path": "double_blocks.1.attn",
+  "wrapper_class": "W_r49ca8c4c87ffe25b_tg256_denoise",
+  "kernel_ids": [
+   "r49ca8c4c87ffe25b_tg256_denoise"
+  ],
+  "span_map": []
+ },
+ {
+  "scope_path": "double_blocks.2.attn",
+  "wrapper_class": "W_r49ca8c4c87ffe25b_tg256_denoise",
+  "kernel_ids": [
+   "r49ca8c4c87ffe25b_tg256_denoise"
+  ],
+  "span_map": []
+ },
+ {
+  "scope_path": "double_blocks.3.attn",
+  "wrapper_class": "W_r49ca8c4c87ffe25b_tg256_denoise",
+  "kernel_ids": [
+   "r49ca8c4c87ffe25b_tg256_denoise"
+  ],
+  "span_map": []
+ },
+ {
+  "scope_path": "double_blocks.4.attn",
+  "wrapper_class": "W_r49ca8c4c87ffe25b_tg256_denoise",
+  "kernel_ids": [
+   "r49ca8c4c87ffe25b_tg256_denoise"
+  ],
+  "span_map": []
+ },
+ {
+  "scope_path": "single_blocks.0.attn",
+  "wrapper_class": "W_r52a9dd684fcb7af4_h1__r49ca8c4c87ffe25b_tg256_denoise__r61a68b6b5360d461_tile64",
+  "kernel_ids": [
+   "r52a9dd684fcb7af4_h1",
+   "r49ca8c4c87ffe25b_tg256_denoise",
+   "r61a68b6b5360d461_tile64"
+  ],
+  "span_map": []
+ },
+ {
+  "scope_path": "single_blocks.1.attn",
+  "wrapper_class": "W_r52a9dd684fcb7af4_h1__r49ca8c4c87ffe25b_tg256_denoise__r61a68b6b5360d461_tile64",
+  "kernel_ids": [
+   "r52a9dd684fcb7af4_h1",
+   "r49ca8c4c87ffe25b_tg256_denoise",
+   "r61a68b6b5360d461_tile64"
+  ],
+  "span_map": []
+ },
+ {
+  "scope_path": "single_blocks.10.attn",
+  "wrapper_class": "W_r52a9dd684fcb7af4_h1__r49ca8c4c87ffe25b_tg256_denoise__r61a68b6b5360d461_tile64",
+  "kernel_ids": [
+   "r52a9dd684fcb7af4_h1",
+   "r49ca8c4c87ffe25b_tg256_denoise",
+   "r61a68b6b5360d461_tile64"
+  ],
+  "span_map": []
+ },
+ {
+  "scope_path": "single_blocks.11.attn",
+  "wrapper_class": "W_r52a9dd684fcb7af4_h1__r49ca8c4c87ffe25b_tg256_denoise__r61a68b6b5360d461_tile64",
+  "kernel_ids": [
+   "r52a9dd684fcb7af4_h1",
+   "r49ca8c4c87ffe25b_tg256_denoise",
+   "r61a68b6b5360d461_tile64"
+  ],
+  "span_map": []
+ },
+ {
+  "scope_path": "single_blocks.12.attn",
+  "wrapper_class": "W_r52a9dd684fcb7af4_h1__r49ca8c4c87ffe25b_tg256_denoise__r61a68b6b5360d461_tile64",
+  "kernel_ids": [
+   "r52a9dd684fcb7af4_h1",
+   "r49ca8c4c87ffe25b_tg256_denoise",
+   "r61a68b6b5360d461_tile64"
+  ],
+  "span_map": []
+ },
+ {
+  "scope_path": "single_blocks.13.attn",
+  "wrapper_class": "W_r52a9dd684fcb7af4_h1__r49ca8c4c87ffe25b_tg256_denoise__r61a68b6b5360d461_tile64",
+  "kernel_ids": [
+   "r52a9dd684fcb7af4_h1",
+   "r49ca8c4c87ffe25b_tg256_denoise",
+   "r61a68b6b5360d461_tile64"
+  ],
+  "span_map": []
+ },
+ {
+  "scope_path": "single_blocks.14.attn",
+  "wrapper_class": "W_r52a9dd684fcb7af4_h1__r49ca8c4c87ffe25b_tg256_denoise__r61a68b6b5360d461_tile64",
+  "kernel_ids": [
+   "r52a9dd684fcb7af4_h1",
+   "r49ca8c4c87ffe25b_tg256_denoise",
+   "r61a68b6b5360d461_tile64"
+  ],
+  "span_map": []
+ },
+ {
+  "scope_path": "single_blocks.15.attn",
+  "wrapper_class": "W_r52a9dd684fcb7af4_h1__r49ca8c4c87ffe25b_tg256_denoise__r61a68b6b5360d461_tile64",
+  "kernel_ids": [
+   "r52a9dd684fcb7af4_h1",
+   "r49ca8c4c87ffe25b_tg256_denoise",
+   "r61a68b6b5360d461_tile64"
+  ],
+  "span_map": []
+ },
+ {
+  "scope_path": "single_blocks.16.attn",
+  "wrapper_class": "W_r52a9dd684fcb7af4_h1__r49ca8c4c87ffe25b_tg256_denoise__r61a68b6b5360d461_tile64",
+  "kernel_ids": [
+   "r52a9dd684fcb7af4_h1",
+   "r49ca8c4c87ffe25b_tg256_denoise",
+   "r61a68b6b5360d461_tile64"
+  ],
+  "span_map": []
+ },
+ {
+  "scope_path": "single_blocks.17.attn",
+  "wrapper_class": "W_r52a9dd684fcb7af4_h1__r49ca8c4c87ffe25b_tg256_denoise__r61a68b6b5360d461_tile64",
+  "kernel_ids": [
+   "r52a9dd684fcb7af4_h1",
+   "r49ca8c4c87ffe25b_tg256_denoise",
+   "r61a68b6b5360d461_tile64"
+  ],
+  "span_map": []
+ },
+ {
+  "scope_path": "single_blocks.18.attn",
+  "wrapper_class": "W_r52a9dd684fcb7af4_h1__r49ca8c4c87ffe25b_tg256_denoise__r61a68b6b5360d461_tile64",
+  "kernel_ids": [
+   "r52a9dd684fcb7af4_h1",
+   "r49ca8c4c87ffe25b_tg256_denoise",
+   "r61a68b6b5360d461_tile64"
+  ],
+  "span_map": []
+ },
+ {
+  "scope_path": "single_blocks.19.attn",
+  "wrapper_class": "W_r52a9dd684fcb7af4_h1__r49ca8c4c87ffe25b_tg256_denoise__r61a68b6b5360d461_tile64",
+  "kernel_ids": [
+   "r52a9dd684fcb7af4_h1",
+   "r49ca8c4c87ffe25b_tg256_denoise",
+   "r61a68b6b5360d461_tile64"
+  ],
+  "span_map": []
+ },
+ {
+  "scope_path": "single_blocks.2.attn",
+  "wrapper_class": "W_r52a9dd684fcb7af4_h1__r49ca8c4c87ffe25b_tg256_denoise__r61a68b6b5360d461_tile64",
+  "kernel_ids": [
+   "r52a9dd684fcb7af4_h1",
+   "r49ca8c4c87ffe25b_tg256_denoise",
+   "r61a68b6b5360d461_tile64"
+  ],
+  "span_map": []
+ },
+ {
+  "scope_path": "single_blocks.3.attn",
+  "wrapper_class": "W_r52a9dd684fcb7af4_h1__r49ca8c4c87ffe25b_tg256_denoise__r61a68b6b5360d461_tile64",
+  "kernel_ids": [
+   "r52a9dd684fcb7af4_h1",
+   "r49ca8c4c87ffe25b_tg256_denoise",
+   "r61a68b6b5360d461_tile64"
+  ],
+  "span_map": []
+ },
+ {
+  "scope_path": "single_blocks.4.attn",
+  "wrapper_class": "W_r52a9dd684fcb7af4_h1__r49ca8c4c87ffe25b_tg256_denoise__r61a68b6b5360d461_tile64",
+  "kernel_ids": [
+   "r52a9dd684fcb7af4_h1",
+   "r49ca8c4c87ffe25b_tg256_denoise",
+   "r61a68b6b5360d461_tile64"
+  ],
+  "span_map": []
+ },
+ {
+  "scope_path": "single_blocks.5.attn",
+  "wrapper_class": "W_r52a9dd684fcb7af4_h1__r49ca8c4c87ffe25b_tg256_denoise__r61a68b6b5360d461_tile64",
+  "kernel_ids": [
+   "r52a9dd684fcb7af4_h1",
+   "r49ca8c4c87ffe25b_tg256_denoise",
+   "r61a68b6b5360d461_tile64"
+  ],
+  "span_map": []
+ },
+ {
+  "scope_path": "single_blocks.6.attn",
+  "wrapper_class": "W_r52a9dd684fcb7af4_h1__r49ca8c4c87ffe25b_tg256_denoise__r61a68b6b5360d461_tile64",
+  "kernel_ids": [
+   "r52a9dd684fcb7af4_h1",
+   "r49ca8c4c87ffe25b_tg256_denoise",
+   "r61a68b6b5360d461_tile64"
+  ],
+  "span_map": []
+ },
+ {
+  "scope_path": "single_blocks.7.attn",
+  "wrapper_class": "W_r52a9dd684fcb7af4_h1__r49ca8c4c87ffe25b_tg256_denoise__r61a68b6b5360d461_tile64",
+  "kernel_ids": [
+   "r52a9dd684fcb7af4_h1",
+   "r49ca8c4c87ffe25b_tg256_denoise",
+   "r61a68b6b5360d461_tile64"
+  ],
+  "span_map": []
+ },
+ {
+  "scope_path": "single_blocks.8.attn",
+  "wrapper_class": "W_r52a9dd684fcb7af4_h1__r49ca8c4c87ffe25b_tg256_denoise__r61a68b6b5360d461_tile64",
+  "kernel_ids": [
+   "r52a9dd684fcb7af4_h1",
+   "r49ca8c4c87ffe25b_tg256_denoise",
+   "r61a68b6b5360d461_tile64"
+  ],
+  "span_map": []
+ },
+ {
+  "scope_path": "single_blocks.9.attn",
+  "wrapper_class": "W_r52a9dd684fcb7af4_h1__r49ca8c4c87ffe25b_tg256_denoise__r61a68b6b5360d461_tile64",
+  "kernel_ids": [
+   "r52a9dd684fcb7af4_h1",
+   "r49ca8c4c87ffe25b_tg256_denoise",
+   "r61a68b6b5360d461_tile64"
+  ],
+  "span_map": []
+ },
+ {
+  "scope_path": "double_blocks.0.ff.linear_in",
+  "wrapper_class": "W_rf4ff944e9e62e804_h1_tile64",
+  "kernel_ids": [
+   "rf4ff944e9e62e804_h1_tile64"
+  ],
+  "span_map": [
+   [
+    "custom_kernel",
+    "f4ff944e9e62e804",
+    "rf4ff944e9e62e804_h1_tile64"
+   ]
+  ]
+ },
+ {
+  "scope_path": "double_blocks.1.ff.linear_in",
+  "wrapper_class": "W_rf4ff944e9e62e804_h1_tile64",
+  "kernel_ids": [
+   "rf4ff944e9e62e804_h1_tile64"
+  ],
+  "span_map": [
+   [
+    "custom_kernel",
+    "f4ff944e9e62e804",
+    "rf4ff944e9e62e804_h1_tile64"
+   ]
+  ]
+ },
+ {
+  "scope_path": "double_blocks.2.ff.linear_in",
+  "wrapper_class": "W_rf4ff944e9e62e804_h1_tile64",
+  "kernel_ids": [
+   "rf4ff944e9e62e804_h1_tile64"
+  ],
+  "span_map": [
+   [
+    "custom_kernel",
+    "f4ff944e9e62e804",
+    "rf4ff944e9e62e804_h1_tile64"
+   ]
+  ]
+ },
+ {
+  "scope_path": "double_blocks.3.ff.linear_in",
+  "wrapper_class": "W_rf4ff944e9e62e804_h1_tile64",
+  "kernel_ids": [
+   "rf4ff944e9e62e804_h1_tile64"
+  ],
+  "span_map": [
+   [
+    "custom_kernel",
+    "f4ff944e9e62e804",
+    "rf4ff944e9e62e804_h1_tile64"
+   ]
+  ]
+ },
+ {
+  "scope_path": "double_blocks.4.ff.linear_in",
+  "wrapper_class": "W_rf4ff944e9e62e804_h1_tile64",
+  "kernel_ids": [
+   "rf4ff944e9e62e804_h1_tile64"
+  ],
+  "span_map": [
+   [
+    "custom_kernel",
+    "f4ff944e9e62e804",
+    "rf4ff944e9e62e804_h1_tile64"
+   ]
+  ]
+ },
+ {
+  "scope_path": "double_blocks.0.ff_context.linear_in",
+  "wrapper_class": "W_rf4ff944e9e62e804_h1_tile64_2",
+  "kernel_ids": [
+   "rf4ff944e9e62e804_h1_tile64"
+  ],
+  "span_map": [
+   [
+    "custom_kernel",
+    "f4ff944e9e62e804",
+    "rf4ff944e9e62e804_h1_tile64"
+   ],
+   [
+    "custom_kernel",
+    "f4ff944e9e62e804",
+    "rf4ff944e9e62e804_h1_tile64"
+   ]
+  ]
+ },
+ {
+  "scope_path": "double_blocks.1.ff_context.linear_in",
+  "wrapper_class": "W_rf4ff944e9e62e804_h1_tile64_2",
+  "kernel_ids": [
+   "rf4ff944e9e62e804_h1_tile64"
+  ],
+  "span_map": [
+   [
+    "custom_kernel",
+    "f4ff944e9e62e804",
+    "rf4ff944e9e62e804_h1_tile64"
+   ],
+   [
+    "custom_kernel",
+    "f4ff944e9e62e804",
+    "rf4ff944e9e62e804_h1_tile64"
+   ]
+  ]
+ },
+ {
+  "scope_path": "double_blocks.2.ff_context.linear_in",
+  "wrapper_class": "W_rf4ff944e9e62e804_h1_tile64_2",
+  "kernel_ids": [
+   "rf4ff944e9e62e804_h1_tile64"
+  ],
+  "span_map": [
+   [
+    "custom_kernel",
+    "f4ff944e9e62e804",
+    "rf4ff944e9e62e804_h1_tile64"
+   ],
+   [
+    "custom_kernel",
+    "f4ff944e9e62e804",
+    "rf4ff944e9e62e804_h1_tile64"
+   ]
+  ]
+ },
+ {
+  "scope_path": "double_blocks.3.ff_context.linear_in",
+  "wrapper_class": "W_rf4ff944e9e62e804_h1_tile64_2",
+  "kernel_ids": [
+   "rf4ff944e9e62e804_h1_tile64"
+  ],
+  "span_map": [
+   [
+    "custom_kernel",
+    "f4ff944e9e62e804",
+    "rf4ff944e9e62e804_h1_tile64"
+   ],
+   [
+    "custom_kernel",
+    "f4ff944e9e62e804",
+    "rf4ff944e9e62e804_h1_tile64"
+   ]
+  ]
+ },
+ {
+  "scope_path": "double_blocks.4.ff_context.linear_in",
+  "wrapper_class": "W_rf4ff944e9e62e804_h1_tile64_2",
+  "kernel_ids": [
+   "rf4ff944e9e62e804_h1_tile64"
+  ],
+  "span_map": [
+   [
+    "custom_kernel",
+    "f4ff944e9e62e804",
+    "rf4ff944e9e62e804_h1_tile64"
+   ],
+   [
+    "custom_kernel",
+    "f4ff944e9e62e804",
+    "rf4ff944e9e62e804_h1_tile64"
+   ]
+  ]
+ }
+]
