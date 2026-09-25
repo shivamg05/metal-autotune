@@ -69,10 +69,18 @@ def test_group_shares_model_arm_and_reverses_order():
             return cost
         return run
 
-    samples = sample_group(FakeSession(), {
+    session = FakeSession()
+    logged = []
+    session.log = lambda kind, **row: logged.append((kind, row))
+    samples = sample_group(session, {
         "model": arm("model", 1.5), "a": arm("a", 0.01), "b": arm("b", 0.02)}, pairs=4)
     assert order == ["model", "a", "b", "b", "a", "model"] * 2
     assert samples["model"] == (1500.0,) * 4
+    # every raw sample and the memory state are kept, so a slow block can be diagnosed later
+    (kind, row), = logged
+    assert kind == "sample_group" and row["rows"]["a"] == [10.0] * 4
+    assert set(row["memory_before"]) == set(row["memory_after"]) == {
+        "mlx_active_gb", "mlx_cache_gb", "swap_used_gb"}
 
 
 def test_cooling_is_logged_before_sleep(tmp_path):
@@ -87,6 +95,25 @@ def test_cooling_is_logged_before_sleep(tmp_path):
     assert session.idled_s == 6.0
 
 
+def test_cooling_returns_mlx_cached_memory(tmp_path):
+    """Freed buffers held for reuse pushed a 24 GB Mac into swap mid-pricing."""
+    import mlx.core as mx
+    x = mx.random.normal((64, 1024, 1024))
+    y = x * 2
+    mx.eval(y)
+    del x, y
+    assert mx.get_cache_memory() > 0
+    cached_while_idle = []
+    session = Session(log_path=tmp_path / "session.jsonl",
+                      sleep=lambda _s: cached_while_idle.append(mx.get_cache_memory()))
+    session._debt_s = 1.0
+    session.settle()
+    assert cached_while_idle == [0]
+    cooling = [json.loads(line) for line in (tmp_path / "session.jsonl").read_text().splitlines()
+               if '"cooling"' in line][0]
+    assert cooling["cache_cleared_gb"] > 0
+
+
 def test_failed_artifact_validation_preserves_existing_artifact(tmp_path):
     from autotuner.artifact.emit import emit_artifact
     from autotuner.report import Report
@@ -99,6 +126,15 @@ def test_failed_artifact_validation_preserves_existing_artifact(tmp_path):
         emit_artifact(target, [], [], Report(manifest_path="fixture"), validate=fail)
     assert (target / "keep.txt").read_text() == "previous verified result"
     assert not target.with_name("artifact.building").exists()
+
+
+def test_artifact_keeps_the_manifest_the_job_ran(tmp_path):
+    from autotuner.artifact.emit import emit_artifact
+    from autotuner.report import Report
+    manifest = tmp_path / "job.yaml"
+    manifest.write_text("model: m.py\nsweep: {I: [64, 256]}\n")
+    out = emit_artifact(tmp_path / "artifact", [], [], Report(manifest_path=str(manifest)))
+    assert (out / "manifest.yaml").read_text() == manifest.read_text()
 
 
 def test_mixed_dtype_compute_estimate_uses_each_ops_throughput():

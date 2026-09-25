@@ -9,7 +9,9 @@ positive delta means the candidate is faster.
 
 from __future__ import annotations
 
+import re
 import statistics
+import subprocess
 
 import mlx.core as mx
 from dataclasses import dataclass
@@ -179,6 +181,7 @@ def sample_group(session: Session, arms: dict[str, Callable[[], object]],
     if not arms or pairs < 2 or pairs % 2:
         raise ValueError("a group needs arms and an even number of pairs >= 2")
     names = list(arms)
+    memory_before = memory_state()
     session.fresh_chunk(arms[names[0]])
     for name in names:
         session.warm_until_stable(arms[name])
@@ -192,22 +195,39 @@ def sample_group(session: Session, arms: dict[str, Callable[[], object]],
             session.defer_settle()
         else:
             session.settle()
-    session.log("sample_group", arms=len(arms), pairs=pairs)
+    session.log("sample_group", arms=len(arms), pairs=pairs, rows=samples,
+                memory_before=memory_before, memory_after=memory_state())
     return {name: tuple(values) for name, values in samples.items()}
+
+
+def memory_state() -> dict[str, float | None]:
+    """MLX's GPU memory and the machine's swap in use, in GB, so a slow block
+    can be told apart from a machine that was paging."""
+    try:
+        text = subprocess.run(["sysctl", "-n", "vm.swapusage"], capture_output=True,
+                              text=True, timeout=5).stdout
+        used = re.search(r"used = ([0-9.]+)M", text)
+        swap_gb = float(used.group(1)) / 1024 if used else None
+    except (OSError, subprocess.SubprocessError):
+        swap_gb = None
+    return {"mlx_active_gb": mx.get_active_memory() / 1e9, "mlx_cache_gb": mx.get_cache_memory() / 1e9,
+            "swap_used_gb": swap_gb}
 
 
 def step_clock(session: Session, fn: Callable[[], object], reps: int = 9) -> StepClock:
     """The honest cost of one call of fn: warm until stable, then the median."""
-    session.fresh_chunk(fn)
-    warm = session.warm_until_stable(fn)
+    warmed = session.fresh_chunk(fn)
+    # A successful post-cooling ramp already warmed this same function.
+    warm = [] if warmed else session.warm_until_stable(fn)
     samples = [session.timed(fn) for _ in range(reps)]
-    session.settle()
     clock = StepClock(
         median_ms=statistics.median(samples) * 1e3,
         samples_ms=tuple(t * 1e3 for t in samples),
         warm_ms=tuple(t * 1e3 for t in warm),
     )
     session.log("step_clock", median_ms=clock.median_ms, n=reps)
+    print(f"step clock: {clock.median_ms:.3f} ms (median of {reps} samples)", flush=True)
+    session.settle()
     return clock
 
 

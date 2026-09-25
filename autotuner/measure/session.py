@@ -204,7 +204,13 @@ class Session:
         return True
 
     def _idle(self, seconds: float) -> None:
-        self.log("cooling", seconds=round(seconds, 3))
+        # MLX keeps freed buffers for reuse. Across capture and many timed arms
+        # they grew to 14.5 GB on a 24 GB Mac and the timed passes paged from
+        # swap. Nothing is timed while cooling, and every arm warms again before
+        # its first sample, so releasing them here costs no measured time.
+        cached_gb = mx.get_cache_memory() / 1e9
+        mx.clear_cache()
+        self.log("cooling", seconds=round(seconds, 3), cache_cleared_gb=round(cached_gb, 3))
         if seconds >= 5.0:
             print(f"cooling: {seconds:.1f}s after GPU work", flush=True)
         started = self._now()

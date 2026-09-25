@@ -35,13 +35,20 @@ There is no automatic resume command; retain the checkpoint and logs if the
 run stops, and report them to the maintainer.
 `session.jsonl` records each cooling pause before sleeping, with its duration,
 then records completion. Long pauses also appear on stdout. The default cooldown
-is three times the accounted work. `cooling_scheduled` means a completed
+is three times the accounted work. Each pause also returns the memory MLX keeps
+for reuse (`cache_cleared_gb`); left alone it grew to 14.5 GB on a 24 GB Mac
+and timed passes waited on swap. Each paired block (`sample_group`) logs every
+raw sample plus MLX memory and swap before and after, so a block that ran on a
+paging machine is visible. `cooling_scheduled` means a completed
 comparison or correctness check has returned its verdict and CPU work may use
 that cooldown. Candidate workers also return their remaining cooling deadline
 to the parent (`cooling_adopted`), so process cleanup, preparation and judge
 thinking can use the same interval. The parent waits before the next worker or
 model evaluation; `cooling_reused` reports that remainder.
 A pending cooldown does not mean the verdict is still being measured.
+Step timing reuses a successful post-cooling warm-up instead of warming twice.
+Its median is printed and logged as `step_clock` in `session.jsonl` before
+cooling; the workload-level summary follows when the clock returns.
 `ladder_result.result.detail.pacing` records accounted work and time spent
 sleeping inside each successful worker phase. Parent waits appear in
 `session.jsonl`. These are wall-clock accounting figures, not direct GPU-active
@@ -88,11 +95,15 @@ Each region's report row says its `delivery` and which `library_arm` its
 clocks ran (a graph scope's library ops run as one compiled graph, the way the
 deployed scope will).
 
-Candidate workers have a separate five-second limit for each GPU evaluation,
+Candidate workers have a separate ten-second limit for each GPU evaluation,
 including the first compilation and launch. Cooling does not consume that
 limit; it still counts toward the overall worker budget. If either deadline
-expires, the job stops and records the reason. Workers share the desktop GPU,
-so killing one does not prove its submitted GPU work has stopped.
+expires, the worker is killed. Once it exits, a fresh worker must complete a
+small checked GPU operation, then wait until a fixed matmul runs within 1.5x of
+its time recorded before the first candidate: killing a worker does not stop
+GPU work it already submitted. Success rejects only the candidate and schedules
+cooling before search continues. A wrong answer, or a GPU still busy after two
+minutes, stops the job.
 
 Keep other GPU work quiet. Interleaved measurements reduce drift, but cannot
 guarantee that arbitrary background load affects both arms equally. The macOS

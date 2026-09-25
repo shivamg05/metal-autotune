@@ -362,3 +362,31 @@ def test_a_pass_that_fills_a_sample_is_sized_without_a_loop():
         return run
     assert loop_iterations(lambda fn: fn(), loop_for) == 1
     assert timed == [1, 1]  # the throwaway and one reading
+
+
+@pytest.mark.parametrize("ramped", [True, False])
+def test_step_clock_reuses_ramp_and_reports_before_cooling(ramped):
+    events = []
+
+    class FakeSession:
+        def fresh_chunk(self, fn):
+            events.append("ramp")
+            return ramped
+
+        def warm_until_stable(self, fn):
+            events.append("warm")
+            return [0.01]
+
+        def timed(self, fn):
+            events.append("sample")
+            return 0.01
+
+        def log(self, kind, **row):
+            events.append(kind)
+
+        def settle(self):
+            events.append("cool")
+
+    clock = step_clock(FakeSession(), lambda: None, reps=9)
+    assert events == ["ramp"] + ([] if ramped else ["warm"]) + ["sample"] * 9 + ["step_clock", "cool"]
+    assert clock.median_ms == 10
