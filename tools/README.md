@@ -8,3 +8,7 @@ Run them serially on a quiet GPU, never alongside a benchmark or optimization.
 
 Write new output under `runs/diagnostics/` or an explicit external path. A timing
 observation on one machine is not a portable constant or a confirmed shipped win.
+
+`gpu_speed_check.py` is the quick one: about ten seconds to see whether the GPU
+is free and at full speed (compute, 4-bit matmul and memory bandwidth), before
+you time anything.
