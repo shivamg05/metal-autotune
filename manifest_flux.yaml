@@ -1,11 +1,13 @@
 model: models/flux2_4b.py   # FLUX.2 Klein4B denoiser, ~3.9B, quantized 4-bit in memory; the model file says why
 use_library_inference: false  # measure the denoiser forward call
+# One text-to-image denoiser step: a square 768x768 image and a prompt padded
+# to the Klein pipeline's default 512 tokens.
 workloads:
   - name: denoise
     inputs:
-      - shape: [1, 256, 128]     # image latent tokens (count x in_channels)
+      - shape: [1, 2304, 128]    # image latent tokens: 768x768 / 16 = 48x48 (count x in_channels)
         dtype: bfloat16
-      - shape: [1, 256, 7680]    # text tokens (prompt length x joint_attention_dim)
+      - shape: [1, 512, 7680]    # text tokens: max_sequence_length 512 (prompt length x joint_attention_dim)
         dtype: bfloat16
       - shape: [1]               # timestep
         dtype: float32

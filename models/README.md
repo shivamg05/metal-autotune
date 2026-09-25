@@ -21,8 +21,10 @@ path.
 | [Qwen3.5-4B, 8-bit](qwen3_5_4b_8bit.py) ¹ | MLX-LM (`qwen3_5`), text only | none |
 | [Qwen3.5-9B, 4-bit](qwen3_5_9b_4bit.py) ¹ | MLX-LM (`qwen3_5`), text only | none |
 | [Qwen3.5-9B, 8-bit](qwen3_5_9b_8bit.py) ¹ | MLX-LM (`qwen3_5`), text only | none |
+| [Qwen3.6-27B, 4-bit](qwen3_6_27b_4bit.py) ¹ | MLX-LM (`qwen3_5`), text only | none |
 | [Qwen3.8-27B, 4-bit](qwen3_8_27b_4bit.py) ¹ | MLX-LM (`qwen3_5`), text only | none |
 | [Llama 3 8B Instruct, 4-bit](llama8b.py) | MLX-LM (`llama`) | none |
+| [LFM2.5-1.2B-Instruct, 4-bit](lfm2_5_1_2b_instruct_4bit.py) ¹ | MLX-LM (`lfm2`) | none |
 | [LFM2.5-1.2B-Thinking, 4-bit](lfm2_5_1_2b_thinking_4bit.py) ¹ | MLX-LM (`lfm2`) | none |
 | [LFM2.5-1.2B-Thinking, 8-bit](lfm2_5_1_2b_thinking_8bit.py) ¹ | MLX-LM (`lfm2`) | none |
 | [LFM2.5-2.6B, 4-bit](lfm2_5_2_6b_4bit.py) ¹ | MLX-LM (`lfm2`) | none |
@@ -31,6 +33,7 @@ path.
 | [Mamba-370M, fp16](mamba_370m.py) | MLX-LM (`mamba`) | `mamba_370m_prefill_32.yaml`, `mamba_370m_prefill_128.yaml` |
 | [RecurrentGemma 2B, checkpoint precision](recurrentgemma_2b.py) | MLX-LM (`recurrent_gemma`) | `recurrentgemma_2b_prefill_512.yaml`, `recurrentgemma_2b_prefill_2048.yaml` |
 | [Whisper small, fp16 encoder](whisper_small_encoder.py) | MLX-Whisper, encoder calls | `whisper_small_encoder_30s.yaml` |
+| [Whisper large-v3-turbo, fp16 encoder](whisper_large_v3_turbo_encoder.py) ¹ | MLX-Whisper, encoder calls | none; input is `[1, 3000, 128]` (128 mel bins) |
 | [FLUX.2 transformer, random weights](flux2_4b.py) | Standalone MLX; one denoiser call | none; see [`manifest_flux.yaml`](../manifest_flux.yaml) for its inputs. No download, no image generation |
 
 ¹ New targets. Their checkpoint configs have been checked, but they haven't yet

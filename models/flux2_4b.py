@@ -37,11 +37,11 @@ BITS = 4
 GROUP_SIZE = 64
 WEIGHT_SEED = 42
 
-# The manifest picks the token counts. A full 1024px image is 4096 image
-# tokens; the step is O(tokens^2) in attention and O(tokens) in the matmuls, so
-# smaller images keep the autotuning run tractable. The rope tables are built
-# once for the longest sequence a manifest may declare and sliced per call.
-MAX_TOKENS = 2048
+# The manifest picks the token counts. A 1024x1024 image is 4096 image tokens
+# (8x VAE, 2x2 patches) and the Klein pipeline pads prompts to 512 text tokens.
+# The rope tables are built once for the longest sequence a manifest may
+# declare and sliced per call.
+MAX_TOKENS = 4608
 
 
 def _timestep_embedding(t: mx.array, dim: int = TIME_CHANNELS) -> mx.array:

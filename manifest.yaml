@@ -1,33 +1,13 @@
-model: models/recurrentgemma_2b.py   # RecurrentGemma 2B (Griffin: recurrent blocks + local attention), pretrained, prefill only
+model: models/whisper_large_v3_turbo_encoder.py   # the checkpoint local transcription apps commonly ship
 baseline: compiled
-use_library_inference: true
+use_library_inference: false  # measure the encoder call
+# Transcribe a recording: Whisper pads or cuts audio into 30-second windows and
+# encodes each one on its own, so every call is one window of 3000 mel frames
+# (10 ms hop) x 128 mel bins (large-v3). A made-up spectrogram stands in for audio.
 workloads:
-  # Three prompt lengths across the 480 to 520 band, each timed on its own and
-  # each served by the installed code; a length not listed runs the original.
-  # No context: the library starts each prompt from an empty cache.
-  - name: prefill_480
+  - name: encode_30s_window
     inputs:
-      - shape: [1, 480]
-        dtype: int32
-        low: 0
-        high: 256000
-  - name: prefill_500
-    inputs:
-      - shape: [1, 500]
-        dtype: int32
-        low: 0
-        high: 256000
-  - name: prefill_520
-    inputs:
-      - shape: [1, 520]
-        dtype: int32
-        low: 0
-        high: 256000
-budget:
-  per_region: 12
-  total: 60
-final_benchmark:
-  # Complete an MLX-LM request for one token, starting from an empty cache.
-  steps: 1
-  pairs: 8
-  warmup_steps: 3
+      - shape: [1, 3000, 128]
+        dtype: float16
+budget: {per_region: 12, total: 60}   # candidate-attempt limits, not a time limit
+final_benchmark: {steps: 10, pairs: 4, warmup_steps: 3}
