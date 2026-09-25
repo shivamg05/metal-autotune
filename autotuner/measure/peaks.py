@@ -17,7 +17,8 @@ import mlx.core as mx
 
 from .session import Session
 
-BANDWIDTH_ELEMENTS = 64 * 1024 * 1024  # fp32: two 256MB buffers in flight
+BANDWIDTH_ELEMENTS = 256 * 1024 * 1024  # fp32: 1 GB, far past any on-chip cache
+BANDWIDTH_READS = 4  # reads per sample: ~40 ms, long enough to hold the GPU clock up
 MATMUL_N = 4096  # 2048 reads about 5% under the chip's best rate, 1024 a quarter of it
 LAUNCH_CHAIN = 256
 FALLBACK_LAUNCH_US = 4.0
@@ -95,10 +96,21 @@ def implausible(peaks: Peaks) -> str | None:
 
 
 def measure_bandwidth(session: Session, samples: int = 6) -> float:
+    """Read bandwidth: a model step's traffic is almost all reads (weights,
+    cache, inputs), and an M4 reads about 15% faster than it reads and writes
+    together, so a read+write probe put every memory floor 15% too high.
+    Each sample chains several full reads so a short call after cooling
+    cannot read the GPU at a lowered clock."""
     x = mx.random.normal((BANDWIDTH_ELEMENTS,))
     mx.eval(x)
-    bytes_moved = 2 * 4 * BANDWIDTH_ELEMENTS  # read x, write y
-    fn = lambda: x + 1.0
+    bytes_moved = BANDWIDTH_READS * 4 * BANDWIDTH_ELEMENTS
+
+    def fn():
+        total = x.sum()
+        for _ in range(BANDWIDTH_READS - 1):
+            total = x.sum() + total * 0
+        return total
+
     session.warm_until_stable(fn)
     peak = 0.0
     for _ in range(samples):

@@ -110,6 +110,11 @@ Keep other GPU work quiet. Interleaved measurements reduce drift, but cannot
 guarantee that arbitrary background load affects both arms equally. The macOS
 GPU utilization counter does not measure remaining throughput; compare it
 with measured bandwidth, compute throughput, and timing noise.
+Bandwidth is measured as read speed (1 GB read four times per sample, best of
+six), because a model step's memory traffic is almost all reads. On an M4 it
+reads about 106 GB/s when quiet. Other GPU work lowers that reading and, with
+it, every memory-bound room estimate: a decode run started while the GPU was
+79% busy measured 75 GB/s and reported 0% room.
 The CLI prevents a second CLI job from running at the same time. If the A/A
 control finds a significant difference between identical code twice, the
 run stops before search because those measurements could create false wins.
