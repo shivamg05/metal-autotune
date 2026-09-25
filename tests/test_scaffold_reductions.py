@@ -105,8 +105,7 @@ def test_scalar_and_empty_reductions(shape, op):
     assert mx.allclose(got, ref, equal_nan=True).item()
 
 
-def test_square_declares_changed_arithmetic_and_other_powers_are_refused():
-    from autotuner.scaffold import NoScaffold
+def test_square_declares_changed_arithmetic_and_other_powers_keep_the_original():
     class Square:
         def __call__(self, x):
             return x ** 2
@@ -118,9 +117,10 @@ def test_square_declares_changed_arithmetic_and_other_powers_are_refused():
         assert spec.reassociates
         check(spec, model, [x], trace, span, bitwise=False,
               rtol=tolerance_for(dtype)[0], atol=tolerance_for(dtype)[1])
+    # other powers are not lowered; the original call is kept as a checked reference
     x, trace = traced(lambda x: x ** 1.5, (7, 33), 13)
-    with pytest.raises(NoScaffold, match='power-exponent-not-lowered'):
-        build_scaffold(trace, cut(trace, 0, len(trace.nodes)-1))
+    spec = build_scaffold(trace, cut(trace, 0, len(trace.nodes)-1))
+    assert spec.reference_sequence is not None
 
 
 @pytest.mark.parametrize('precise', [False, True])

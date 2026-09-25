@@ -63,6 +63,10 @@ def main(argv=None):
         print("benchmark: outputs differ from the original; not timing")
         return 1
 
+    if metadata.get("use_library_inference") and metadata.get("baseline") == "compiled":
+        original = loader.load(patched=False, measurement_baseline=True,
+                               share_weights_with=original.model, **settings)
+
     session = BenchSession()
     rows = {}
     comparisons = {}

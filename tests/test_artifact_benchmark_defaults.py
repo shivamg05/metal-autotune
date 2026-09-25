@@ -56,8 +56,9 @@ def test_benchmark_times_each_declared_length(tmp_path, monkeypatch, override, e
 
 
 
-def test_generation_benchmark_reports_request_throughput(tmp_path, monkeypatch, capsys):
-    metadata = {"use_library_inference": True, "final_benchmark": {"steps": 32}}
+@pytest.mark.parametrize("baseline", ["plain", "compiled"])
+def test_generation_benchmark_reports_request_throughput(tmp_path, monkeypatch, capsys, baseline):
+    metadata = {"baseline": baseline, "use_library_inference": True, "final_benchmark": {"steps": 32}}
     (tmp_path / "bundle.json").write_text(json.dumps(metadata))
     monkeypatch.setattr(benchmark, "_HERE", tmp_path)
     loads = []
@@ -74,6 +75,10 @@ def test_generation_benchmark_reports_request_throughput(tmp_path, monkeypatch, 
     output = tmp_path / "result.json"
     assert benchmark.main(["--json", str(output)]) == 0
     assert all(settings['generated_tokens'] == 32 for settings in loads)
+    assert len(loads) == (3 if baseline == 'compiled' else 2)
+    if baseline == 'compiled':
+        assert loads[-1]['measurement_baseline'] is True
+        assert loads[-1]['patched'] is False
     row = json.loads(output.read_text())["workloads"]["prompt"]
     assert row["baseline_tokens_per_second"] == 32
     assert row["candidate_tokens_per_second"] == 40

@@ -431,15 +431,12 @@ class GraphWrapper(ReplayWrapper):
                         else resolve_value(self.wrapped, anchor[1])))
 
                 def replace(matched):
-                    if any(expected is not None and graph_native.array_id(actual) != graph_native.array_id(expected)
-                           for actual, expected in zip(matched, anchors)):
-                        return None
                     outputs = kernels.try_call(spec, matched)
                     # A scaffold may stage through extra tmp outputs; the
                     # region's outputs are the prefix the graph receives.
                     return None if outputs is None else outputs[:len(pattern)]
 
-                roots, hits = graph_native.rewrite(roots, pattern, inputs, replace)
+                roots, hits = graph_native.rewrite(roots, pattern, inputs, replace, anchors=anchors)
                 expected = rule["count"] if active else 0
                 if hits != expected:
                     raise GraphBindingError(

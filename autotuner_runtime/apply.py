@@ -16,9 +16,10 @@ from . import kernels as _kernels
 from .swap import install
 
 
-def apply(model: object, artifact_dir: str | Path) -> object:
+def apply(model: object, artifact_dir: str | Path, *, baseline=False) -> object:
     artifact_dir = Path(artifact_dir)
-    table = json.loads((artifact_dir / "swap_table.json").read_text())
+    prefix = "baseline_" if baseline else ""
+    table = json.loads((artifact_dir / f"{prefix}swap_table.json").read_text())
     metadata_path = artifact_dir / "bundle.json"
     metadata = json.loads(metadata_path.read_text()) if metadata_path.exists() else {}
     from .state import ContextStep
@@ -29,13 +30,13 @@ def apply(model: object, artifact_dir: str | Path) -> object:
         and not isinstance(model, (ContextStep, LibraryInference))
 
     spec_mod = importlib.util.spec_from_file_location(
-        "autotune_patch_wrappers", artifact_dir / "patch" / "wrappers.py"
+        "autotune_patch_wrappers", artifact_dir / "patch" / f"{prefix}wrappers.py"
     )
     wrappers = importlib.util.module_from_spec(spec_mod)
     spec_mod.loader.exec_module(wrappers)
 
     specs = {}
-    for metal in sorted((artifact_dir / "kernels").glob("*.metal")):
+    for metal in ([] if baseline else sorted((artifact_dir / "kernels").glob("*.metal"))):
         spec = _kernels.load_spec(metal)
         specs[spec.kernel_id] = spec
 

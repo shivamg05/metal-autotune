@@ -48,7 +48,8 @@ actually ship.
 `load().inference_model`. This runs the bundled copy of your `build()` and
 gives you the patched model. It loads whatever weights `build()` picks; there's
 no argument to point it at a different checkpoint. Each artifact's own
-`README.md` shows both routes, plus a custom-model example.
+`README.md` shows both routes, with the example that fits the model (MLX-LM or
+your own builder) and imports named after the bundle's folder.
 
 ### Decode (`context`) runs
 
@@ -114,6 +115,11 @@ python benchmark.py    # repeat the saved final measurement; exits 1 unless a wi
   manifest asked for, because short direct-call workloads get extra repetitions.
   Passing `--steps` changes that count, which makes it a different experiment.
   Older bundles that didn't record a count use the manifest's.
+  Compiled library-inference bundles also carry the original compiled scopes
+  separately from the optimized code. For manual timing, use
+  `load(patched=False, measurement_baseline=True)`; `load(patched=False)`
+  remains the untouched correctness reference. Older bundles missing these
+  scopes need re-exporting to reproduce that compiled baseline.
 
 Timing noise, or a different machine, can still move the number.
 
@@ -147,13 +153,17 @@ kernels or checkpoints. The tool rejects a bad path before any GPU work starts.
 ## What's in the bundle
 
 - Your model's source code, copied unchanged.
+- `manifest.yaml`: the manifest the job ran, copied as written. Its paths point
+  to where the job ran.
 - The exact inputs the run measured. For decode runs, this includes the tokens
   that filled the cache, so `load()` rebuilds the same step.
 - The kernels and the generated code that plugs them into your model.
 - A pinned `requirements.txt`.
 - `validate.py` and `benchmark.py`, so the bundle can check and re-time itself.
-- A `README.md` written for that run. It states the measured result in plain
-  words and lists which part of the model got which kernel.
+- A `README.md` written for that run. It opens with each workload's speedup,
+  then three commands to install, validate and re-time the bundle, then how to
+  use it in your code. A reference section below lists which modules got which
+  kernel, how it was checked, and what each file is.
 
 What each number in `report.json` means is covered in the
 [usage guide](usage.md#whats-in-reportjson).

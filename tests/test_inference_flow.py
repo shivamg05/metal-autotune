@@ -116,7 +116,8 @@ def test_final_confirmation_runs_one_generation_task_per_arm(tmp_path, monkeypat
                 result = run()
                 assert isinstance(result, dict) and len(result["tokens"]) == 3
                 seen.append(result["tokens"])
-            return {"timing": {"baseline_ms": [2.0] * 4, "candidate_ms": [1.9] * 4}}
+            return {"baseline_sequence_ms": 2.0, "candidate_sequence_ms": 1.9,
+                    "timing": {"baseline_ms": [2.0] * 4, "candidate_ms": [1.9] * 4}}
 
         monkeypatch.setattr("autotuner.loop.compare_sequences", compare)
         rows, result = runner._final_sequences([])

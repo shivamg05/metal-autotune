@@ -208,14 +208,17 @@ def render_region_state(
                  "Every output, including state, is checked. Other input signatures fall back to "
                  "the original. Alternatively, supply the complete ordered-stages format from the response schema; stages use local inN/outN array slots, with explicit intermediate shapes and dtypes. Reproduce the original scalar/template behavior in that code and preserve every region output. Probe headroom is advisory; arbitrary native arithmetic cost is unknown."
                  if region.ops == ("metal_kernel",) else
-                 BODY + " When reference_sequence is present, it is the untouched multi-call starter, "
+                 BODY + " When reference_sequence is present, it is the untouched original-call starter, "
                  "not one editable Metal body. Its nodes expose every original operation, argument, "
                  "captured custom source/header and launch, and tensor connections by array id. "
                  "Write a replacement body using the region inN/outN ABI. Do not concatenate original "
                  "bodies blindly: separate launches may supply synchronization a single dispatch lacks. "
                  "A proposal may instead supply explicit ordered stages, following the stage schema. "
                  "All region outputs and state must survive. A fixed input_signature supplies automatic "
-                 "fallback outside the captured shapes and dtypes. reference_sequence and input_signature "
+                 "fallback outside the captured shapes and dtypes; input_signatures lists all allowed "
+                 "alternatives when the region has several shapes. One replacement must handle them all, "
+                 "including output-shape and launch expressions. reference_sequence.variants contains "
+                 "the original wiring for each shape. reference_sequence, input_signature and input_signatures "
                  "are harness-owned, never proposal fields."),
         "legend": dict(LEGEND),
     }

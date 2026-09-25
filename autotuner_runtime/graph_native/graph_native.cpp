@@ -1,6 +1,7 @@
 // Functional graph replacement: array values and the input graph are never mutated.
 #include <nanobind/nanobind.h>
 #include <nanobind/stl/string.h>
+#include <nanobind/stl/optional.h>
 #include <nanobind/stl/tuple.h>
 #include <nanobind/stl/vector.h>
 #include <functional>
@@ -56,6 +57,10 @@ bool match(const mx::array& pattern, const mx::array& value,
       } else {
         if (!a.has_primitive() || a.status() != mx::array::unscheduled ||
             p.status() != mx::array::unscheduled || !equivalent(p, a)) return false;
+        // Preserve operation identity across parallel branches. Boundary
+        // parameters remain free to alias (for example, x + x).
+        for (const auto& [id, value] : bound)
+          if (!parameters.contains(id) && id != p.id() && value.id() == a.id()) return false;
         for (size_t i = 0; i < p.inputs().size(); ++i)
           pending.emplace_back(p.inputs()[i], a.inputs()[i]);
         auto po = p.outputs(), ao = a.outputs();
@@ -65,6 +70,8 @@ bool match(const mx::array& pattern, const mx::array& value,
           // outputs of one multi-output primitive.
           auto it = bound.find(po[i].id());
           if (it != bound.end() && it->second.id() != ao[i].id()) return false;
+          for (const auto& [id, value] : bound)
+            if (!parameters.contains(id) && id != po[i].id() && value.id() == ao[i].id()) return false;
           if (po[i].id() != p.id()) bound.emplace(po[i].id(), ao[i]);
         }
       }
@@ -102,7 +109,8 @@ std::tuple<std::vector<mx::array>, int> rewrite(
     const std::vector<mx::array>& roots,
     const std::vector<mx::array>& patterns,
     const std::vector<mx::array>& parameters,
-    const nb::callable& replacement) {
+    const nb::callable& replacement,
+    const std::vector<std::optional<mx::array>>& anchors) {
   if (patterns.empty()) throw std::invalid_argument("graph pattern needs at least one output");
   Ids leaves;
   for (const auto& p : parameters) {
@@ -112,6 +120,12 @@ std::tuple<std::vector<mx::array>, int> rewrite(
   for (const auto& p : patterns)
     if (!p.has_primitive() || p.status() != mx::array::unscheduled || leaves.contains(p.id()))
       throw std::invalid_argument("graph pattern outputs must be unevaluated operations");
+
+  if (!anchors.empty() && anchors.size() != parameters.size())
+    throw std::invalid_argument("graph anchors must align with parameters");
+  Bindings fixed;
+  for (size_t i = 0; i < anchors.size(); ++i)
+    if (anchors[i]) fixed.emplace(parameters[i].id(), *anchors[i]);
 
   auto nodes = graph_nodes(roots);
   std::unordered_map<std::string, std::vector<mx::array>> index;
@@ -125,7 +139,7 @@ std::tuple<std::vector<mx::array>, int> rewrite(
   const auto& anchor = patterns.back();
   for (const auto& a : index[node_key(anchor)]) {
     if (owners.contains(a.id())) continue;
-    Bindings bound;
+    Bindings bound = fixed;
     if (!match(anchor, a, leaves, bound)) continue;
     std::function<bool(size_t, Bindings&)> complete;
     complete = [&](size_t i, Bindings& bindings) {
@@ -272,7 +286,9 @@ std::tuple<bool, std::string> same_structure(
 }
 
 NB_MODULE(_graph_native, m) {
-  m.def("rewrite", &rewrite);
+  m.def("rewrite", &rewrite, nb::arg("roots"), nb::arg("patterns"),
+        nb::arg("parameters"), nb::arg("replacement"),
+        nb::arg("anchors") = std::vector<std::optional<mx::array>>{});
   m.def("same_structure", &same_structure);
   m.def("array_id", [](const mx::array& a) { return a.id(); });
 }

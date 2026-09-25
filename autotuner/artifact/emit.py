@@ -131,12 +131,18 @@ def emit_artifact(
         (out / "patch" / "wrappers.py").write_text(module)
         (out / "swap_table.json").write_text(json.dumps(table, indent=1) + "\n")
 
+        baseline_wrappers = bundle.baseline_wrappers if bundle is not None else []
+        if baseline_wrappers:
+            baseline_module, baseline_table = dedupe_wrappers(baseline_wrappers)
+            (out / "patch" / "baseline_wrappers.py").write_text(baseline_module)
+            (out / "baseline_swap_table.json").write_text(json.dumps(baseline_table, indent=1) + "\n")
+
         runtime_src = Path(autotuner_runtime.__file__).parent
         runtime_dst = out / "runtime" / "autotuner_runtime"
         runtime_dst.mkdir(parents=True)
         for py in runtime_src.glob("*.py"):
             shutil.copy(py, runtime_dst / py.name)
-        if any("GraphWrapper" in w.source for w in wrappers):
+        if any("GraphWrapper" in w.source for w in [*wrappers, *baseline_wrappers]):
             from autotuner_runtime.graph_native import prepare
             native_dst = runtime_dst / "graph_native"
             shutil.copytree(runtime_src / "graph_native", native_dst,
@@ -146,9 +152,12 @@ def emit_artifact(
         (out / "apply.py").write_text(_APPLY_SHIM)
         (out / "__init__.py").write_text("from .apply import apply\n")
         report.write(out / "report.json")
+        if report.manifest_path and Path(report.manifest_path).is_file():
+            # the request as written: sweep, budget and baseline, not just the shapes timed
+            shutil.copy(report.manifest_path, out / "manifest.yaml")
 
         if bundle is not None:
-            write_bundle(out, bundle, table, report.to_dict())
+            write_bundle(out, bundle, table, report.to_dict(), package=final.name)
             (out / "__init__.py").write_text("from .apply import apply\nfrom .load import load\n")
         if validate is not None:
             validate(out)

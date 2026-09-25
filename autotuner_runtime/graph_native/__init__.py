@@ -124,8 +124,9 @@ def _load():
     return _module
 
 
-def rewrite(roots, pattern_outputs, parameters, replacement):
-    return _load().rewrite(roots, pattern_outputs, parameters, replacement)
+def rewrite(roots, pattern_outputs, parameters, replacement, *, anchors=()):
+    """Known boundary arrays constrain matching before choosing an occurrence."""
+    return _load().rewrite(roots, pattern_outputs, parameters, replacement, anchors)
 
 
 def same_structure(original_roots, rewritten_roots):

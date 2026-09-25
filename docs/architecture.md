@@ -10,8 +10,14 @@ The invariants below describe the boundaries that implementation changes must pr
    where replacing work could save whole-model time. Estimates guide search;
    they never establish a speedup.
 3. **Build a starter.** `scaffold/` uses supported lowering, MLX source, or captured
-   custom-kernel source to provide an editable implementation. Unsupported regions
-   are reported rather than guessed.
+   custom-kernel source to provide an editable implementation. If lowering cannot
+   produce a starter, a replayable region keeps its original calls as the reference;
+   the agent can write replacement Metal from scratch, in one or multiple stages.
+   The reference itself cannot ship. Unreplayable or unbindable regions stay unsupported.
+   If a region appears at several shapes, its reference retains the original wiring
+   for each shape. One proposed kernel must pass all recorded cases; other shapes
+   still use the original model. A failed generated starter takes this same path
+   before spending a judge attempt on repair.
 4. **Search.** `judge/` supplies bounded metadata and code context. The agent plans
    four opening designs, then may revisit earlier candidates, combine ideas, or
    start another design. Budgets limit actual attempts. Full earlier code remains
@@ -23,6 +29,20 @@ The invariants below describe the boundaries that implementation changes must pr
 6. **Export.** `artifact/` writes a bundle, validates it in a fresh process, then
    publishes it. `autotuner_runtime/` runs the installed kernels without depending
    on the search harness. See [artifact usage](artifacts.md).
+
+## Installation and exported baselines
+
+Graph matching constrains known boundary inputs (module weights and arguments)
+before selecting branches. Distinct recorded operations must match distinct live
+operations; boundary inputs may still alias. Before searching a region, an
+original-computation replacement checks its graph cuts across the declared
+workloads, then restores the incumbent. A failed check closes the region without
+spending judge attempts. Candidate correctness and performance gates still apply.
+
+Library-inference bundles retain the exact empty compiled wrappers used by the
+job's baseline. Artifact benchmarks reinstall those wrappers on the original arm;
+correctness validation continues to use the untouched model. Older bundles lacking
+that baseline cannot claim a compiled comparison and must be re-exported.
 
 ## Boundaries to preserve
 

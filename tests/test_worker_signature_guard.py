@@ -10,7 +10,7 @@ from autotuner.sandbox.protocol import EvalSetSpec, LadderSpec
 from autotuner_runtime.kernels import KernelSpec
 
 
-@pytest.mark.parametrize('specialization', ['input_signature', 'native_call'])
+@pytest.mark.parametrize('specialization', ['input_signature', 'input_signatures', 'native_call'])
 def test_worker_rejects_automatic_fallback_before_kernel_call(monkeypatch, specialization):
     previous = mx.default_device()
     mx.set_default_device(mx.cpu)
@@ -21,6 +21,8 @@ def test_worker_rejects_automatic_fallback_before_kernel_call(monkeypatch, speci
         signature = [[[1], 'float32']]
         if specialization == 'input_signature':
             spec = replace(spec, input_signature=signature)
+        elif specialization == 'input_signatures':
+            spec = replace(spec, input_signatures=[signature, [[[3], 'float32']]])
         else:
             spec = replace(spec, native_call={'signature': signature, 'factory': {
                 'input_names': ['in0'], 'output_names': ['out0']},

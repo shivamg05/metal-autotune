@@ -43,6 +43,7 @@ class ModelBundle:
     recovery: bool = False
     checkpoint_pins: list[dict] | None = None
     use_library_inference: bool = False
+    baseline_wrappers: list = field(default_factory=list)
 
 
 def _project_root(path: Path) -> Path:
@@ -245,7 +246,8 @@ def _tolerance_defaults():
             for dtype in (mx.float16, mx.bfloat16, mx.float32)}
 
 
-def write_bundle(out: Path, bundle: ModelBundle, patches: Sequence[Mapping], report_dict: dict) -> dict:
+def write_bundle(out: Path, bundle: ModelBundle, patches: Sequence[Mapping], report_dict: dict,
+                 package: str = "artifact") -> dict:
     """Write model/, workloads/, the scripts, bundle.json, requirements.txt
     and README.md into an artifact directory that already holds the kernels,
     wrappers, swap table and runtime. Returns the bundle.json content."""
@@ -327,6 +329,7 @@ def write_bundle(out: Path, bundle: ModelBundle, patches: Sequence[Mapping], rep
         "entry": model_path.relative_to(root).as_posix(),
         "baseline": bundle.baseline,
         "use_library_inference": bundle.use_library_inference,
+        "baseline_scopes": [w.scope_path for w in bundle.baseline_wrappers],
         "measurement": {
             "kind": "library_generation" if bundle.use_library_inference else "forward",
             "generated_tokens": bundle.final_benchmark.get("steps", 10) if bundle.use_library_inference else None,
@@ -355,7 +358,7 @@ def write_bundle(out: Path, bundle: ModelBundle, patches: Sequence[Mapping], rep
     (out / "requirements.txt").write_text(requirements(packages))
     for name, script in _SCRIPTS.items():
         shutil.copy(Path(__file__).with_name(script), out / name)
-    (out / "README.md").write_text(render_readme(metadata, report_dict))
+    (out / "README.md").write_text(render_readme(metadata, report_dict, package))
     return metadata
 
 
@@ -364,51 +367,102 @@ def _ms(value: float) -> str:
 
 
 def _result_lines(metadata: dict, report: dict) -> list[str]:
+    """One bullet per workload: the headline speedup first, then the numbers behind it."""
     from autotuner_runtime.sequence import throughput_text
 
-    baseline = ("the model run under mx.compile" if metadata["baseline"] == "compiled"
-                else "the plain model exactly as build() returns it")
-    lines = [f"Every timing below compares the patched model against {baseline}, "
-             "both measured together at the end of the job."]
     if not metadata["patches"]:
-        lines.append("\nNo replacement was installed: no attempt established a correct, "
-                     "confirmed whole-model speedup. The loaded model runs the original code.")
-        return lines
+        return ["No replacement was installed: no attempt produced a correct kernel with a "
+                "confirmed whole-model speedup, so the loaded model runs the original code."]
+    lines = []
     sequences = report.get("final", {}).get("sequences", {})
+    task = "one generation request" if metadata.get("use_library_inference") else "one step"
     for name, clocks in report.get("step_ms", {}).items():
         if "after" not in clocks:
             continue
         untouched = clocks.get("baseline_at_end", clocks.get("before"))
-        verdict = ("confirmed above the timing noise" if clocks.get("win_confirmed")
-                   else "not resolved above the timing noise, so treat it as no change")
-        speedup = f", a {clocks['speedup']:.3f}x speedup" if clocks.get("speedup") else ""
-        task = "one generation request" if metadata.get("use_library_inference") else "one step"
-        lines.append(f"\n- `{name}`: {task} took {_ms(untouched)} untouched and "
-                     f"{_ms(clocks['after'])} patched{speedup}, {verdict}.")
+        single = (f"{task}: {_ms(untouched)} untouched, {_ms(clocks['after'])} patched"
+                  + (f" ({clocks['speedup']:.3f}x)" if clocks.get("speedup") else "")
+                  + (", confirmed above the timing noise" if clocks.get("win_confirmed")
+                     else ", not resolved above the timing noise, so treat it as no change"))
         row = sequences.get(name)
-        if row and row.get("steps"):
-            verdict = ("confirmed" if row.get("win_confirmed") else "not resolved above the timing noise")
+        if row and row.get("steps") and row.get("candidate_sequence_ms"):
             unit = "generated tokens" if row.get("workload_kind") == "library_generation" else "consecutive steps"
-            lines.append(f"  {row['steps']} {unit}, run whole and alternated: "
-                         f"{_ms(row['baseline_sequence_ms'])} untouched, "
-                         f"{_ms(row['candidate_sequence_ms'])} patched, {verdict}.")
+            confirmed = "confirmed" if row.get("win_confirmed") else "not resolved above the timing noise"
+            speedup = row.get("speedup") or row["baseline_sequence_ms"] / row["candidate_sequence_ms"]
+            lines.append(f"- `{name}`: **{speedup:.3f}x faster** over {row['steps']} {unit} "
+                         f"({_ms(row['baseline_sequence_ms'])} untouched, "
+                         f"{_ms(row['candidate_sequence_ms'])} patched), {confirmed}. "
+                         f"For {single}.")
             if rates := throughput_text(row):
-                lines.append(f"  {rates}.")
+                lines.append(f"  Generated tokens/sec, {rates.split(': ', 1)[1]}.")
+        elif clocks.get("speedup"):
+            lines.append(f"- `{name}`: **{clocks['speedup']:.3f}x faster** for {single}.")
+        else:
+            lines.append(f"- `{name}`: {single}.")
     return lines
 
 
-def render_readme(metadata: dict, report: dict) -> str:
+def _measured_on(metadata: dict, report: dict) -> str:
+    baseline = ("the same model run under `mx.compile`" if metadata["baseline"] == "compiled"
+                else "the plain model exactly as build() returns it")
+    chip = report.get("machine", {}).get("chip")
+    where = f" on an {chip}" if chip and chip[0].upper() in "AEIOU" else (f" on a {chip}" if chip else "")
+    return (f"Measured{where} against {baseline}, with both versions timed together at the end "
+            "of the job. Other machines, weights and input sizes can move these numbers.")
+
+
+def _compress_paths(paths: Sequence[str]) -> list[str]:
+    """`blocks.0.attn` ... `blocks.19.attn` reads as `blocks.{0..19}.attn`."""
+    groups: dict[tuple, list[int]] = {}
+    order, loose = [], []
+    for path in paths:
+        parts = path.split(".")
+        numbered = [i for i, p in enumerate(parts) if p.isdigit()]
+        if len(numbered) != 1:
+            loose.append(path)
+            continue
+        i = numbered[0]
+        key = (tuple(parts[:i]), tuple(parts[i + 1:]))
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(int(parts[i]))
+    out = []
+    for key in order:
+        head, tail = key
+        numbers = sorted(groups[key])
+        if len(numbers) >= 3 and numbers == list(range(numbers[0], numbers[-1] + 1)):
+            out.append(".".join([*head, f"{{{numbers[0]}..{numbers[-1]}}}", *tail]))
+        else:
+            out.extend(".".join([*head, str(n), *tail]) for n in numbers)
+    return out + loose
+
+
+def _replacement_rows(patches: Sequence[Mapping]) -> str:
+    by_kernels: dict[tuple, list[str]] = {}
+    for p in patches:
+        by_kernels.setdefault(tuple(p["kernel_ids"]), []).append(p["module_path"] or "(the model itself)")
+    rows = []
+    for kernels, paths in by_kernels.items():
+        shown = ", ".join(f"`{p}`" for p in _compress_paths(paths))
+        rows.append(f"| {shown} | {len(paths)} | {', '.join(f'`{k}`' for k in kernels)} |")
+    return "\n".join(rows) or "| (none) | 0 | |"
+
+
+def _package(name: str) -> str:
+    return name if name.isidentifier() else "artifact"
+
+
+def render_readme(metadata: dict, report: dict, package: str = "artifact") -> str:
     entry = metadata["entry"]
-    rows = "\n".join(f"| `{p['module_path'] or '(the model itself)'}` | {', '.join(f'`{k}`' for k in p['kernel_ids'])} |"
-                     for p in metadata["patches"]) or "| (none) | |"
-    compiled_note = ("Because the job measured against the compiled model, the callable `load()` "
-                     "returns already runs the forward pass under `mx.compile`; pass "
-                     "`compile=False` for the plain model."
+    pkg = _package(package)
+    compiled_note = ("Because the job measured against the compiled model, `load()` runs the "
+                     "forward pass under `mx.compile`; pass `compile=False` for the plain model."
                      if metadata["baseline"] == "compiled" else
                      "The job measured against the plain model, so `load()` returns the plain "
                      "model; pass `compile=True` to run it under `mx.compile` instead.")
-    workloads = ", ".join(f"`{name}` " + " ".join(str(tuple(s)) for s in w["shapes"])
-                          for name, w in metadata["workloads"].items()) or "none"
+    workloads = "\n".join(f"  - `{name}`: " + ", ".join(str(tuple(s)) for s in w["shapes"])
+                          for name, w in metadata["workloads"].items()) or "  - none"
     context = metadata.get("context")
     if context:
         compiled_note = "The repeatable cached step owns mutable state and runs without outer mx.compile."
@@ -433,172 +487,166 @@ def render_readme(metadata: dict, report: dict) -> str:
             " Each trial starts from independent cache state. "
             + (f"The saved {context['context']}-token context is prepared before timing. " if context else "")
             + "For normal use, pass `loaded.inference_model` to your library's generation function.")
+        usage = USAGE_MLX_LM.format(pkg=pkg)
+    else:
+        usage = USAGE_CUSTOM.format(pkg=pkg)
+    rename = ("" if pkg == package else
+              f" The folder name `{package}` is not a valid Python name, so the examples assume "
+              "you renamed it to `artifact`.")
     return README_TEMPLATE.format(
-        entry=entry, mlx=metadata["mlx"], python=metadata["python"],
-        result="\n".join(_result_lines(metadata, report)), rows=rows,
+        entry=entry, mlx=metadata["mlx"], python=metadata["python"], pkg=pkg, rename=rename,
+        result="\n".join(_result_lines(metadata, report)), measured_on=_measured_on(metadata, report),
+        usage=usage, rows=_replacement_rows(metadata["patches"]),
         compiled_note=compiled_note, workloads=workloads, context_note=context_note,
         steps=metadata["final_benchmark"].get("steps", "?"),
         pairs=metadata["final_benchmark"].get("pairs", "?"),
     )
 
 
-README_TEMPLATE = """# Optimized `{entry}`
-
-This folder is the result of one autotuning job on the model defined in
-`model/{entry}`. It holds that model's source, the Metal kernels (GPU programs)
-that replace runs of its operations, the generated Python that calls them, the
-inputs the job measured on, and scripts to load, verify, and re-time the result.
-It needs an Apple Silicon Mac, Python {python}, and the packages pinned in
-`requirements.txt` (mlx {mlx}). It does not need the optimizer. It still needs the model's original external
-resources: a Hub model may use the local cache or download, a local checkpoint
-must be accessible, and random initialization remains random. `weight_sources`
-in `bundle.json` records checkpoints observed during the job, without forcing
-future loads to use them. Pin a revision in your model source when needed.
-
-## Use it
-
-Copy this folder into your project and install its `requirements.txt` in your
-Python environment. Run the examples from the directory containing `artifact/`
-(adjust the import if you renamed the folder).
-
-For normal inference: load your weights, apply the optimized code, then call
-the model as usual. Load weights before applying the patch, and use the model
-returned by `apply()`.
-
-For an MLX-LM model, using a compatible local checkpoint or Hub model ID:
+USAGE_MLX_LM = """Load the model the way you normally do, patch it, and use the returned model:
 
 ```python
 from mlx_lm import load, generate
-from artifact import apply
+from {pkg} import apply
 
-model, tokenizer = load("/path/to/my-checkpoint")
+model, tokenizer = load("/path/to/checkpoint-or-hub-id")
 model = apply(model)
-text = generate(model, tokenizer, prompt="Explain gravity simply.")
-print(text)
+print(generate(model, tokenizer, prompt="Hello"))
 ```
 
-Use the same model structure returned by the original `build()`. If your
-builder wraps the MLX-LM model, recreate that wrapper before calling `apply()`.
-Generation handles its cache normally; `apply()` does not add the benchmark's
-cache-reset behavior or compile the whole model.
+If your builder wraps the MLX-LM model, recreate that wrapper before calling
+`apply()`. Generation handles its cache normally."""
 
-For a custom MLX model, use its original builder and weight-loading API:
+USAGE_CUSTOM = """Build and load your model the way you normally do, patch it, and use the
+returned model:
 
 ```python
-from artifact import apply
+from {pkg} import apply
 
-model = build()  # your original model builder
-model.load_weights("my_weights.safetensors")
-model = apply(model)
+model = build()                              # your original builder
+model.load_weights("my_weights.safetensors")  # if you load weights
+model = apply(model)                         # keep the returned model
 outputs = model(*inputs)
-```
+```"""
 
-Different weight values can use the same patch when the model's operations,
-module layout, tensor shapes, dtypes, and quantization remain compatible.
-Changing the architecture or quantization requires another optimization run.
-Unsupported input shapes use the original implementation. The reported speedup
-applies to the measured workload; check correctness and speed with your own
-weights and inference inputs before relying on it.
 
-## Load from the bundled source
+README_TEMPLATE = """# Optimized `{entry}`
 
-`load()` uses the bundled model's original `build()`, including its weight
-loading or random initialization. It has no separate checkpoint-path argument.
-Use `apply()` above when you want to choose weights yourself.
+This folder makes the model in `model/{entry}` faster on Apple Silicon. It
+comes from one metal-autotune job: parts of the model now run custom Metal GPU
+kernels, and the job checked that the outputs still match the original. The
+folder is self-contained, so you don't need the optimizer to use it.
 
-```python
-from artifact import load
-loaded = load()
-model = loaded.inference_model  # normal inference with your own cache, if needed
-outputs = model(*inputs)
-```
-
-Calling `loaded(*inputs)` instead reproduces the job's benchmark interface,
-including cache resets for cached workloads and its recorded compilation mode.
-`loaded.inference_model` exposes the patched model without that outer benchmark
-interface; use your model library's normal inference or generation API.
-
-`load(patched=False)` gives the untouched model built the same way. For a
-side-by-side comparison with identical weights, use:
-
-```python
-original = load(patched=False)
-patched = load(share_weights_with=original.model)
-```
-
-The validation and benchmark scripts do this automatically, including for
-randomly initialized models. {compiled_note}{context_note}
-
-## Measured result
+## Result
 
 {result}
 
-## What was replaced
+{measured_on}
 
-Each row is one part of the model (named by its attribute path from the model
-root) and the kernel that now runs inside it. A kernel only runs on the input
-shapes and dtypes the job recorded; any other call falls back to the original code.
+## Quick start
 
-| module path | kernel |
-|---|---|
-{rows}
-
-## Layout
-
-- `README.md`: this file.
-- `bundle.json`: the entry file, the baseline the job measured against, the mlx and Python versions, the saved workloads, and which kernels patch which module paths.
-- `load.py`: `load()` builds the model from `model/`, applies the patch, and returns it ready to call.
-- `apply.py`: `apply(model)` patches a model you built yourself from the same source.
-- `validate.py`: checks that the patched model's outputs match the original's on the saved inputs.
-- `benchmark.py`: re-times the original and patched models on the saved inputs, the way the job's final check did.
-- `model/`: the model's source files, laid out as in the project they came from.
-  Source is copied unchanged. `build()` loads or initializes weights exactly
-  as the original builder does. External weights are not copied or redirected;
-  `ARTIFACT_FILES` includes only resources the model author explicitly lists.
-- `workloads/`: the input tensors the job traced and measured on, one safetensors file per workload ({workloads}).
-- `kernels/`: a `.metal` body and `.launch.json` per candidate. For an ordered sequence, the actual shader bodies live in `<id>.stages/0.metal`, `1.metal`, etc.; the launch file declares their inputs, outputs, shapes and dtypes.
-- `patch/wrappers.py`: the installation rules. Supported scopes construct their original computation, substitute selected graph operations, and cache the compiled result. Scopes with unsupported Python state retain certified replay wrappers.
-- `swap_table.json`: which wrapper class installs at which module path, with its kernel ids.
-- `runtime/`: the package that loads kernels and installs wrappers, including the matching native graph extension when used. Its MLX/Python/platform compatibility is checked before loading.
-- `buffers/`: reserved for precomputed data; empty.
-- `report.json`: the job's full account: every region, every attempt, every measurement.
-- `requirements.txt`: the pinned packages.
-
-## Verify it
+Run these from inside this folder. You need an Apple Silicon Mac and Python {python}.
 
 ```sh
-python validate.py --sequences  # outputs and cache state, including consecutive steps
-python benchmark.py    # repeat the saved experiment, original vs patched, {pairs} alternated pairs
+pip install -r requirements.txt   # pins mlx {mlx}
+python validate.py                # patched outputs match the original on the saved inputs
+python benchmark.py               # re-time original vs patched, the way the job did
 ```
 
-`validate.py` uses the job's correctness rule on every saved workload. Edits
-that preserve floating-point evaluation must match the original bit for bit.
-Edits that change floating-point evaluation use the tolerances recorded in
-`bundle.json`: each floating value must satisfy
-`abs(patched - original) <= atol + rtol * abs(original)`. Nonfloating values,
-shapes, and dtypes stay exact. Nonfinite positions must match. The complete
-patched model is always compared with the untouched model, so errors from
-multiple replacements share one allowance. Validation exits nonzero on a
-mismatch. Older bundles with saved fp32 references retain their original rule.
-`benchmark.py` runs the correctness check first, then times whole runs of
-consecutive steps for both models, alternating their order and cooling between
-runs, and exits nonzero unless the patched model is faster by more than the
-measurement's own uncertainty. By default it uses each workload's actual final
-measurement length, including extra repetitions used for very short forward calls.
-Library inference uses the saved generated-token count. `--steps` overrides the
-length for every workload; `--pairs` overrides the number of comparison pairs.
+## Use it in your code
 
-## Change it
+Put this folder next to your code and import it by its folder name.{rename} If
+you rename the folder, change the import to match.
 
-- A kernel is `kernels/<id>.metal` (the body; mlx generates the signature from
-  the input and output names) plus `kernels/<id>.launch.json` (the launch
-  arithmetic). For a staged candidate, edit its bodies in `kernels/<id>.stages/`
-  and the stage configurations in the launch file. Edit either, then run
-  `validate.py` and `benchmark.py` again.
-  A kernel that no longer matches the original's outputs must not be used.
-- `patch/wrappers.py` is ordinary Python: each class replays one module's
-  recorded operations, calling a kernel where the job spliced one in and
-  falling back to the original module on shapes it did not record.
-- To change the model itself, edit the source in `model/` and run the
-  optimizer again: the patch is tied to the exact operations it recorded.
+{usage}
+
+To build the model from the bundle's own copy of the source instead:
+
+```python
+from {pkg} import load
+model = load().inference_model
+```
+
+**What it works with.** The kernels were made for this model's exact
+operations, layer layout, shapes, dtypes and quantization. Different weight
+values with the same structure (for example, a fine-tune) are fine. A
+different architecture or quantization needs a new optimization run. Inputs
+whose shapes the job didn't measure run the original code: correct, just not
+faster. Check speed and correctness on your own weights and inputs before
+relying on the result.
+
+**Weights are not included.** `build()` loads or initializes weights exactly
+as the original does: a Hub model uses your cache or downloads, a local
+checkpoint must be reachable, and random initialization stays random.
+`bundle.json` records the checkpoints the job saw (`weight_sources`).
+
+## Reference
+
+### What was replaced
+
+Each row is a set of modules (by attribute path from the model root) and the
+kernels that now run inside them. A kernel runs only on the input shapes and
+dtypes the job recorded; anything else falls back to the original code.
+
+| modules | count | kernels |
+|---|---|---|
+{rows}
+
+### Loading options
+
+`load()` runs the bundled `build()` and applies the patch. Calling the returned
+object (`loaded(*inputs)`) reproduces the job's benchmark interface;
+`loaded.inference_model` is the patched model for normal use.
+`load(patched=False)` gives the untouched model; for a side-by-side comparison
+with identical weights use `original = load(patched=False, measurement_baseline=True)`
+and `patched = load(share_weights_with=original.model)`.
+`measurement_baseline=True` restores the job's original compiled scopes for
+timing; without it, `patched=False` leaves the model untouched for correctness
+checks. {compiled_note}{context_note}
+
+### How it was checked
+
+`validate.py` runs every saved workload through the patched and the original
+model and applies the job's correctness rule. Edits that keep floating-point
+evaluation unchanged must match bit for bit. Edits that change it must satisfy
+`abs(patched - original) <= atol + rtol * abs(original)` with the tolerances in
+`bundle.json`. Shapes, dtypes and non-floating values must match exactly, and
+non-finite values must sit in the same places. The whole patched model is
+compared at once, so several replacements share one allowance.
+`python validate.py --sequences` also checks consecutive steps and cache state.
+`validate.py` exits nonzero on a mismatch.
+
+`benchmark.py` runs that check first, then times whole runs of {steps}
+consecutive steps for both models, alternating their order across {pairs} pairs
+with cooling in between. It exits nonzero unless the patched model is faster by
+more than the measurement's own noise. `--steps` and `--pairs` override the
+job's settings.
+
+### Files
+
+- `manifest.yaml`: the manifest the job ran, as written (when the job had one);
+  its paths point to where the job ran.
+- `model/`: the model's source, copied unchanged.
+- `workloads/`: the inputs the job measured on, one file per workload:
+{workloads}
+- `kernels/`: one `.metal` body and `.launch.json` per kernel. A staged kernel
+  keeps its shader bodies in `<id>.stages/0.metal`, `1.metal`, and so on.
+- `patch/wrappers.py` and `swap_table.json`: which module each kernel installs
+  into and how.
+- `runtime/`: the small package that loads the kernels and installs them. It
+  checks MLX, Python and platform compatibility before loading.
+- `load.py`, `apply.py`, `validate.py`, `benchmark.py`: the entry points above.
+- `bundle.json`: entry file, baseline, versions, workloads, tolerances and patches.
+- `report.json`: the job's full record: every region, attempt and measurement.
+- `requirements.txt`: the pinned packages. `buffers/` is reserved and empty.
+
+### Changing it
+
+A kernel is `kernels/<id>.metal` (the body; MLX generates the signature from
+the input and output names) plus `kernels/<id>.launch.json` (the launch
+arithmetic). Edit either, then run `validate.py` and `benchmark.py` again, and
+don't use a kernel that no longer matches the original's outputs.
+`patch/wrappers.py` is ordinary Python. To change the model itself, edit
+`model/` and run the optimizer again: the patch is tied to the exact operations
+it recorded.
 """

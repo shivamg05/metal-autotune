@@ -109,17 +109,24 @@ class LoadedModel:
         return self._forward(*inputs)
 
 
-def load(*, patched=True, compile=None, share_weights_with=None, generated_tokens=None):
+def load(*, patched=True, compile=None, share_weights_with=None, generated_tokens=None,
+         measurement_baseline=False):
     """Build the model from model/, apply the patch, run it as the job measured it.
 
-    patched=False gives the untouched model built the same way. compile
-    defaults to the job's baseline: the forward pass runs under mx.compile
+    patched=False gives the untouched model built the same way. Set
+    measurement_baseline=True to restore the original compiled scopes for timing.
+    compile defaults to the job's baseline: the forward pass runs under mx.compile
     when the job measured against the compiled model. share_weights_with
     takes a model built earlier from this bundle; the new model then points
     at that model's weight arrays instead of holding a second copy, which is
     how the job kept two models resident for its comparisons.
     """
     metadata = json.loads((_HERE / "bundle.json").read_text())
+    if measurement_baseline and patched:
+        raise ValueError("measurement_baseline requires patched=False")
+    if (measurement_baseline and metadata.get("use_library_inference")
+            and metadata["baseline"] == "compiled" and not metadata.get("baseline_scopes")):
+        raise ValueError("bundle lacks the compiled baseline scopes; re-export it before benchmarking")
     if compile and (metadata.get("context") or metadata.get("use_library_inference")):
         raise ValueError("the inference/cache controller cannot be compiled from outside the model")
     if generated_tokens is not None and not metadata.get("use_library_inference"):
@@ -144,6 +151,9 @@ def load(*, patched=True, compile=None, share_weights_with=None, generated_token
         mx.eval(model.parameters())
     if patched:
         model = _module("_artifact_apply", _HERE / "apply.py").apply(model)
+    if measurement_baseline and metadata.get("baseline_scopes"):
+        from autotuner_runtime.apply import apply
+        model = apply(model, _HERE, baseline=True)
     compiled = metadata["baseline"] == "compiled" if compile is None else bool(compile)
     if metadata.get("use_library_inference"):
         compiled = False

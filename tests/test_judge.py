@@ -144,7 +144,7 @@ def test_validate_rejects_shapes_and_items():
 def test_validate_rejects_harness_owned_kernel_fields():
     # init_value, math_mode, streams, and the kernel name are the harness's
     for key in ("init_value", "math_mode", "stream", "name", "output_dtypes",
-                "native_call", "input_signature", "reference_sequence"):
+                "native_call", "input_signature", "input_signatures", "reference_sequence"):
         rejects({"mutations": [], "kernel": proposal(**{key: "x"})}, "not the judge's to set")
 
 

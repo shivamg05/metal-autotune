@@ -62,6 +62,7 @@ class RegionContract:
     output_shapes: tuple[tuple[int, ...], ...] = ()
     native_call: dict | None = None
     input_signature: list | None = None
+    input_signatures: list | None = None
 
 
 @dataclass(frozen=True)
@@ -133,6 +134,8 @@ def check(spec: KernelSpec, contract: RegionContract) -> list[Failure]:
     fails: list[Failure] = []
     if spec.input_signature != contract.input_signature:
         return [Failure("input_signature", "input specialization differs from the region contract")]
+    if spec.input_signatures != contract.input_signatures:
+        return [Failure("input_signatures", "input specializations differ from the region contract")]
     if spec.native_call != contract.native_call:
         return [Failure("native_contract", "native call settings differ from the original kernel")]
     if spec.native_call is not None and not spec.stages and (spec.template or len(spec.output_names) != len(contract.output_names)):

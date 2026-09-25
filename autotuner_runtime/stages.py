@@ -14,7 +14,8 @@ def wiring(spec):
         kernel = stage.kernel
         if kernel.stages or kernel.reference_sequence is not None or kernel.native_call is not None:
             raise ValueError(f"stage {i}: must be a plain, non-nested Metal dispatch")
-        if kernel.fallback_predicate is not None or kernel.input_signature is not None or kernel.atomic_outputs:
+        if (kernel.fallback_predicate is not None or kernel.input_signature is not None
+                or kernel.input_signatures is not None or kernel.atomic_outputs):
             raise ValueError(f"stage {i}: fallback and compiler policies belong to the whole candidate")
         if any(name not in available for name in stage.inputs):
             raise ValueError(f"stage {i}: inputs must name region inputs or earlier results")

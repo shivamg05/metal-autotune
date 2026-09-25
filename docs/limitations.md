@@ -10,7 +10,10 @@ not the result.
 - **MLX on Apple Silicon only.** Other GPU backends aren't supported.
 - **Not every part of every model.** Some operations can't be captured,
   rewritten or safely replaced yet. Those regions are skipped, and the report
-  lists them with the reason.
+  lists them with the reason. When starter-code generation is the only obstacle,
+  the tool keeps the original operations as a checked reference and lets the AI
+  write a replacement from scratch. That replacement must pass the same checks;
+  this is sampled verification, not a mathematical proof for every input.
 - **Cache handling and MLX-LM generation depend on the model's API.** If you
   explicitly ask for something the model doesn't support, the run should refuse
   to start rather than quietly time a different task. See the notes for each

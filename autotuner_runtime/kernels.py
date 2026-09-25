@@ -49,6 +49,7 @@ class KernelSpec:
     atomic_outputs: bool = False
     native_call: dict | None = None  # frozen original ABI, scalar inputs and signature
     input_signature: list | None = None  # harness-owned exact shape/dtype specialization
+    input_signatures: list | None = None  # allowed alternatives for a multi-shape region
     reference_sequence: dict | None = None  # original mixed sequence; a starter, never an optimized artifact
     stages: tuple[KernelStage, ...] = ()  # explicit array dataflow; empty keeps the single-dispatch path
     reassociates: bool = False  # adds in its own order (a naive sum, mean, norm or matmul): checked within tolerance, never bitwise
@@ -149,6 +150,7 @@ class LoadedKernel:
             native = self.spec.native_call
             signature = [[list(a.shape), str(a.dtype).removeprefix("mlx.core.")] for a in inputs]
             if ((self.spec.input_signature is not None and signature != self.spec.input_signature)
+                    or (self.spec.input_signatures is not None and signature not in self.spec.input_signatures)
                     or (native is not None and signature != native["signature"])
                     or (self._fallback is not None and self._fallback.evaluate(shapes))):
                 launch = Launch(fallback=True)

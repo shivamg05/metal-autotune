@@ -2,7 +2,8 @@
 
 build_scaffold is the one entry point: stitched from the wheel's own Metal
 source when the region is a single library op we can wrap verbatim (library
-parity by construction), naive lowering otherwise."""
+parity by construction), naive lowering otherwise. If lowering is unsupported,
+retain the original calls as a verified reference for a from-scratch proposal."""
 
 from .lower import (
     _CONSTANT_NAMES, _POWER_NAMES, _SOFTMAX_NAMES, _LOGSUMEXP_NAMES,
@@ -50,7 +51,14 @@ def build_scaffold(trace, stretch, instances=()):
             return stitch_qmm_chain(nodes, stretch.input_ids, stretch.output_ids)
         except NoScaffold:
             pass  # the naive path still gets its chance
-    return lower_naive(trace, stretch, instances)
+    try:
+        return lower_naive(trace, stretch, instances)
+    except NoScaffold:
+        # A lowering limitation is not a limitation of the original computation.
+        # Replayable originals keep the same checks and proposal interface used
+        # for mixed custom-kernel regions. Opaque/stateful calls still refuse.
+        from .native import reference_sequence_seed
+        return reference_sequence_seed(trace, stretch)
 
 
 __all__ = ["build_scaffold", "lower_naive", "stitch_affine_qmm_t", "stitch_qmm_chain",

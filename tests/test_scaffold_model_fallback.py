@@ -42,7 +42,9 @@ def setup_runner(tmp_path, native):
     runner.log = Mock()
     runner._record_attempt = Mock()
     runner._build_scaffold = lambda r: runner.scaffold_overrides.get(r.fingerprint, initial)
-    runner._bind_and_promote = Mock(return_value=PromotionResult('correctness_failed', 'outputs changed'))
+    runner._bind_and_promote = Mock(side_effect=lambda *a, **kw:
+        PromotionResult('preflight_passed') if kw.get('preflight') else
+        PromotionResult('correctness_failed', 'outputs changed'))
     evaluated = []
 
     def evaluate(r, kernel, tag, run_clock=True):
@@ -90,6 +92,11 @@ def test_unavailable_original_closes_region_instead_of_reusing_rejected_head(tmp
             return evaluate(r, kernel, tag, run_clock)
         runner._evaluate_kernel = fail_original
     run = runner.open_region(region, judge=None)
+    if failure == 'unsupported':
+        assert 'opaque original' in run.close_rule
+        assert run.head is run.scaffold is None
+        assert not evaluated
+        return
     assert 'original starter' in run.close_rule
     assert run.head is run.scaffold is None
     assert region.fingerprint not in runner.scaffold_overrides
@@ -105,7 +112,8 @@ def test_native_model_rejection_fallback_real_worker(tmp_path, monkeypatch):
         monkeypatch.setattr(runner, '_evaluate_kernel',
                             lambda r, k, tag, run_clock=True: evaluate(r, k, tag, run_clock=False))
         monkeypatch.setattr(runner, '_bind_and_promote',
-                            lambda *_args, **_kwargs: PromotionResult('correctness_failed', 'forced model rejection'))
+                            lambda *_args, **kwargs: PromotionResult('preflight_passed') if kwargs.get('preflight')
+                            else PromotionResult('correctness_failed', 'forced model rejection'))
         run = runner.open_region(region, judge=None)
         assert run.close_rule is None
         assert run.head is run.scaffold

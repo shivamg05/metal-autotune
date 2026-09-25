@@ -58,7 +58,7 @@ def native_seed(trace, span):
                      'init_value': launch.get('init_value')})
 
 
-def reference_sequence_seed(trace, span):
+def reference_sequence_seed(trace, span, instances=()):
     """Keep original calls as a valid starter when no single kernel exists.
 
     The judge receives all captured source and the complete wiring. Its next
@@ -71,6 +71,22 @@ def reference_sequence_seed(trace, span):
     from autotuner.trace.optable import MUTATING_METHODS
     from autotuner_runtime.original_sequence import _resolve
     from .symshape import NoScaffold
+
+    if instances:
+        seeds = [reference_sequence_seed(t, s) for t, s in [(trace, span), *instances]]
+        variants = []
+        for i, seed in enumerate(seeds):
+            previous = next((s for s in seeds[:i]
+                             if s.input_signature == seed.input_signature), None)
+            if previous is not None and previous.output_shapes != seed.output_shapes:
+                raise NoScaffold('ambiguous-reference', 'identical input shapes require different output shapes')
+            if seed.input_signature not in [v['signature'] for v in variants]:
+                variants.append({'signature': seed.input_signature, 'sequence': seed.reference_sequence})
+        if len(variants) > 1:
+            return replace(seeds[0], input_signature=None,
+                           input_signatures=[v['signature'] for v in variants],
+                           reference_sequence={'variants': variants})
+        return seeds[0]
 
     nodes = trace.nodes[span.start_seq:span.end_seq + 1]
     for node in nodes:

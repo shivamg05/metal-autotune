@@ -584,3 +584,17 @@ def test_artifact_readme_reports_generation_throughput():
     assert "32 generated tokens" in text
     assert "baseline 32.00, optimized 40.00" in text
     assert "not decode-only throughput" in text
+
+
+def test_artifact_readme_leads_with_each_workloads_speedup():
+    from autotuner.artifact.bundle import _compress_paths, _result_lines
+    metadata = {"baseline": "compiled", "patches": [{}]}
+    report = {"step_ms": {"denoise": {"before": 1180.0, "after": 1087.0, "speedup": 1.086, "win_confirmed": True}},
+              "final": {"sequences": {"denoise": {"steps": 10, "win_confirmed": True,
+                                                  "baseline_sequence_ms": 11759.0,
+                                                  "candidate_sequence_ms": 10639.0}}}}
+    (line,) = _result_lines(metadata, report)
+    assert line.startswith("- `denoise`: **1.105x faster** over 10 consecutive steps")
+    assert "1,087.0 ms patched (1.086x)" in line
+    assert _compress_paths([f"blocks.{i}.attn" for i in range(20)] + ["head", "blocks.3.mlp", "blocks.5.mlp"]) == [
+        "blocks.{0..19}.attn", "blocks.3.mlp", "blocks.5.mlp", "head"]

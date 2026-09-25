@@ -232,3 +232,54 @@ def test_exported_extension_loads_in_fresh_process(tmp_path):
     result = subprocess.run([sys.executable, "-c", program], cwd=tmp_path, text=True, capture_output=True)
     assert result.returncode != 0
     assert "does not match" in result.stderr
+
+
+@pytest.mark.parametrize("quantized", [False, True])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_parallel_projections_match_weight_anchors(quantized, reverse):
+    x = mx.ones((1, 8, 64))
+    if quantized:
+        weights = [list(mx.quantize(mx.full((16, 64), v), group_size=64, bits=4))
+                   for v in (1., 2., 3.)]
+        def project(a, w):
+            return mx.quantized_matmul(a, *w, group_size=64, bits=4)
+    else:
+        weights = [[mx.full((64, 16), v)] for v in (1., 2., 3.)]
+        def project(a, w):
+            return a @ w[0]
+    width = len(weights[0])
+    actual = [x, *weights[0], *weights[1]]
+    parameters = [mx.zeros(a.shape, a.dtype) for a in actual]
+    def pair(a):
+        return [project(a[0], a[1:1 + width]), project(a[0], a[1 + width:])]
+    first, second = pair(actual)
+    roots = [first, project(x, weights[2]), second, first + second]
+    if reverse:
+        roots.reverse()
+    calls = []
+    def replace(a):
+        calls.append(a)
+        return pair(a)
+    result, hits = graph.rewrite(roots, pair(parameters), parameters, replace,
+                                 anchors=[None, *actual[1:]])
+    assert hits == len(calls) == 1
+    assert [graph.array_id(a) for a in calls[0]] == [graph.array_id(a) for a in actual]
+    equal(result, roots)
+
+
+def test_parallel_pattern_cannot_use_one_operation_twice():
+    p, q = arrays()
+    x, y = arrays()
+    result, hits = graph.rewrite([x + y], [p + q, p + q], [p, q],
+                                 lambda a: [a[0] + a[1], a[0] + a[1]])
+    assert hits == 0
+    equal(result, [x + y])
+
+
+def test_anchored_boundary_parameters_can_alias():
+    p, q = arrays()
+    x, _ = arrays()
+    result, hits = graph.rewrite([x + x], [p + q], [p, q],
+                                 lambda a: [a[0] + a[1]], anchors=[x, x])
+    assert hits == 1
+    equal(result, [x + x])

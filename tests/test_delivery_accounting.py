@@ -250,5 +250,50 @@ final_benchmark: {{steps: 1, pairs: 4, warmup_steps: 1}}
         import json
         table = json.loads((artifact / "swap_table.json").read_text())
         assert {row["scope_path"] for row in table} >= set(carrying)
+        metadata = json.loads((artifact / "bundle.json").read_text())
+        assert set(metadata["baseline_scopes"]) == set(scopes)
+        baseline_table = json.loads((artifact / "baseline_swap_table.json").read_text())
+        assert all(not row["kernel_ids"] for row in baseline_table)
+        assert set(runner.report.step_ms["prompt"]) >= {
+            "baseline_tokens_per_second", "candidate_tokens_per_second"}
+        # Reproduce the compiled baseline in a fresh process using only the bundle.
+        import subprocess, sys
+        code = """
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import load
+from autotuner_runtime.graph import GraphWrapper
+from autotuner_runtime.swap import resolve_value
+import json
+root = Path(sys.argv[1])
+metadata = json.loads((root / 'bundle.json').read_text())
+original = load.load(patched=False)
+baseline = load.load(patched=False, measurement_baseline=True, share_weights_with=original.model)
+patched = load.load(share_weights_with=original.model)
+for path in metadata['baseline_scopes']:
+    assert not isinstance(resolve_value(original.model, path), GraphWrapper)
+    scope = resolve_value(baseline.model, path)
+    assert isinstance(scope, GraphWrapper) and not scope._specs
+import validate
+assert all(row['passed'] for row in validate.validate(original, baseline))
+for path in metadata['baseline_scopes']:
+    scope = resolve_value(baseline.model, path)
+    assert not scope._graph_fallback_reason and not scope._graph_fallbacks
+assert all(row['passed'] for row in validate.validate(original, patched))
+# Old compiled-inference bundles must fail explicitly instead of timing eager.
+metadata.pop('baseline_scopes')
+(root / 'bundle.json').write_text(json.dumps(metadata))
+try:
+    load.load(patched=False, measurement_baseline=True)
+except ValueError as error:
+    assert 'compiled baseline scopes' in str(error)
+else:
+    raise AssertionError('missing compiled baseline was silently accepted')
+"""
+        child = subprocess.run([sys.executable, "-c", code, str(artifact)],
+                               capture_output=True, text=True, timeout=120)
+        assert child.returncode == 0, child.stdout + child.stderr
+
     finally:
         runner.tracer.uninstall()

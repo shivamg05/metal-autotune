@@ -69,9 +69,16 @@ part of running the job, not something to wait for the person to request.
 | `stage` or `search_finish_requested` | Name the phase now starting and what it does. When search ends, say which validation or packaging step remains. An accepted checkpoint is not yet the finished artifact. |
 | `sequence_comparison`, `artifact_checked`, `job_failed`, or optimizer process exit | Report the measured consecutive-step result when available. Announce a finished bundle only after successful export and validation; confirm process exit and final report status. For failure, name the stage/reason, preserved checkpoints and missing final checks. A successful no-win run has a report and no artifact. |
 
+In `run.jsonl`, the event name is the **`kind`** field, for example
+`{"kind": "shipped", "kernel": "...", ...}`. Do not filter on `event`;
+that field belongs to `judge.jsonl`. Before leaving the watcher running,
+check that it recognizes an existing event and retains its read position.
+
 Read `run.jsonl` first. Use `report.json` for full checks and timing details,
 `candidates.log` or `judge.jsonl` for the matching optimization idea, and
-`session.jsonl` to explain a cooling pause. Read the new log entries before
+`session.jsonl` to explain a cooling pause. Its `step_clock` event and stdout
+report completed samples before cooling; do not describe that pause as waiting
+to take those samples. Read the new log entries before
 answering a manual status question, then continue watching. Normal slower
 attempts and unchanged cooling/judge waits do not require repetitive updates.
 Never invent a finish time. If a win's matching idea has not been written yet,
@@ -111,7 +118,8 @@ and required facts above are not.
   single-forward measurement and from full text/image generation.
 - Correctness passing does not automatically mean bit-identical outputs. Read
   the checks to distinguish exact agreement from agreement within tolerance.
-  Estimated headroom is a ranking aid, not a guaranteed physical ceiling.
+  A tolerance-based check with zero observed error is still a tolerance-based
+  guarantee. Estimated headroom is a ranking aid, not a guaranteed physical ceiling.
 - A starter failure can lead to a repair or fallback. Do not announce a skip
   until `region_skip` or `region_closed` establishes it. A later crash does not
   erase earlier completed model measurements, but can leave final validation
@@ -156,3 +164,7 @@ checks can ship. Untested input signatures fall back to the original module.
 Every region uses a measured boundary-data probe as a ranking hint. Known
 operation arithmetic adds a compute estimate; arbitrary Metal arithmetic remains
 unknown. Neither estimate is a guaranteed physical limit or a headroom gate.
+
+Library inference times a completed generation request, including library lookahead
+and synchronization. With one generated token, report request latency; it is not
+a strict first-visible-token timer. Generated tokens/sec includes prompt processing.

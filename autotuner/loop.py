@@ -54,7 +54,6 @@ from .regions.store import BoundaryStore
 from .regions.types import Region, Stretch
 from .report import Report
 from .sandbox.watchdog import GPU_WINDOW_S
-from .scaffold import uncovered_op
 from .scaffold.lower import SINGLE_GROUP_WORK_LIMIT
 from .trace import Tracer
 from .trace.recorder import ArrayRef
@@ -324,10 +323,6 @@ class JobRunner:
                 reason = "the region runs at the model's top level, where no module can be swapped"
             if reason is not None:
                 r.rejected = f"no certified delivery scope: {reason}"
-            elif "metal_kernel" not in r.ops and (op := uncovered_op(r.ops)) is not None:
-                # nothing to edit if the harness cannot write a starting kernel;
-                # say so before any capture or pricing is spent on it
-                r.rejected = f"no scaffold for {op}"
             else:
                 self._plan_delivery(r)
                 try:
@@ -715,6 +710,8 @@ class JobRunner:
             # state, every kernel composes into it, and the artifact ships it.
             self.baseline = "compiled"
             self._compiled_baseline = compiled
+            self.baseline_wrappers = [emitted for emitted, _ in outermost.values()]
+            self.report.constants["measurement"]["baseline"] = "library inference with compiled model scopes"
             for w in self.manifest.workloads:
                 self.step_ms[w.name] = self.report.baseline["clocks_ms"][w.name]["compiled"]
                 self.report.step_ms[w.name] = {"before": self.step_ms[w.name]}
@@ -989,6 +986,7 @@ class JobRunner:
             output_shapes=tuple(tuple(specs[a][0]) for a in rep.output_ids),
             native_call=scaffold.native_call,
             input_signature=scaffold.input_signature,
+            input_signatures=scaffold.input_signatures,
         )
 
     def _eval_sets(self, region: Region) -> list[EvalSet]:
@@ -1116,6 +1114,7 @@ class JobRunner:
         trace = self.traces[rep.workload]
         try:
             scaffold = self._build_scaffold(region)
+            original = self._rename(self._reference_scaffold(region), region, "binding_check")
         except NoScaffold as e:
             run.close_rule = f"no scaffold: {e}"
             self.log.append("region_skip", fingerprint=region.fingerprint, reason=run.close_rule)
@@ -1125,19 +1124,28 @@ class JobRunner:
             run.close_rule = f"scaffold build error: {type(e).__name__}: {e}"
             self.log.append("region_skip", fingerprint=region.fingerprint, reason=run.close_rule)
             return run
+        binding = self._bind_and_promote(run, original, None, preflight=True)
+        self.log.append("binding_preflight", fingerprint=region.fingerprint,
+                        passed=binding.status == "preflight_passed", reason=binding.reason)
+        if binding.status != "preflight_passed":
+            run.close_rule = f"installation preflight failed: {binding.reason}"
+            self.log.append("region_skip", fingerprint=region.fingerprint, reason=run.close_rule)
+            return run
         scaffold = self._rename(scaffold, region, "scaffold")
         run.kernels[scaffold.kernel_id] = scaffold
         write_kernel(self.kernel_dir, scaffold)
+        if scaffold.reference_sequence is not None:
+            self.log.append("reference_starter", fingerprint=region.fingerprint,
+                            ops=list(region.ops),
+                            detail="Original operations retained; the judge writes replacement Metal from scratch")
         tag = _tag(scaffold)
         result = self._evaluate_kernel(region, scaffold, tag, run_clock=scaffold.reference_sequence is None)
-        if (result.outcome == "failed" and scaffold.reference_sequence is None
-                and result.failed_gate not in ("static", "compile")):
-            # A generated starter can change rounding before search even begins.
-            # Keep the original sequence as an exact seed so the judge can still
-            # propose an explicitly changing replacement for this region.
-            from .scaffold.native import reference_sequence_seed
+        if result.outcome == "failed" and scaffold.reference_sequence is None:
+            # Generated code can fail to compile, cover every shape, or preserve
+            # rounding. Validate the original at every recorded shape before
+            # spending an attempt on repairing our starter.
             try:
-                original = self._rename(reference_sequence_seed(trace, rep), region, "scaffold")
+                original = self._rename(self._reference_scaffold(region), region, "scaffold")
             except NoScaffold:
                 original = None
             if original is not None:
@@ -1156,6 +1164,11 @@ class JobRunner:
                                  tag, scaffold, None, result)
             self.log.append("scaffold_failed", fingerprint=region.fingerprint,
                             gate=result.failed_gate, detail=result.detail)
+            if scaffold.reference_sequence is not None:
+                # A replacement cannot repair an untrustworthy reference. Keep
+                # this region closed rather than ask the judge to guess its math.
+                run.close_rule = f"original reference failed validation at {result.failed_gate}"
+                return run
             # one judge fix attempt, per the spec
             fixed = self._judge_fix(run, judge, scaffold, result, tag)
             if fixed is None:
@@ -1181,13 +1194,15 @@ class JobRunner:
             if outcome == "rolled_back":
                 # Keep the rejected source for repair, but make the default
                 # parent an original implementation with a matching contract.
-                from .scaffold.native import native_seed, reference_sequence_seed
+                from .scaffold.native import native_seed
                 prior_override = self.scaffold_overrides.get(region.fingerprint)
                 try:
                     node = trace.nodes[rep.start_seq]
-                    build_original = (native_seed if rep.start_seq == rep.end_seq
-                                      and node.kernel_definition is not None else reference_sequence_seed)
-                    original = self._rename(build_original(trace, rep), region, "original")
+                    if rep.start_seq == rep.end_seq and node.kernel_definition is not None:
+                        original = native_seed(trace, rep)
+                    else:
+                        original = self._reference_scaffold(region)
+                    original = self._rename(original, region, "original")
                 except (NoScaffold, ValueError, KeyError, AttributeError) as error:
                     original = None
                     run.close_rule = f"whole-model scaffold rejection; original starter unavailable: {error}"
@@ -1219,6 +1234,13 @@ class JobRunner:
             tag, scaffold, None, result, outcome=outcome)
         return run
 
+    def _reference_scaffold(self, region: Region):
+        from .scaffold.native import reference_sequence_seed
+        rep = region.members[0]
+        instances = [(self.traces[m.workload], m)
+                     for _, m, _ in capture_instances(region, self.traces)]
+        return reference_sequence_seed(self.traces[rep.workload], rep, instances)
+
     def _build_scaffold(self, region: Region):
         if region.fingerprint in getattr(self, "scaffold_overrides", {}):
             return self.scaffold_overrides[region.fingerprint]
@@ -1238,6 +1260,8 @@ class JobRunner:
                   for trace, m in instances]
         rep = region.members[0]
         scaffold = build_scaffold(self.traces[rep.workload], rep, shapes)
+        if scaffold.reference_sequence is not None:
+            scaffold = self._reference_scaffold(region)
         buffers = buffer_count(scaffold, [len(shape) for shape in shapes[0]])
         if buffers > METAL_BUFFER_LIMIT:
             raise NoScaffold("buffer-limit", f"starter needs {buffers} Metal buffer arguments; "
@@ -1724,7 +1748,7 @@ class JobRunner:
         self.log.append("installation", scope=definitions[0][1].address, method="replay")
         return emit_wrapper_variants(definitions, name)
 
-    def _verify_installations(self, workload, tensors, states, cuts, baseline):
+    def _verify_installations(self, workload, tensors, states, cuts, baseline, *, graph_only=False):
         """Inspect rewritten graphs directly; legacy replay keeps its literal retrace."""
         from autotuner_runtime.graph import GraphBindingError
         graph = {p: _resolve(self.model, p) for p in states
@@ -1773,7 +1797,7 @@ class JobRunner:
             self.log.append("graph_verified", workload=workload,
                             scopes={p: dict(v) for p, v in expected.items()})
         remaining = {span: kid for span, kid in cuts.items() if span not in graph_spans}
-        if not graph or remaining:
+        if not graph_only and (not graph or remaining):
             # Graph scopes are restored only for this check: the legacy log
             # describes Python calls, whereas graph insertion happens later.
             removed = []
@@ -1793,13 +1817,15 @@ class JobRunner:
                     swap_install(self.model, path, wrapper)
 
     def _bind_and_promote(self, run: RegionRun, kernel: KernelSpec, result,
-                          assoc_tag: str = "preserving") -> PromotionResult:
+                          assoc_tag: str = "preserving", *, preflight=False) -> PromotionResult:
         """Bind the kernel into the live model and keep it only if the whole
         patched model is faster than what is already installed.
 
         The region clock nominates. A paired forward-pass comparison against
-        the installed incumbent decides. Failed candidates are unwound."""
-        if result.outcome != "tentative_ship" or kernel.reference_sequence is not None:
+        the installed incumbent decides. Failed candidates are unwound.
+        Preflight installs the original computation only to check graph cuts,
+        then always unwinds without timing, promotion, or a checkpoint."""
+        if not preflight and (result.outcome != "tentative_ship" or kernel.reference_sequence is not None):
             return PromotionResult("not_tested", "region did not nominate an installable replacement")
         self.session.wait_ready()
         region = run.region
@@ -1965,7 +1991,7 @@ class JobRunner:
                         self._emit_installation(prior_definitions, f"Inc_{_safe(scope_path)}",
                                                 replay=scope_path in use_replay),
                         {s.kernel.kernel_id: s.kernel for cuts in kept.values() for s in cuts})
-            incumbent = self._copy_incumbent(
+            incumbent = None if preflight else self._copy_incumbent(
                 {p: e for p, e in {**self.emitted, **emitted_before}.items() if e is not None}, candidates)
             compiled_scopes = sorted(p for p, (e, _) in candidates.items() if issubclass(_load_class(e), GraphWrapper))
 
@@ -1983,8 +2009,13 @@ class JobRunner:
                 cuts = {**self.cuts.get(w.name, {}), **new}
                 states = {p: state for p, state in self.installed.items() if p not in pending_removed}
                 states.update(pending_installed)
-                self._verify_installations(w.name, self.tensors[w.name], states, cuts, baseline_traces[w.name])
+                self._verify_installations(w.name, self.tensors[w.name], states, cuts, baseline_traces[w.name],
+                                           graph_only=preflight)
                 pending_cuts[w.name] = cuts
+
+            if preflight:
+                unwind()
+                return PromotionResult("preflight_passed", "original graph cuts installed successfully")
 
             self.tracer.uninstall()
             timed_arms = self._timed_arms(incumbent)
@@ -2298,10 +2329,15 @@ class JobRunner:
             "speedup": (1.0 / comp.median_ratio) if comp.median_ratio else None,
             "stability": comp.stability, "win_confirmed": confirmed,
         }
+        if self.use_library_inference:
+            clocks.update(generation_throughput({
+                "workload_kind": "library_generation", "steps": self.manifest.final_benchmark.steps,
+                "baseline_sequence_ms": comp.median_baseline_ms, "candidate_sequence_ms": after}))
         self.report.step_ms.setdefault(workload, {}).update(clocks)
         self.log.append("step_clock", workload=workload, phase="after", median_ms=after,
                         baseline_at_end_ms=comp.median_baseline_ms, speedup=clocks["speedup"],
-                        stability=round(comp.stability, 3), win_confirmed=confirmed)
+                        stability=round(comp.stability, 3), win_confirmed=confirmed,
+                        **{k: v for k, v in clocks.items() if k.endswith("tokens_per_second")})
 
     def _final_check(self) -> None:
         """The last end-to-end check once the regions are done: the patched
@@ -2491,6 +2527,7 @@ class JobRunner:
                            {**self.tensors, **self.sweep_tensors}, self.manifest.workloads,
                            asdict(self.manifest.final_benchmark), context=context,
                            exact=self._requires_exact(), tolerances=self.manifest.tolerances,
+                           baseline_wrappers=getattr(self, "baseline_wrappers", []),
                            use_library_inference=bool(self.use_library_inference),
                            checkpoint_pins=getattr(self, "checkpoint_pins", None))
 
@@ -2671,6 +2708,7 @@ def kernel_from_proposal(contract: RegionContract, parent: KernelSpec | None, pr
         fallback_predicate=proposal.fallback_predicate,
         native_call=native,
         input_signature=contract.input_signature,
+        input_signatures=contract.input_signatures,
         ensure_row_contiguous=parent.ensure_row_contiguous if parent else True,
         atomic_outputs=atomic_outputs,
         stages=stages,
@@ -2685,6 +2723,7 @@ def _kernel_view(spec: KernelSpec) -> dict:
         "fallback_predicate": spec.fallback_predicate,
         "native_call": diagnostic_metadata(spec.native_call),
         "input_signature": spec.input_signature,
+        "input_signatures": spec.input_signatures,
         "reference_sequence": diagnostic_metadata(spec.reference_sequence),
         "source": spec.source,
         "header": spec.header,

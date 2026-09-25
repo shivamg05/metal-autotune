@@ -32,6 +32,18 @@ def _resolve(op):
 
 def prepare_sequence(sequence):
     """Compile the recorded wiring once, retaining the original dispatches."""
+    if 'variants' in sequence:
+        def key(signature):
+            return tuple((tuple(shape), dtype) for shape, dtype in signature)
+        variants = {key(v['signature']): prepare_sequence(v['sequence'])
+                    for v in sequence['variants']}
+
+        def run_variant(inputs):
+            signature = tuple((tuple(a.shape), str(a.dtype).removeprefix('mlx.core.')) for a in inputs)
+            return variants[signature](inputs)
+
+        return run_variant
+
     namespace = {'_outputs': flatten_arrays, '_slice': slice}
     names = {aid: f'v{i}' for i, aid in enumerate(sequence['input_ids'])}
     lines = ['def run(inputs):']
