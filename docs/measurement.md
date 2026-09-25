@@ -35,11 +35,12 @@ There is no automatic resume command; retain the checkpoint and logs if the
 run stops, and report them to the maintainer.
 `session.jsonl` records each cooling pause before sleeping, with its duration,
 then records completion. Long pauses also appear on stdout. The default cooldown
-is three times the accounted work. Each pause also returns the memory MLX keeps
-for reuse (`cache_cleared_gb`); left alone it grew to 14.5 GB on a 24 GB Mac
-and timed passes waited on swap. Each paired block (`sample_group`) logs every
-raw sample plus MLX memory and swap before and after, so a block that ran on a
-paging machine is visible. `cooling_scheduled` means a completed
+is three times the accounted work. Every pause, whether slept or scheduled,
+also returns the memory MLX keeps for reuse (`cache_cleared_gb`); left alone it
+grew to 14.5 GB on a 24 GB Mac, and under that memory pressure timed passes ran
+up to 7x slow. Each paired block (`sample_group`) logs every raw sample plus MLX
+memory and swap in use before and after, so a block that ran under memory
+pressure is visible. `cooling_scheduled` means a completed
 comparison or correctness check has returned its verdict and CPU work may use
 that cooldown. Candidate workers also return their remaining cooling deadline
 to the parent (`cooling_adopted`), so process cleanup, preparation and judge

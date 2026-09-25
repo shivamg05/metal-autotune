@@ -169,13 +169,17 @@ class Session:
         self._idle(idle)
 
     def defer_settle(self) -> float:
-        """Let CPU work use the cooldown; the next GPU phase pays the remainder."""
+        """Let CPU work use the cooldown; the next GPU phase pays the remainder.
+
+        Judge thinking often outlasts the cooldown, so no sleep may follow;
+        the cache is released here, where the timed phase ends."""
+        cleared_gb = self._release_cache()
         if self._debt_s > 0:
             seconds = self.duty_idle_factor * self._debt_s
             self._debt_s = 0.0
             if seconds > 0:
                 self._ready_at = max(self._now(), self._ready_at) + seconds
-                self.log("cooling_scheduled", seconds=round(seconds, 3))
+                self.log("cooling_scheduled", seconds=round(seconds, 3), cache_cleared_gb=cleared_gb)
         return self._ready_at
 
     def adopt_cooling(self, ready_at: float) -> None:
@@ -203,14 +207,20 @@ class Session:
         self.log("cooling_reused", remaining_s=round(seconds, 3))
         return True
 
-    def _idle(self, seconds: float) -> None:
-        # MLX keeps freed buffers for reuse. Across capture and many timed arms
-        # they grew to 14.5 GB on a 24 GB Mac and the timed passes paged from
-        # swap. Nothing is timed while cooling, and every arm warms again before
-        # its first sample, so releasing them here costs no measured time.
+    @staticmethod
+    def _release_cache() -> float:
+        """Return MLX's reusable freed buffers to the system; the GB released.
+
+        Across capture and many timed arms they grew to 14.5 GB on a 24 GB Mac,
+        and under that memory pressure timed passes ran up to 7x slow. This
+        runs only where a timed phase has ended: nothing is being measured, and
+        every arm warms again before its first sample."""
         cached_gb = mx.get_cache_memory() / 1e9
         mx.clear_cache()
-        self.log("cooling", seconds=round(seconds, 3), cache_cleared_gb=round(cached_gb, 3))
+        return round(cached_gb, 3)
+
+    def _idle(self, seconds: float) -> None:
+        self.log("cooling", seconds=round(seconds, 3), cache_cleared_gb=self._release_cache())
         if seconds >= 5.0:
             print(f"cooling: {seconds:.1f}s after GPU work", flush=True)
         started = self._now()
