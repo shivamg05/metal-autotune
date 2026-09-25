@@ -8,8 +8,9 @@ mode also sets MTL_SHADER_VALIDATION_REPORT_TO_STDERR=1 and the parent scans
 child stderr for "Invalid device load"/"Invalid device store" lines.
 
 Workers share the desktop GPU. A short deadline surrounds each GPU evaluation,
-separate from the whole-worker budget and cooling. A timeout stops the job:
-killing the child does not guarantee cancellation of work already on the GPU.
+separate from the whole-worker budget and cooling. After a timeout, recovery
+must finish a checked GPU operation in a fresh worker, and see the GPU back near
+its quiet speed, before search can continue.
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ import time
 from dataclasses import dataclass, field
 
 from autotuner.sandbox.watchdog import GPU_WINDOW_S
+from autotuner.sandbox.recovery import QUIET_WAIT_S
 
 # Never configurable: a timed run past this multiple of the library region
 # time fails the child-side watchdog. The gate exists to catch wedged kernels,
@@ -155,16 +157,39 @@ def mode_env(mode: str) -> dict[str, str]:
     return env
 
 
+_RECOVERY = [sys.executable, "-m", "autotuner.sandbox.recovery"]
+_quiet_ms: float | None = None
+
+
+def _quiet_reference() -> float:
+    """The recovery matmul's time on a quiet GPU, taken once per process
+    before any candidate runs, while no worker can have left work behind."""
+    global _quiet_ms
+    if _quiet_ms is None:
+        probe = _supervise(_RECOVERY, "", mode_env("score"), GPU_WINDOW_S + 10.0)
+        lines = probe.stdout.split() if isinstance(probe, subprocess.CompletedProcess) else []
+        if len(lines) != 2 or lines[0] != "GPU_QUIET_MS" or probe.returncode != 0:
+            raise WorkerFailed("could not record the GPU's quiet reference time: " +
+                               (probe.detail["reason"] if isinstance(probe, Verdict)
+                                else _tail(probe.stderr) or probe.stdout))
+        _quiet_ms = float(lines[1])
+    return _quiet_ms
+
+
 def run_job(spec: LadderSpec, mode: str, timeout_s: float) -> Verdict:
     """Spawn one worker, write the spec to its stdin, read the one JSON verdict
-    line from its stdout. Nonzero exit, crash, or wall timeout maps to
-    failed_gate "subprocess" with the stderr tail."""
+    line from its stdout. Worker failures retain their stderr tail. A timeout
+    becomes a candidate rejection only after the recovery check succeeds."""
+    quiet_ms = _quiet_reference()
+    started = time.monotonic()
     proc = _supervise(
         [sys.executable, "-m", "autotuner.sandbox.worker"],
         spec.to_json(), mode_env(mode), timeout_s,
     )
     if isinstance(proc, Verdict):
         proc.detail.update(kernel_id=spec.kernel.get("kernel_id"), phase=spec.phase)
+        if proc.detail.get("failure_kind") == "timeout" and proc.detail.get("worker_exited"):
+            return _recover_timeout(proc, started, quiet_ms, defer_cooling=spec.defer_cooling)
         return proc
     verdict = _parse_verdict(proc.stdout)
     if verdict is None:
@@ -176,6 +201,38 @@ def run_job(spec: LadderSpec, mode: str, timeout_s: float) -> Verdict:
     if mode == "validate":
         _merge_validation(verdict, proc.stderr)
     return verdict
+
+
+def _recover_timeout(failure: Verdict, started: float, quiet_ms: float, *,
+                     defer_cooling: bool) -> Verdict:
+    """A timed-out candidate stays rejected; search resumes only once a trusted
+    GPU check is correct and the GPU is back near its quiet speed."""
+    probe_started = time.monotonic()
+    probe = _supervise(_RECOVERY, json.dumps({"quiet_ms": quiet_ms, "wait_s": QUIET_WAIT_S}),
+                       mode_env("score"), QUIET_WAIT_S + GPU_WINDOW_S + 10.0)
+    healthy = (isinstance(probe, subprocess.CompletedProcess) and probe.returncode == 0
+               and probe.stdout.strip() == "GPU_CHECK_OK")
+    failure.detail["recovery"] = {
+        "passed": healthy,
+        "check_s": round(time.monotonic() - probe_started, 1),
+        "reason": ("known-good GPU operation was correct and the GPU was quiet" if healthy else
+                   ": ".join(filter(None, (probe.detail["reason"],
+                                           probe.detail.get("stderr_tail", "").strip()[-300:])))
+                   if isinstance(probe, Verdict) else
+                   "GPU check did not return the expected result"),
+    }
+    if not healthy:
+        failure.detail["reason"] += "; GPU recovery check failed; stopping the job"
+        return failure
+    # A killed worker cannot hand off its cooling debt. Conservatively count
+    # its entire elapsed time, including the probe, as GPU work on this rare path.
+    from autotuner.measure.session import DUTY_IDLE_FACTOR
+    delay = (time.monotonic() - started) * DUTY_IDLE_FACTOR
+    ready_at = time.monotonic() + delay
+    if not defer_cooling:
+        time.sleep(delay)
+    return Verdict(False, "timeout", (), {**failure.detail, "abort_job": False},
+                   {"cooling_ready_at": ready_at})
 
 
 def _supervise(command, payload, env, timeout_s, gpu_timeout_s=GPU_WINDOW_S):
@@ -199,10 +256,10 @@ def _supervise(command, payload, env, timeout_s, gpu_timeout_s=GPU_WINDOW_S):
             while proc.poll() is None:
                 now = time.monotonic()
                 if gpu_deadline is not None and now >= gpu_deadline:
-                    reason = f"GPU evaluation timeout after {gpu_timeout_s}s; stopping the job"
+                    reason = f"GPU evaluation timeout after {gpu_timeout_s}s"
                     break
                 if now >= deadline:
-                    reason = f"wall timeout after {timeout_s}s; stopping the job"
+                    reason = f"wall timeout after {timeout_s}s"
                     break
                 ready, _, _ = select.select([read_fd], [], [], min(
                     0.05, deadline - now,
@@ -227,6 +284,7 @@ def _supervise(command, payload, env, timeout_s, gpu_timeout_s=GPU_WINDOW_S):
                 v = _subprocess_verdict(reason or f"child exit {proc.returncode}", _tail(err))
                 v.detail["failure_kind"] = "timeout" if reason is not None else "exit"
                 v.detail["gpu_timeout_s"] = gpu_timeout_s
+                v.detail["worker_exited"] = proc.poll() is not None
                 return v
             return subprocess.CompletedProcess(command, proc.returncode, out, err)
     finally:

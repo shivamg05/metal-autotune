@@ -3,7 +3,7 @@
 from contextlib import contextmanager
 import os
 
-GPU_WINDOW_S = 5.0
+GPU_WINDOW_S = 10.0
 _fd: int | None = None
 _depth = 0
 

@@ -206,8 +206,11 @@ region switch and error, plus the baseline measurement and final result.
 Keep status narration outside the judge's JSON reply. An isolated judge call
 only returns its proposal; the operating agent owns watching and check-ins.
 
-A worker GPU evaluation has a five-second deadline, including first-use JIT.
-Cooling has a separate allowance within the overall worker budget. A timeout
-stops the whole job; it is not a request for another kernel repair. Preserve
-the candidate and logs for investigation. A worker process shares the desktop
-GPU, so killing it does not guarantee that its submitted GPU work was cancelled.
+A worker GPU evaluation has a ten-second deadline, including first-use JIT.
+Cooling has a separate allowance within the overall worker budget. After a timeout,
+the worker is killed and a fresh worker checks that the GPU still computes a known
+answer. Killing a worker does not cancel GPU work it already submitted, so the
+check also waits, up to two minutes, until a fixed matmul runs within 1.5x of
+its time recorded before the first candidate. If that check passes, the candidate
+is rejected and search continues after cooling; the judge may propose a different
+implementation. If the answer is wrong or the GPU stays busy, the job stops.

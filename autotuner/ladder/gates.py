@@ -102,7 +102,7 @@ def run_ladder(job: LadderJob, *, session: Session | None = None) -> LadderResul
             session.wait_ready()
         verdict = run_job(spec, mode, job.timeout_s)
         # Accept the deadline even for an ordinary failed correctness gate.
-        # A dead worker has no completed handoff and remains a fatal error.
+        # Recovered timeouts supply a conservative cooling handoff too.
         if session is not None and verdict.failed_gate != "subprocess":
             if "cooling_ready_at" not in verdict.timing:
                 raise RuntimeError("worker returned without its required cooling deadline")
