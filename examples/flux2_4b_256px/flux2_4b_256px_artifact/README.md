@@ -78,12 +78,10 @@ dtypes the job recorded; anything else falls back to the original code.
 `load()` runs the bundled `build()` and applies the patch. Calling the returned
 object (`loaded(*inputs)`) reproduces the job's benchmark interface;
 `loaded.inference_model` is the patched model for normal use.
-`load(patched=False)` gives the untouched model; for a side-by-side comparison
-with identical weights use `original = load(patched=False, measurement_baseline=True)`
-and `patched = load(share_weights_with=original.model)`.
-`measurement_baseline=True` restores the job's original compiled scopes for
-timing; without it, `patched=False` leaves the model untouched for correctness
-checks. Because the job measured against the compiled model, `load()` runs the forward pass under `mx.compile`; pass `compile=False` for the plain model.
+`load(patched=False)` gives the untouched model. For a side-by-side comparison
+with identical weights use `original = load(patched=False)` and
+`patched = load(share_weights_with=original.model)`.
+Because the job measured against the compiled model, `load()` runs the forward pass under `mx.compile`; pass `compile=False` for the plain model.
 
 ### How it was checked
 

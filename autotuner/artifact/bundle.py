@@ -493,7 +493,13 @@ def render_readme(metadata: dict, report: dict, package: str = "artifact") -> st
     rename = ("" if pkg == package else
               f" The folder name `{package}` is not a valid Python name, so the examples assume "
               "you renamed it to `artifact`.")
+    scopes = metadata.get("baseline_scopes")
+    baseline_arg = ", measurement_baseline=True" if scopes else ""
+    baseline_note = (" `measurement_baseline=True` restores the job's original compiled scopes "
+                     "for timing; without it, `patched=False` leaves the model untouched for "
+                     "correctness checks." if scopes else "")
     return README_TEMPLATE.format(
+        baseline_arg=baseline_arg, baseline_note=baseline_note,
         entry=entry, mlx=metadata["mlx"], python=metadata["python"], pkg=pkg, rename=rename,
         result="\n".join(_result_lines(metadata, report)), measured_on=_measured_on(metadata, report),
         usage=usage, rows=_replacement_rows(metadata["patches"]),
@@ -597,12 +603,10 @@ dtypes the job recorded; anything else falls back to the original code.
 `load()` runs the bundled `build()` and applies the patch. Calling the returned
 object (`loaded(*inputs)`) reproduces the job's benchmark interface;
 `loaded.inference_model` is the patched model for normal use.
-`load(patched=False)` gives the untouched model; for a side-by-side comparison
-with identical weights use `original = load(patched=False, measurement_baseline=True)`
-and `patched = load(share_weights_with=original.model)`.
-`measurement_baseline=True` restores the job's original compiled scopes for
-timing; without it, `patched=False` leaves the model untouched for correctness
-checks. {compiled_note}{context_note}
+`load(patched=False)` gives the untouched model. For a side-by-side comparison
+with identical weights use `original = load(patched=False{baseline_arg})` and
+`patched = load(share_weights_with=original.model)`.{baseline_note}
+{compiled_note}{context_note}
 
 ### How it was checked
 
