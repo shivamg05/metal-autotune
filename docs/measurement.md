@@ -90,6 +90,50 @@ records that both the inspected and the compiled calculation contained exactly
 the expected substitutions. Every method passes the same correctness and
 whole-model timing checks, and the artifact carries whichever was measured.
 
+With `check_optimizations_for` in the manifest (automatic for an MLX-LM prompt
+read from an empty cache: every prompt length from 3 to one past MLX-LM's
+prefill chunk, logged as `other_sizes_default`), a stage after the search
+replaces each changed
+scope's delivery with generated code that reads its size from an argument
+(`S_<scope>` classes), when the scope's replay at the primary size and at the
+recorded range ends and middle differs only in integers that are one exact
+linear function of that size. `serve_refused` names each scope that does not
+generalize; it keeps its searched delivery. The generated code runs the scope's
+recorded operations and each kernel inside an `if lo <= _n <= hi` of its own,
+as plain MLX calls: nothing is traced, rewritten or compiled at run time, so a
+new size costs nothing extra. It is not compiled because `mx.compile` builds a
+new graph for every input shape; on seven models its gain was nil for the
+transformers and large only for recurrent ones, while each new size paid for a
+compile. Every other call goes to the original module. Each size is served only after
+these checks:
+
+- **Every size, no GPU work:** the model runs once per size in the range with
+  each scope checked in place. The generated code (kernels off) and the
+  original module build MLX graphs from the same arguments, and the graphs,
+  outputs and state writes alike, must be the same operations, attributes,
+  constants and sharing. A scope serves the contiguous sizes around the
+  primary size that pass (`scopes` in the report's `check_optimizations_for` section, with the
+  first difference found).
+- **Every size, in the sandbox:** each bit-exact kernel (the `preserving` rule)
+  is checked against its recorded operations with shader validation on,
+  outputs poisoned and three runs bitwise equal. Inputs are the recorded
+  boundary inputs cut or repeated to the size. This sweep takes no cooling
+  pauses; nothing in it is timed.
+- **A grid of about ten sizes, then twelve random sizes, in the sandbox:** the
+  region clock's paired loop and relative margin (1% or three standard
+  deviations) decide where the kernel wins or clearly loses. It is served out
+  to the furthest winning size on each side of the primary, stopping at a grid
+  point it does not win at and never reaching a size it lost at; the random
+  sizes, drawn inside the range the grid picked, catch losses between grid
+  points. `serve_kernel` logs each kernel's range, grid, samples and wrong
+  sizes.
+
+Kernels accepted within tolerance, starters, and kernels whose operations take
+size-dependent settings keep their recorded size. The final check then runs
+on the served model, also at the recorded serve sizes; if it fails or does not
+confirm a win, `serve_withdrawn` records why, the searched wrappers go back,
+and the final check runs again on them.
+
 The default requested baseline is the compiled model. Under library
 inference it is realized as the model with its outermost compilable scopes
 compiled and nothing inserted (`delivery_settled` names the scopes); that

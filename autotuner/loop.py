@@ -10,7 +10,9 @@ from __future__ import annotations
 from autotuner_runtime.numeric import DEFAULT_TOLERANCES
 
 import importlib.util
+import json
 import copy
+import random
 import statistics
 import sys
 import time
@@ -59,6 +61,7 @@ from .trace import Tracer
 from .trace.recorder import ArrayRef
 from .trace.walk import flatten_arrays
 from .regions.sweep import SweepDivergence, locate_span
+from .serve import serve_points
 from .trace.serialize import nodes_to_json
 from .trace.types import Trace
 from .workload import context_tokens, materialize, workload_seeds
@@ -183,6 +186,10 @@ class JobRunner:
         self.sweep_traces: dict[str, Trace] = {}
         self.sweep_tensors: dict[str, list[mx.array]] = {}
         self.sweep_spans: dict[tuple[str, str], Stretch] = {}
+        # manifest serve: the model recorded at more sizes, for generating
+        # size-generic delivery after the search; never used by the search
+        self.serve_traces: dict[str, list[Trace]] = {}
+        self.serve_tensors: dict[str, list[mx.array]] = {}
         self.step_ms: dict[str, float] = {}
         self.step_chain: dict[str, int] = {}  # dependent steps per timed sample, per workload
         self.peaks = None  # measured by measure_machine, after the step clock
@@ -205,6 +212,7 @@ class JobRunner:
         self.pending_regions: list[Region] = []
         self.selection_wave = 0
         self.shipped_tags: dict[str, str] = {}
+        self.shipped_regions: dict[str, Region] = {}  # fingerprint -> the region shipped
 
     # -- stage 1: model and traces -------------------------------------------
 
@@ -238,10 +246,44 @@ class JobRunner:
         context = None if self.context is None else {
             "workload": self.context.name, "tokens": self.context.context, "seed": self.context_seed}
         self.log.append("model", shared_weights=shared, parameters=total, context=context)
+        self._default_other_sizes()
         if shared < total:
             self._env_warning(f"only {shared} of {total} parameters could be shared between "
                               "the two model copies; both stay resident, which adds noise "
                               "to the whole-model checks")
+
+    AUTO_SIZE_DIM = "prompt_tokens"
+
+    def _default_other_sizes(self) -> None:
+        """An MLX-LM prompt read from an empty cache, with no
+        check_optimizations_for: check the kernels at every prompt length
+        from 3 tokens (a shorter prompt takes another code path) to one past
+        MLX-LM's prefill chunk, the most rows one call reads. Nothing else is
+        guessed: for any other workload the manifest names the dimension."""
+        m = self.manifest
+        if m.serve or not m.serve_auto or not self.use_library_inference or len(m.workloads) != 1:
+            return
+        w = m.workloads[0]
+        spec = w.inputs[0]
+        if w.context not in (None, 0) or len(w.inputs) != 1 or not all(isinstance(d, int) for d in spec.shape):
+            return
+        import inspect
+        from mlx_lm.generate import generate_step
+        chunk = inspect.signature(generate_step).parameters["prefill_step_size"].default
+        tokens, lo, hi = spec.shape[-1], 3, chunk + 1
+        if not lo < tokens <= hi:
+            return
+        from dataclasses import replace
+        from types import MappingProxyType
+        dim = self.AUTO_SIZE_DIM
+        named = replace(w, inputs=(replace(spec, shape=spec.shape[:-1] + (dim,)),))
+        if self.context is w:
+            self.context = named
+        self.manifest = replace(m, workloads=(named,), primary=MappingProxyType({**m.primary, dim: tokens}),
+                                sweep=MappingProxyType({**m.sweep, dim: (tokens,)}),
+                                serve=MappingProxyType({dim: (lo, hi)}))
+        self.report.constants["check_optimizations_for"] = {dim: [lo, hi], "set": "automatically"}
+        self.log.append("other_sizes_default", dim=dim, range=[lo, hi], optimized=tokens)
 
     def _build_model(self):
         """Every build retains custom definitions, even between trace passes."""
@@ -298,6 +340,15 @@ class JobRunner:
                 self.sweep_tensors[label] = materialize(w, dims, seeds[0])
                 self.sweep_traces[label], _ = self.tracer.trace(self.model, self.sweep_tensors[label])
                 self.log.append("trace", workload=label, nodes=len(self.sweep_traces[label].nodes))
+            for dim, (lo, hi) in getattr(self.manifest, "serve", {}).items():
+                if dim not in w.named_dims():
+                    continue
+                for size in serve_points(lo, hi, self.manifest.primary[dim]):
+                    label = f"{w.name}@serve:{dim}={size}"
+                    self.serve_tensors[label] = materialize(w, {**self.manifest.primary, dim: size}, seeds[0])
+                    trace, _ = self.tracer.trace(self.model, self.serve_tensors[label])
+                    self.serve_traces.setdefault(w.name, []).append(trace)
+                    self.log.append("trace", workload=label, nodes=len(trace.nodes))
 
     def _sweep_points(self, w) -> list[tuple[str, dict[str, int]]]:
         """Each named dim of the workload at each sweep size but the primary,
@@ -2099,6 +2150,7 @@ class JobRunner:
         self.installed.update(pending_installed)
         self.cuts.update(pending_cuts)
         self.shipped_tags[region.fingerprint] = assoc_tag
+        self.shipped_regions[region.fingerprint] = region
         self.report.accepted.append(accepted)
         self.log.append("shipped", **accepted)
         self.report.write(self.work_dir / "report.json")
@@ -2268,7 +2320,19 @@ class JobRunner:
             )
             self._record_final_clock(w.name, comp)
 
-        self._final_check()
+        served = self._serve_sizes()
+        try:
+            self._final_check()
+        except RuntimeError as error:
+            if not served:
+                raise
+            self._unserve(served, f"the final check failed with size-generic delivery: {error}")
+            self._final_check()
+        if served and not self.final_ok:
+            self._unserve(served, self.report.final.get("reason", "the final check did not confirm a win"))
+            self._final_check()
+        elif served:
+            self._serve_timings()
         self._clock_against_other_baseline()
         self.report.session["idled_s"] = round(self.session.idled_s, 1)
         self.report.write(self.work_dir / "report.json")
@@ -2352,7 +2416,7 @@ class JobRunner:
         final = run_e2e(
             self.session, self.baseline_model, self.model,
             workloads=[(w.name, self.tensors[w.name]) for w in self.manifest.workloads]
-            + sorted(self.sweep_tensors.items()),
+            + sorted(self.sweep_tensors.items()) + sorted(getattr(self, 'serve_tensors', {}).items()),
             timed=self._timed_arms(),
             veto_pairs=self.manifest.final_benchmark.pairs if self.use_library_inference else SHIP_PAIRS,
             exact=self._requires_exact(),
@@ -2400,6 +2464,192 @@ class JobRunner:
         self.report.write(self.work_dir / "report.json")
         if not self.final_ok:
             self._unconfirmed("the runs of consecutive steps did not confirm a speedup")
+
+    # -- after the search: kernels at the served sizes -------------------------
+
+    def _serve_sizes(self) -> list | None:
+        """manifest serve: give each scope that generalizes generated code that
+        reads its size, checked against the original at every size, in place
+        of its searched wrapper. Returns what _unserve restores, or None."""
+        from .serve import check_replays, in_dim, plan_scopes
+        if not getattr(self.manifest, "serve", None) or not self._kernels_installed():
+            return None
+        dim, (lo, hi) = next(iter(self.manifest.serve.items()))
+        self._phase("checking kernels at the served sizes")
+        started = time.monotonic()
+        workloads = [w for w in self.manifest.workloads if dim in w.named_dims()]
+        primary = self.manifest.primary[dim]
+        plans, refused = plan_scopes(self.installed, self.traces, self.serve_traces, {w.name for w in workloads},
+                                     [primary] + serve_points(lo, hi, primary))
+        report = self.report.serve = {"dim": dim, "range": [lo, hi], "scopes": {}, "kernels": {},
+                                      "not_generalized": refused}
+        for path, reason in refused.items():
+            self.log.append("serve_refused", scope=path, reason=reason)
+        if plans:
+            workload = workloads[0]
+            seed = workload_seeds(self.manifest.seed, workload.name, manifest_mod.BOUNDARY_INPUT_SETS)[0]
+            candidates = {}
+            for plan in plans:
+                original, _variants, specs = self.installed[plan.path]
+                candidate = plan.sized.finalize(f"C_{_safe(plan.path)}", (min(plan.sized.sizes), max(plan.sized.sizes)), {})
+                candidates[plan.path] = _load_class(candidate)(original, specs)
+            self.session.off_clock(lambda: check_replays(
+                self.model, plans, candidates,
+                lambda size: self.model(*materialize(workload, {**self.manifest.primary, dim: size}, seed)),
+                range(lo, hi + 1), swap_install, swap_uninstall))
+        restore = []
+        kernel_ranges = self._serve_kernels([plan for plan in plans if plan.span()])
+        for plan in plans:
+            span = plan.span()
+            report["scopes"][plan.path] = {
+                "call": plan.address, "size": f"{plan.sized.size_arg}.shape[{plan.sized.size_dim}]",
+                "recorded_sizes": plan.sized.sizes, "generalized_integers": plan.sized.generalized,
+                "range": list(span) if span else None, f"{dim}_range": in_dim(plan, span),
+                "first_difference": next(([n, why] for n, why in sorted(plan.checked.items()) if why), None)}
+            if span is None:
+                continue
+            primary = plan.sized.sizes[0]
+            ranges = {}
+            for kid in plan.sized.kernel_ids:
+                served = kernel_ranges.get(kid) or (primary, primary)
+                ranges[kid] = (max(served[0], span[0]), min(served[1], span[1]))
+            emitted = plan.sized.finalize(f"S_{_safe(plan.path)}", span, ranges)
+            original, _variants, specs = self.installed[plan.path]
+            occupant = swap_install(self.model, plan.path, _load_class(emitted)(original, specs))
+            restore.append((plan.path, occupant, self.emitted.get(plan.path)))
+            self.emitted[plan.path] = emitted
+        report["check_s"] = round(time.monotonic() - started, 1)
+        self.log.append("serve_installed", scopes=[path for path, _, _ in restore],
+                        kernels=report["kernels"], check_s=report["check_s"])
+        self.report.write(self.work_dir / "report.json")
+        return restore or None
+
+    SERVE_GRID = 10     # timing points per kernel, both ends of its range included
+    SERVE_SAMPLES = 12  # random sizes timed inside the range the grid picks: a clear loss cuts it
+    SERVE_BATCH = 256   # sizes per correctness worker: a hang loses one batch
+
+    def _serve_kernels(self, plans) -> dict:
+        """Each bit-exact kernel's served range, in its scopes' size: the
+        sizes it is right at (every one checked in the sandbox) and wins at
+        (a timing grid). Kernels left out keep their recorded size only."""
+        from .ladder.sizes import SizesSpec, shape_at
+        from .sandbox.protocol import require_responsive, run_job as run_worker
+        from .serve import in_dim, served_range
+        report, dim = self.report.serve["kernels"], self.report.serve["dim"]
+        found: dict[str, dict] = {}
+        for plan in plans:
+            for splice in plan.splices:
+                info = found.setdefault(splice.kernel.kernel_id, {
+                    "spec": splice.kernel, "fingerprint": splice.fingerprint, "primary": plan.sized.sizes[0],
+                    "to_dim": plan.to_dim,
+                    "template": plan.kernel_shapes.get(splice.kernel.kernel_id), "span": plan.span()})
+                span = plan.span()
+                if (info["template"] != plan.kernel_shapes.get(splice.kernel.kernel_id)
+                        or info["primary"] != plan.sized.sizes[0]):
+                    info["template"] = None
+                info["span"] = (max(info["span"][0], span[0]), min(info["span"][1], span[1]))
+        ranges = {}
+        for kid, info in found.items():
+            spec, fingerprint, template, primary = info["spec"], info["fingerprint"], info["template"], info["primary"]
+            why = None
+            if self.shipped_tags.get(fingerprint) != "preserving":
+                why = "checked within tolerance, so served at its recorded size only"
+            elif spec.native_call is not None or spec.reference_sequence is not None:
+                why = "not a searched kernel"
+            elif template is None:
+                why = "its operations or input shapes do not follow the size"
+            instance = None
+            if why is None:
+                region = self.shipped_regions[fingerprint]
+                want = shape_at(template, primary)
+                for label, member, _copies in capture_instances(region, self.traces):
+                    specs = self.traces[member.workload].span_specs(member.start_seq, member.end_seq)
+                    if [[list(specs[a][0]), specs[a][1]] for a in member.input_ids] == want:
+                        instance = (label, member)
+                        break
+                if instance is None:
+                    why = "no saved inputs at its recorded size"
+            if why is not None:
+                report[kid] = {"range": [primary, primary], f"{dim}_range": in_dim(info["to_dim"], (primary, primary)),
+                               "reason": why}
+                continue
+            label, member = instance
+            trace = self.traces[member.workload]
+            job = dict(kernel=json.loads(spec.to_json()),
+                       nodes_json=nodes_to_json(trace.nodes[member.start_seq:member.end_seq + 1]),
+                       input_ids=tuple(member.input_ids), output_ids=tuple(member.output_ids),
+                       inputs_path=str(self.store._path(fingerprint, label, 0, "inputs")), shapes=template,
+                       weight_inputs=tuple(a in trace.weights for a in member.input_ids))
+            lo, hi = info["span"]
+            steps = self.SERVE_GRID - 1
+            grid = sorted({lo, hi, primary} | {round(lo * (hi / lo) ** (i / steps)) for i in range(1, steps)})
+            clock = self._serve_grid(job, grid)
+            candidate = served_range(list(range(lo, hi + 1)), clock, primary, grid)
+            if candidate:
+                # speed between grid points zig-zags with the kernels' tiles:
+                # time random sizes inside the range too, and cut at any loss
+                inside = [n for n in range(candidate[0], candidate[1] + 1) if n not in clock]
+                picks = sorted(random.Random(kid).sample(inside, min(self.SERVE_SAMPLES, len(inside))))
+                clock.update(self._serve_grid(job, picks))
+                candidate = served_range(list(range(lo, hi + 1)), clock, primary, grid)
+            correct = []
+            sizes = list(range(candidate[0], candidate[1] + 1)) if candidate else []
+            wrong = {}
+            for start in range(0, len(sizes), self.SERVE_BATCH):
+                batch = tuple(sizes[start:start + self.SERVE_BATCH])
+                checked = run_worker(SizesSpec(sizes=batch, phase="validate", **job), "validate",
+                                     timeout_s=120.0 + 10.0 * len(batch))
+                require_responsive(checked)
+                results = checked.detail.get("results", {})
+                if checked.detail.get("validation"):
+                    wrong.update({n: "shader validation reported an invalid device access" for n in batch})
+                    continue
+                for n in batch:
+                    reason = results.get(str(n), checked.detail.get("reason", "not checked"))
+                    (correct.append(n) if reason is None else wrong.__setitem__(n, reason))
+            served = served_range(correct, clock, primary, grid)
+            ranges[kid] = served
+            report[kid] = {"range": list(served) if served else [primary, primary],
+                           f"{dim}_range": in_dim(info["to_dim"], served or (primary, primary)),
+                           "grid": {n: row for n, row in sorted(clock.items()) if n in grid},
+                           "samples": {n: row for n, row in sorted(clock.items()) if n not in grid},
+                           "checked": [sizes[0], sizes[-1]] if sizes else None,
+                           "wrong": dict(sorted(wrong.items())[:20]), "wrong_count": len(wrong)}
+            self.log.append("serve_kernel", kernel=kid, **report[kid])
+        return ranges
+
+    def _serve_grid(self, job: dict, grid: list[int]) -> dict[int, dict]:
+        """Each grid size's clock, the kernel against its operations, in the sandbox."""
+        from .ladder.sizes import SizesSpec
+        from .sandbox.protocol import require_responsive, run_job as run_worker
+        timed = run_worker(SizesSpec(sizes=tuple(grid), phase="score", **job), "score",
+                           timeout_s=120.0 + 60.0 * len(grid))
+        require_responsive(timed)
+        return {int(n): row for n, row in timed.detail.get("results", {}).items()}
+
+    def _serve_timings(self) -> None:
+        """The whole model at the recorded serve sizes against the final
+        check's baseline: reported beside the headline, never folded into it."""
+        self._phase("timing the served sizes")
+        pairs = self.manifest.final_benchmark.pairs if self.use_library_inference else SHIP_PAIRS
+        rows = self.report.serve.setdefault("timings", {})
+        for label, tensors in sorted(getattr(self, 'serve_tensors', {}).items()):
+            comp = compare(self.session, self._step_fn(self._baseline_arm(), tensors),
+                           self._step_fn(self.model, tensors), pairs=pairs)
+            rows[label] = {"baseline_ms": comp.median_baseline_ms, "patched_ms": statistics.median(comp.candidate_ms),
+                           "speedup": (1.0 / comp.median_ratio) if comp.median_ratio else None,
+                           "win_confirmed": comp.wins_by(0.0)}
+            self.log.append("serve_timing", workload=label, **rows[label])
+        self.report.write(self.work_dir / "report.json")
+
+    def _unserve(self, restore: list, reason: str) -> None:
+        """Put the searched wrappers back; the final check runs again on them."""
+        for path, occupant, emitted in reversed(restore):
+            swap_install(self.model, path, occupant)
+            self.emitted[path] = emitted
+        self.report.serve["withdrawn"] = reason
+        self.log.append("serve_withdrawn", reason=reason)
+        self.report.write(self.work_dir / "report.json")
 
     def _unconfirmed(self, reason: str) -> None:
         """The outputs are right and the win is not confirmed: a measurement
@@ -2524,7 +2774,7 @@ class JobRunner:
             "workload": self.context.name, "context": self.context.context,
             "seed": self.context_seed, "tokens": self.context_tokens}
         return ModelBundle(self.manifest.model_path, self.baseline,
-                           {**self.tensors, **self.sweep_tensors}, self.manifest.workloads,
+                           {**self.tensors, **self.sweep_tensors, **getattr(self, 'serve_tensors', {})}, self.manifest.workloads,
                            asdict(self.manifest.final_benchmark), context=context,
                            exact=self._requires_exact(), tolerances=self.manifest.tolerances,
                            baseline_wrappers=getattr(self, "baseline_wrappers", []),
@@ -2543,7 +2793,8 @@ class JobRunner:
             specs.update(getattr(wrapper, "_specs", {}))
         # Fresh export comparisons build their own original with shared weights.
         cases = [(name, tensors, []) for name, tensors in
-                 list(self.tensors.items()) + sorted(self.sweep_tensors.items())]
+                 list(self.tensors.items()) + sorted(self.sweep_tensors.items())
+                 + sorted(getattr(self, 'serve_tensors', {}).items())]
         context = None if self.context is None else (
             self.context.context, self.context_tokens, self.tensors[self.context.name])
         self.session.wait_ready()

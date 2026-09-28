@@ -2,6 +2,8 @@
 
 import textwrap
 
+import re
+
 import pytest
 
 from autotuner.manifest import (
@@ -45,7 +47,8 @@ def test_good_manifest_loads_with_defaults(tmp_path):
     assert m.tolerances is None
     assert set(m.defaulted) == {"primary.L", "tolerances", "budget.per_region", "budget.total", "seed",
                               "baseline", "final_benchmark.steps", "final_benchmark.pairs",
-                              "final_benchmark.warmup_steps", "use_library_inference"}
+                              "final_benchmark.warmup_steps", "use_library_inference",
+                              "check_optimizations_for"}
 
 
 def test_library_inference_is_an_optional_boolean(tmp_path):
@@ -259,4 +262,37 @@ def test_tolerance_must_fit_the_actual_comparison_dtype(tmp_path, field):
     values = {"rtol": "0", "atol": "0", field: "1.0e300"}
     body = GOOD + f"tolerances: {{rtol: {values['rtol']}, atol: {values['atol']}}}\n"
     with pytest.raises(ManifestError, match="fit in float32"):
+        load(write_manifest(tmp_path, body))
+
+
+def test_check_optimizations_for_names_one_range_and_adds_no_sweep(tmp_path):
+    body = """
+model: ./model.py
+workloads:
+  - inputs: [{shape: [T, 64], dtype: float32}]
+primary: {T: 1024}
+check_optimizations_for: {T: [256, 4096]}
+"""
+    m = load(write_manifest(tmp_path, body))
+    assert dict(m.serve) == {"T": (256, 4096)} and not m.serve_auto
+    assert m.sweep["T"] == (1024,)  # the search is checked at the primary size only, as without it
+
+
+def test_check_optimizations_for_can_be_turned_off_or_left_to_the_tool(tmp_path):
+    body = "model: ./model.py\nworkloads:\n  - inputs: [{shape: [1, 2048], dtype: int32}]\n"
+    assert load(write_manifest(tmp_path, body)).serve_auto
+    off = load(write_manifest(tmp_path, body + "check_optimizations_for: false\n"))
+    assert not off.serve_auto and not off.serve
+
+
+@pytest.mark.parametrize("value, primary, needle", [
+    ("{T: [256, 4096]}", "", "set primary.T"),
+    ("{T: [256]}", "primary: {T: 1024}\n", "must be [smallest, largest]"),
+    ("{T: [256, 257]}", "primary: {T: 1024}\n", "exceed the smallest by at least 2"),
+    ("{U: [2, 8]}", "", "appears in no workload shape"),
+])
+def test_check_optimizations_for_is_validated(tmp_path, value, primary, needle):
+    body = (f"model: ./model.py\nworkloads:\n  - inputs: [{{shape: [T, 64], dtype: float32}}]\n"
+            f"{primary}check_optimizations_for: {value}\n")
+    with pytest.raises(ManifestError, match=re.escape(needle)):
         load(write_manifest(tmp_path, body))

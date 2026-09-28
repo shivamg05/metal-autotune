@@ -113,6 +113,12 @@ class Manifest:
     baseline: str = "compiled"     # "compiled" | "plain": what a win is measured against
     final_benchmark: FinalBenchmark = field(default_factory=FinalBenchmark)
     use_library_inference: bool | None = None  # None resolves once from model/workload support
+    # check_optimizations_for, one named dim -> (lo, hi): after the search,
+    # shipped kernels also run at every size in this range they are checked
+    # correct and faster at. Unset, an MLX-LM prompt workload gets it
+    # automatically (serve_auto); false turns that off.
+    serve: Mapping[str, tuple[int, int]] = field(default_factory=dict)
+    serve_auto: bool = True
 
     def named_dims(self) -> frozenset[str]:
         return frozenset().union(*(w.named_dims() for w in self.workloads))
@@ -190,6 +196,9 @@ def _parse_positive_int(raw: Any, where: str) -> int:
     return raw
 
 
+SERVE_KEY = "check_optimizations_for"
+
+
 def load(path: str | Path) -> Manifest:
     """Parse and validate a manifest file. Model path resolves relative to it."""
     path = Path(path).resolve()
@@ -203,7 +212,7 @@ def load(path: str | Path) -> Manifest:
         raise ManifestError(f"manifest must be a mapping, got {type(raw).__name__}")
 
     known = {"model", "workloads", "sweep", "primary", "tolerances", "budget",
-             "baseline", "final_benchmark", "use_library_inference"}
+             "baseline", "final_benchmark", "use_library_inference", "check_optimizations_for"}
     unknown = set(raw) - known
     if unknown:
         raise ManifestError(
@@ -251,7 +260,16 @@ def load(path: str | Path) -> Manifest:
         if not isinstance(sizes, list) or not sizes:
             raise ManifestError(f"sweep.{dim}: must be a non-empty list of sizes")
         sweep[dim] = tuple(_parse_positive_int(s, f"sweep.{dim}") for s in sizes)
+    served = set(raw.get(SERVE_KEY) or {}) if isinstance(raw.get(SERVE_KEY), dict) else set()
+    raw_primary_dims = raw.get("primary") if isinstance(raw.get("primary"), dict) else {}
     for dim in sorted(named - set(sweep)):
+        if dim in served:
+            # serving checks its own sizes after the search; no correctness
+            # sweep reaches the search unless one is asked for
+            if dim not in raw_primary_dims:
+                raise ManifestError(f"{SERVE_KEY}.{dim}: set primary.{dim}, the size to optimize for")
+            sweep[dim] = (_parse_positive_int(raw_primary_dims[dim], f"primary.{dim}"),)
+            continue
         sweep[dim] = DEFAULT_SWEEP_SIZES
         defaulted.append(f"sweep.{dim}")
 
@@ -268,6 +286,26 @@ def load(path: str | Path) -> Manifest:
     for dim in sorted(named - set(primary)):
         primary[dim] = max(sweep[dim])
         defaulted.append(f"primary.{dim}")
+
+    raw_serve = raw.get(SERVE_KEY)
+    serve_auto = raw_serve is None
+    if raw_serve is False:
+        raw_serve = {}
+    elif raw_serve is None:
+        raw_serve = {}
+        defaulted.append(SERVE_KEY)
+    if not isinstance(raw_serve, dict) or len(raw_serve) > 1:
+        raise ManifestError(f"{SERVE_KEY} must map one named dim to [smallest, largest] size, or be false")
+    serve: dict[str, tuple[int, int]] = {}
+    for dim, span in raw_serve.items():
+        if dim not in named:
+            raise ManifestError(f"{SERVE_KEY} names dim {dim!r} which appears in no workload shape")
+        if not isinstance(span, list) or len(span) != 2:
+            raise ManifestError(f"{SERVE_KEY}.{dim}: must be [smallest, largest]")
+        lo, hi = (_parse_positive_int(v, f"{SERVE_KEY}.{dim}") for v in span)
+        if hi - lo < 2:
+            raise ManifestError(f"{SERVE_KEY}.{dim}: the largest size must exceed the smallest by at least 2")
+        serve[dim] = (lo, hi)
 
     tolerances: tuple[float, float] | None = None
     if "tolerances" in raw:
@@ -339,6 +377,8 @@ def load(path: str | Path) -> Manifest:
         final_benchmark=final_benchmark,
         use_library_inference=use_library_inference,
         defaulted=tuple(defaulted),
+        serve=MappingProxyType(serve),
+        serve_auto=serve_auto,
     )
 
 

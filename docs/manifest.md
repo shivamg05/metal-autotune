@@ -188,8 +188,63 @@ budget: {per_region: 4, total: 8}
 
 The sweep only checks correctness. It doesn't make those sizes faster, and it
 doesn't promise the new kernel runs there. At any size where a kernel hasn't
-been verified, the model just uses its original code. If you want other sizes
-to get faster too, list them as separate workloads.
+been verified, the model just uses its original code. To make a range of sizes
+faster, see the next section.
+
+## Other sizes: where else the kernels run
+
+The search optimizes one size. Afterwards the tool checks the kernels it found
+at other sizes too, and uses each one wherever it is correct and faster there.
+
+**MLX-LM prompts: automatic.** A prompt workload read from an empty cache
+(`use_library_inference: true`, `context: 0`, `shape: [1, 2048]`) is checked at
+every prompt length from 3 tokens to 2,049, one past MLX-LM's 2,048-token
+chunk. You write nothing extra. To keep the kernels at the one optimized size,
+add `check_optimizations_for: false`.
+
+**Other models: name the size.** The tool can't tell which dimension is the
+size for a custom model, so give it a name, say which size to optimize, and the
+range to check:
+
+```yaml
+workloads:
+  - name: denoise
+    inputs:
+      - {shape: [1, T, 128], dtype: bfloat16}   # T = image tokens
+primary: {T: 1024}                               # the size the search optimizes
+check_optimizations_for: {T: [256, 4096]}        # also check 256 to 4,096
+```
+
+After the search the tool records the model at both ends and the middle of the
+range and writes new code for each layer it changed, with sizes read from the
+layer's input instead of written in. Then it checks, and uses only what
+passed:
+
+- The new layer code builds the same calculation as the original layer, at
+  every size in the range.
+- Each kernel gives bit-identical results to the operations it replaces, at
+  every size it will run at, with the GPU's out-of-bounds checking on.
+- Each kernel is faster than those operations. It is timed at about ten sizes
+  spread over the range, and the range stops at the first of those it doesn't
+  win at. Speed zig-zags between sizes (kernels work in tiles of rows), so it is
+  also timed at twelve random sizes inside that range, and it is never used at
+  or past a size where it was clearly slower.
+
+A kernel that is wrong or slower at some sizes simply isn't used there; the
+original operations run instead. Sizes outside the range, and layers whose code
+changes shape in any other way with the size (a Python loop over tokens, say),
+run as the search left them. Kernels accepted within a tolerance rather than
+bit-exactly stay at the optimized size. The report's `check_optimizations_for`
+section lists every layer and kernel with its range and, if left out, why, plus
+whole-model timings at the recorded sizes.
+
+Choose a range where the model runs the same code path (an MLX-LM prompt of 1
+or 2 tokens takes another one). For MLX-LM, only the first 2,048-token chunk of
+a longer prompt gets the kernels, and generating the answer runs as before.
+This stage added about 25 minutes to an LFM2.5-1.2B run at the automatic range,
+mostly the every-size kernel check; it grows with the number of kernels
+shipped. The named dimension needs `primary`; no correctness sweep is added to
+the search unless you also set `sweep`.
 
 ## Field reference
 
@@ -211,7 +266,8 @@ means a nested field.
 | `workloads[].inputs[].dtype` | required | Input type; see the list below. |
 | `workloads[].inputs[].low` / `high` | `0` / `100` | Range for random integers, `low` included, `high` excluded. `low` must be less than `high`. Integer dtypes only. |
 | `primary` | largest sweep size | Size to optimize for, per named dimension. |
-| `sweep` | `[1, 13, 50, 4096]` | Sizes to check for correctness, per named dimension. Set this yourself when you use named dimensions. |
+| `sweep` | `[1, 13, 50, 4096]` | Sizes to check for correctness, per named dimension. Set this yourself when you use named dimensions. None by default for a `check_optimizations_for` dimension. |
+| `check_optimizations_for` | automatic for MLX-LM prompts | One named dimension and `[smallest, largest]` size to also run the kernels at, where each is checked correct and faster; `false` keeps them at the optimized size. See [other sizes](#other-sizes-where-else-the-kernels-run). |
 | `budget.per_region` | `25` | Max attempts on one region. |
 | `budget.total` | `250` | Max attempts for the whole run. |
 | `tolerances` | depends on output dtype | `{rtol: …, atol: …}`, both required. See [correctness](#notes). |

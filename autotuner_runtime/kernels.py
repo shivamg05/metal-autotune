@@ -142,15 +142,19 @@ class LoadedKernel:
         self._fallback = Expr(spec.fallback_predicate) if spec.fallback_predicate else None
         self._launches: dict[tuple, Launch] = {}
 
-    def launch(self, inputs: list[mx.array]) -> Launch:
-        key = tuple((a.shape, a.dtype) for a in inputs)
+    def launch(self, inputs: list[mx.array], checked_elsewhere: bool = False) -> Launch:
+        """checked_elsewhere: the caller serves only sizes it checked this
+        kernel at, so the recorded shapes do not bound the call; the kernel's
+        own fallback predicate still does."""
+        key = (checked_elsewhere, *((a.shape, a.dtype) for a in inputs))
         launch = self._launches.get(key)
         if launch is None:
-            shapes = [shape for shape, _ in key]
+            shapes = [shape for shape, _ in key[1:]]
             native = self.spec.native_call
             signature = [[list(a.shape), str(a.dtype).removeprefix("mlx.core.")] for a in inputs]
-            if ((self.spec.input_signature is not None and signature != self.spec.input_signature)
-                    or (self.spec.input_signatures is not None and signature not in self.spec.input_signatures)
+            if ((not checked_elsewhere and (
+                    (self.spec.input_signature is not None and signature != self.spec.input_signature)
+                    or (self.spec.input_signatures is not None and signature not in self.spec.input_signatures)))
                     or (native is not None and signature != native["signature"])
                     or (self._fallback is not None and self._fallback.evaluate(shapes))):
                 launch = Launch(fallback=True)
@@ -175,7 +179,7 @@ class LoadedKernel:
                 )
                 if self._stages is not None:
                     from .stages import shapes as stage_shapes
-                    _, outputs = stage_shapes(self.spec, shapes, [dtype for _, dtype in key])
+                    _, outputs = stage_shapes(self.spec, shapes, [dtype for _, dtype in key[1:]])
                     if outputs != list(zip(launch.output_shapes, self.spec.output_dtypes)):
                         raise ValueError("stage results do not match the candidate's output shapes/dtypes")
             if len(self._launches) >= LAUNCH_CACHE_MAX:
@@ -253,3 +257,12 @@ def try_call(spec: KernelSpec, inputs: list[mx.array]) -> list[mx.array] | None:
     original ops. One launch lookup serves both the decision and the call."""
     launch = _loaded(spec).launch(inputs)
     return None if launch.fallback else call(spec, inputs, launch=launch)
+
+
+def try_sized(spec: KernelSpec, inputs: list[mx.array],
+              init_value: float | None = None) -> list[mx.array] | None:
+    """try_call for a size-generic wrapper, which calls this only inside the
+    range of sizes the kernel was checked at: the recorded shapes do not bound
+    the call, the kernel's fallback predicate still does."""
+    launch = _loaded(spec).launch(inputs, checked_elsewhere=True)
+    return None if launch.fallback else call(spec, inputs, init_value=init_value, launch=launch)

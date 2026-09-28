@@ -133,5 +133,10 @@ def same_structure(original_roots, rewritten_roots):
     return _load().same_structure(original_roots, rewritten_roots)
 
 
+def same_computation(original_roots, rewritten_roots):
+    """same_structure, with constants remade on each call compared by value."""
+    return _load().same_computation(original_roots, rewritten_roots)
+
+
 def array_id(array):
     return _load().array_id(array)

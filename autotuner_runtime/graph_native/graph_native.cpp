@@ -285,10 +285,47 @@ std::tuple<bool, std::string> same_structure(
   return {true, "same operations, attributes, leaves and sharing"};
 }
 
+// same_structure, except that two distinct materialized leaves (a Python
+// number or list turned into an array on each call) count as the same when
+// shape, dtype and bytes agree. Two separate calls of the same Python build
+// the same calculation with such constants remade each time.
+std::tuple<bool, std::string> same_computation(
+    const std::vector<mx::array>& original, const std::vector<mx::array>& rewritten) {
+  if (original.size() != rewritten.size()) return {false, "root count"};
+  std::vector<std::pair<mx::array, mx::array>> pending;
+  for (size_t i = 0; i < original.size(); ++i) pending.emplace_back(original[i], rewritten[i]);
+  std::unordered_map<uintptr_t, uintptr_t> mapping, reverse;
+  while (!pending.empty()) {
+    auto [a, b] = pending.back(); pending.pop_back();
+    if (auto it = mapping.find(a.id()); it != mapping.end()) {
+      if (it->second != b.id()) return {false, "shared node duplicated"};
+      continue;
+    }
+    if (auto it = reverse.find(b.id()); it != reverse.end() && it->second != a.id())
+      return {false, "distinct nodes merged"};
+    mapping.emplace(a.id(), b.id()); reverse.emplace(b.id(), a.id());
+    if (a.shape() != b.shape() || a.dtype() != b.dtype()) return {false, "shape or dtype"};
+    if (a.has_primitive() != b.has_primitive()) return {false, "primitive versus leaf"};
+    if (!a.has_primitive() || a.status() != mx::array::unscheduled) {
+      if (a.id() == b.id()) continue;
+      if (a.has_primitive() || !a.is_available() || !b.is_available() ||
+          !a.flags().row_contiguous || !b.flags().row_contiguous || a.nbytes() != b.nbytes() ||
+          std::memcmp(a.data<char>(), b.data<char>(), a.nbytes()) != 0)
+        return {false, "different leaf"};
+      continue;
+    }
+    if (b.status() != mx::array::unscheduled) return {false, "evaluated versus unevaluated"};
+    if (!equivalent(a, b)) return {false, std::string("primitive mismatch: ") + a.primitive().name()};
+    for (size_t i = 0; i < a.inputs().size(); ++i) pending.emplace_back(a.inputs()[i], b.inputs()[i]);
+  }
+  return {true, "same operations, attributes, constants and sharing"};
+}
+
 NB_MODULE(_graph_native, m) {
   m.def("rewrite", &rewrite, nb::arg("roots"), nb::arg("patterns"),
         nb::arg("parameters"), nb::arg("replacement"),
         nb::arg("anchors") = std::vector<std::optional<mx::array>>{});
   m.def("same_structure", &same_structure);
+  m.def("same_computation", &same_computation);
   m.def("array_id", [](const mx::array& a) { return a.id(); });
 }

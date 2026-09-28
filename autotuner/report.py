@@ -25,6 +25,7 @@ _ENV_VARS = ("MLX_MAX_OPS_PER_BUFFER", "MLX_MAX_MB_PER_BUFFER", "MTL_SHADER_VALI
 # what the short field names mean; every millisecond figure on a hypothesis
 # is one pass of one copy of the region
 LEGEND = {
+    "check_optimizations_for": "per scope and kernel, the range of the named dim it also runs at (checked at every size there), why others do not, and whole-model timings at the recorded serve sizes",
     "target_workload": "the workload nominated before timing; its whole-model win must repeat before installation",
     "timing_case": "the captured input case behind this hypothesis's local kernel timings",
     "timing_workload": "the workload behind a region's recorded shipped-kernel speedup",
@@ -82,6 +83,7 @@ class Report:
     stranded: list = field(default_factory=list)      # rejected regions with reasons
     coverage: dict = field(default_factory=dict)      # the standing self-proof line
     final: dict = field(default_factory=dict)         # the whole-model check after the last region
+    serve: dict = field(default_factory=dict)         # kernels served at other sizes (manifest serve)
 
     def add_region(self, *, fingerprint: str, ops: list[str], copies: int,
                    workloads: list[str], p: dict, t_orig_ms: dict, bound: str | None,
@@ -157,6 +159,7 @@ class Report:
             "stranded": self.stranded_by_reason(),
             "coverage": self.coverage,
             "final": self.final,
+            **({"check_optimizations_for": self.serve} if self.serve else {}),
         }
 
     def write(self, path: str | Path) -> None:

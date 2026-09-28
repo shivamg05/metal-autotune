@@ -59,8 +59,16 @@ generation, where your code owns the cache and it keeps growing, use
 `load().inference_model`.
 
 A kernel only ever runs on the input shapes it was verified on, such as a
-prompt chunk of exactly 2,047 tokens. Where the cache stands when that call
-arrives is a different matter:
+prompt chunk of exactly 2,047 tokens, unless the run used
+[other sizes](manifest.md#other-sizes-where-else-the-kernels-run) (automatic for
+MLX-LM prompts). Then the layers it
+changed carry generated code that reads the size (`if 1000 <= _n <= 2048:`
+before each kernel call, in `patch/wrappers.py`), and each kernel runs at every
+size in its checked range, from an empty cache: a prompt, or the first chunk of
+a longer one. That code runs as plain MLX calls, with nothing traced or
+compiled at run time, and any other call goes straight to the original layer.
+For runs without it, where the cache stands when a verified shape arrives
+matters:
 
 - **Kernels whose inputs come only from the layer's own input and weights**
   (e.g. a projection of the layer's input) run at any cache position,
@@ -150,7 +158,8 @@ The check runs in a fresh process:
   weights**. (Weights are shared before any decode cache is filled.) That way
   randomly initialized models compare fairly, without freezing their weights
   or comparing two unrelated random models.
-- It checks every workload and every sweep size in the manifest, through both
+- It checks every workload, every sweep size and the recorded other sizes
+  in the manifest, through both
   `apply()` and the bundle's own `load()`, including the cache state for
   decode runs.
 - It runs **offline**, using your existing Hugging Face cache. If something the

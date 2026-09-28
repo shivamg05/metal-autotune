@@ -399,6 +399,19 @@ def _result_lines(metadata: dict, report: dict) -> list[str]:
             lines.append(f"- `{name}`: **{clocks['speedup']:.3f}x faster** for {single}.")
         else:
             lines.append(f"- `{name}`: {single}.")
+    serve = report.get("check_optimizations_for") or {}
+    if serve.get("kernels") and not serve.get("withdrawn"):
+        dim = serve["dim"]
+        spans = [f"`{kid}` at {dim} {span[0]}–{span[1]}" if span[0] != span[1] else f"`{kid}` at {dim} {span[0]} only"
+                 for kid, row in serve["kernels"].items() if (span := row.get(f"{dim}_range"))]
+        if spans:
+            lines.append(f"- Other sizes of `{dim}`: each kernel also runs wherever it was checked correct and "
+                         f"faster ({'; '.join(spans)}); elsewhere the original code runs.")
+        for label, row in (serve.get("timings") or {}).items():
+            if row.get("speedup"):
+                lines.append(f"  At `{label.split(':', 1)[-1]}`: {_ms(row['baseline_ms'])} untouched, "
+                             f"{_ms(row['patched_ms'])} patched ({row['speedup']:.3f}x"
+                             + (", confirmed)." if row.get("win_confirmed") else ", within the timing noise)."))
     return lines
 
 
