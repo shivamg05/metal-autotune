@@ -35,6 +35,7 @@ path.
 | [Whisper small, fp16 encoder](whisper_small_encoder.py) | MLX-Whisper, encoder calls | `whisper_small_encoder_30s.yaml` |
 | [Whisper large-v3-turbo, fp16 encoder](whisper_large_v3_turbo_encoder.py) ¹ | MLX-Whisper, encoder calls | none; input is `[1, 3000, 128]` (128 mel bins) |
 | [FLUX.2 transformer, random weights](flux2_4b.py) | Standalone MLX; one denoiser call | none; see [`manifest_flux.yaml`](../manifest_flux.yaml) for its inputs. No download, no image generation |
+| [FLUX.2 Klein 4B as mflux runs it, 4-bit](flux2_klein_4b_mflux.py) ¹ | mflux (`pip install mflux==0.20.0`); its own transformer, published weights | none yet |
 
 ¹ New targets. Their checkpoint configs have been checked, but they haven't yet
 been fully loaded and optimized end to end. See

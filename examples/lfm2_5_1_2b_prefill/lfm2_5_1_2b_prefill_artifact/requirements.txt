@@ -1,0 +1,4 @@
+# The versions this result was measured with, on Apple Silicon.
+mlx==0.32.2
+mlx-lm==0.31.3
+mlx-metal==0.32.2

@@ -1,4 +1,9 @@
-model: models/lfm2_5_1_2b_instruct_4bit.py   # Liquid's LFM2.5-1.2B-Instruct, pretrained 4-bit weights
+# The job that produced lfm2_5_1_2b_prefill_artifact/. Its kernels come from the
+# 2026-09-25 search on this manifest; on 2026-09-26 they were reinstalled
+# through the normal install path, checked at every prompt length (3 to
+# 2,049 tokens, set automatically for this MLX-LM prompt workload), timed
+# again end to end and exported. The search itself was not rerun.
+model: ../../models/lfm2_5_1_2b_instruct_4bit.py   # Liquid's LFM2.5-1.2B-Instruct, pretrained 4-bit weights
 baseline: compiled
 use_library_inference: true    # time MLX-LM's own generate path
 # On-device retrieval or agent request: a system prompt plus a retrieved

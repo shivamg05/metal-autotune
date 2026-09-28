@@ -1,0 +1,238 @@
+{
+ "kernel_id": "r036a72bd97248ec8_s0tile_sgfullunroll",
+ "name": "at_r036a72bd97248ec8_s0tile_sgfullunroll",
+ "input_names": [
+  "in0",
+  "in1",
+  "in2",
+  "in3",
+  "in4"
+ ],
+ "output_names": [
+  "out0"
+ ],
+ "header": "",
+ "grid": [
+  "1",
+  "1",
+  "1"
+ ],
+ "threadgroup": [
+  "1",
+  "1",
+  "1"
+ ],
+ "output_shapes": [
+  [
+   "in0.shape[0]",
+   "in0.shape[1]",
+   "in1.shape[0]"
+  ]
+ ],
+ "output_dtypes": [
+  "bfloat16"
+ ],
+ "template": [],
+ "fallback_predicate": "in0.shape[2] % 512 != 0 or in1.shape[1] * 8 != in0.shape[2] or in2.shape[1] * 64 != in0.shape[2] or in3.shape[1] * 64 != in0.shape[2] or in1.shape[0] % 128 != 0 or in4.shape[2] != in1.shape[0] or in4.shape[1] != in0.shape[1]",
+ "ensure_row_contiguous": true,
+ "atomic_outputs": false,
+ "native_call": null,
+ "input_signature": null,
+ "input_signatures": [
+  [
+   [
+    [
+     1,
+     2047,
+     8192
+    ],
+    "bfloat16"
+   ],
+   [
+    [
+     2048,
+     1024
+    ],
+    "uint32"
+   ],
+   [
+    [
+     2048,
+     128
+    ],
+    "bfloat16"
+   ],
+   [
+    [
+     2048,
+     128
+    ],
+    "bfloat16"
+   ],
+   [
+    [
+     1,
+     2047,
+     2048
+    ],
+    "bfloat16"
+   ]
+  ],
+  [
+   [
+    [
+     1,
+     1,
+     8192
+    ],
+    "bfloat16"
+   ],
+   [
+    [
+     2048,
+     1024
+    ],
+    "uint32"
+   ],
+   [
+    [
+     2048,
+     128
+    ],
+    "bfloat16"
+   ],
+   [
+    [
+     2048,
+     128
+    ],
+    "bfloat16"
+   ],
+   [
+    [
+     1,
+     1,
+     2048
+    ],
+    "bfloat16"
+   ]
+  ]
+ ],
+ "reference_sequence": null,
+ "stages": [
+  {
+   "inputs": [
+    "in0",
+    "in1",
+    "in2",
+    "in3"
+   ],
+   "outputs": [
+    "tmp0"
+   ],
+   "kernel": {
+    "kernel_id": "r036a72bd97248ec8_s0tile_sgfullunroll_stage0",
+    "name": "at_r036a72bd97248ec8_s0tile_sgfullunroll_stage0",
+    "input_names": [
+     "in0",
+     "in1",
+     "in2",
+     "in3"
+    ],
+    "output_names": [
+     "out0"
+    ],
+    "header": "",
+    "grid": [
+     "(in1.shape[0] // 64) * (in1.shape[1] // 8) * 256",
+     "1",
+     "1"
+    ],
+    "threadgroup": [
+     "256",
+     "1",
+     "1"
+    ],
+    "output_shapes": [
+     [
+      "in1.shape[1] * 8",
+      "in1.shape[0]"
+     ]
+    ],
+    "output_dtypes": [
+     "bfloat16"
+    ],
+    "template": [],
+    "fallback_predicate": null,
+    "ensure_row_contiguous": true,
+    "atomic_outputs": false,
+    "native_call": null,
+    "input_signature": null,
+    "input_signatures": null,
+    "reference_sequence": null,
+    "stages": [],
+    "reassociates": false
+   }
+  },
+  {
+   "inputs": [
+    "in0",
+    "in1",
+    "in2",
+    "in3",
+    "in4",
+    "tmp0"
+   ],
+   "outputs": [
+    "out0"
+   ],
+   "kernel": {
+    "kernel_id": "r036a72bd97248ec8_s0tile_sgfullunroll_stage1",
+    "name": "at_r036a72bd97248ec8_s0tile_sgfullunroll_stage1",
+    "input_names": [
+     "in0",
+     "in1",
+     "in2",
+     "in3",
+     "in4",
+     "in5"
+    ],
+    "output_names": [
+     "out0"
+    ],
+    "header": "",
+    "grid": [
+     "(in1.shape[0] // 128) * 256",
+     "ceil_div(in0.shape[0] * in0.shape[1], 64)",
+     "1"
+    ],
+    "threadgroup": [
+     "256",
+     "1",
+     "1"
+    ],
+    "output_shapes": [
+     [
+      "in0.shape[0]",
+      "in0.shape[1]",
+      "in2.shape[0]"
+     ]
+    ],
+    "output_dtypes": [
+     "bfloat16"
+    ],
+    "template": [],
+    "fallback_predicate": null,
+    "ensure_row_contiguous": true,
+    "atomic_outputs": false,
+    "native_call": null,
+    "input_signature": null,
+    "input_signatures": null,
+    "reference_sequence": null,
+    "stages": [],
+    "reassociates": false
+   }
+  }
+ ],
+ "reassociates": false
+}

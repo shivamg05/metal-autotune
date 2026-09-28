@@ -1,0 +1,262 @@
+{
+ "format_version": 1,
+ "entry": "models/lfm2_5_1_2b_instruct_4bit.py",
+ "baseline": "compiled",
+ "use_library_inference": true,
+ "baseline_scopes": [],
+ "measurement": {
+  "kind": "library_generation",
+  "generated_tokens": 1
+ },
+ "mlx": "0.32.2",
+ "python": "3.12.13",
+ "declared_workloads": {
+  "rag_prompt_2048": [
+   {
+    "shape": [
+     1,
+     "prompt_tokens"
+    ],
+    "dtype": "int32"
+   }
+  ]
+ },
+ "workloads": {
+  "rag_prompt_2048": {
+   "file": "workloads/rag_prompt_2048.safetensors",
+   "role": "declared",
+   "shapes": [
+    [
+     1,
+     2048
+    ]
+   ],
+   "dtypes": [
+    "int32"
+   ]
+  },
+  "rag_prompt_2048@serve:prompt_tokens=3": {
+   "file": "workloads/rag_prompt_2048_serve_prompt_tokens_3.safetensors",
+   "role": "sweep",
+   "shapes": [
+    [
+     1,
+     3
+    ]
+   ],
+   "dtypes": [
+    "int32"
+   ]
+  },
+  "rag_prompt_2048@serve:prompt_tokens=1026": {
+   "file": "workloads/rag_prompt_2048_serve_prompt_tokens_1026.safetensors",
+   "role": "sweep",
+   "shapes": [
+    [
+     1,
+     1026
+    ]
+   ],
+   "dtypes": [
+    "int32"
+   ]
+  },
+  "rag_prompt_2048@serve:prompt_tokens=2049": {
+   "file": "workloads/rag_prompt_2048_serve_prompt_tokens_2049.safetensors",
+   "role": "sweep",
+   "shapes": [
+    [
+     1,
+     2049
+    ]
+   ],
+   "dtypes": [
+    "int32"
+   ]
+  }
+ },
+ "context": {
+  "workload": "rag_prompt_2048",
+  "context": 0,
+  "seed": 17628833516666814069,
+  "file": "workloads/rag_prompt_2048.context.safetensors"
+ },
+ "correctness_rule": "exact",
+ "tolerances": null,
+ "tolerance_defaults": {
+  "float16": {
+   "rtol": 0.01,
+   "atol": 0.02
+  },
+  "bfloat16": {
+   "rtol": 0.02,
+   "atol": 0.04
+  },
+  "float32": {
+   "rtol": 1e-05,
+   "atol": 1e-06
+  }
+ },
+ "goldens": {},
+ "sequence_goldens": {},
+ "weight_policy": "model_source",
+ "weight_sources": [
+  {
+   "source": "LiquidAI/LFM2.5-1.2B-Instruct-MLX-4bit",
+   "requested_revision": null,
+   "revision": "7ccafdb04c36936f4f1c4685198c6c9a40275932"
+  },
+  {
+   "source": "/Users/shivamgarg/.cache/huggingface/hub/models--LiquidAI--LFM2.5-1.2B-Instruct-MLX-4bit/snapshots/7ccafdb04c36936f4f1c4685198c6c9a40275932",
+   "requested_revision": null,
+   "revision": null
+  }
+ ],
+ "checkpoint_resources_included": false,
+ "final_benchmark": {
+  "steps": 1,
+  "pairs": 8,
+  "warmup_steps": 3
+ },
+ "patches": [
+  {
+   "module_path": "model.model.layers.0",
+   "kernel_ids": [
+    "rae66687cb9df03fe_predeq_sg2x4",
+    "r95aa6c37bb25ef99_prefill_bk64",
+    "r1f9367e50750eb01_unroll_hoist",
+    "r036a72bd97248ec8_s0tile_sgfullunroll"
+   ]
+  },
+  {
+   "module_path": "model.model.layers.1",
+   "kernel_ids": [
+    "rae66687cb9df03fe_predeq_sg2x4",
+    "r95aa6c37bb25ef99_prefill_bk64",
+    "r1f9367e50750eb01_unroll_hoist",
+    "r036a72bd97248ec8_s0tile_sgfullunroll"
+   ]
+  },
+  {
+   "module_path": "model.model.layers.11",
+   "kernel_ids": [
+    "rae66687cb9df03fe_predeq_sg2x4",
+    "r95aa6c37bb25ef99_prefill_bk64",
+    "r1f9367e50750eb01_unroll_hoist",
+    "r036a72bd97248ec8_s0tile_sgfullunroll"
+   ]
+  },
+  {
+   "module_path": "model.model.layers.13",
+   "kernel_ids": [
+    "rae66687cb9df03fe_predeq_sg2x4",
+    "r95aa6c37bb25ef99_prefill_bk64",
+    "r1f9367e50750eb01_unroll_hoist",
+    "r036a72bd97248ec8_s0tile_sgfullunroll"
+   ]
+  },
+  {
+   "module_path": "model.model.layers.3",
+   "kernel_ids": [
+    "rae66687cb9df03fe_predeq_sg2x4",
+    "r95aa6c37bb25ef99_prefill_bk64",
+    "r1f9367e50750eb01_unroll_hoist",
+    "r036a72bd97248ec8_s0tile_sgfullunroll"
+   ]
+  },
+  {
+   "module_path": "model.model.layers.4",
+   "kernel_ids": [
+    "rae66687cb9df03fe_predeq_sg2x4",
+    "r95aa6c37bb25ef99_prefill_bk64",
+    "r1f9367e50750eb01_unroll_hoist",
+    "r036a72bd97248ec8_s0tile_sgfullunroll"
+   ]
+  },
+  {
+   "module_path": "model.model.layers.6",
+   "kernel_ids": [
+    "rae66687cb9df03fe_predeq_sg2x4",
+    "r95aa6c37bb25ef99_prefill_bk64",
+    "r1f9367e50750eb01_unroll_hoist",
+    "r036a72bd97248ec8_s0tile_sgfullunroll"
+   ]
+  },
+  {
+   "module_path": "model.model.layers.7",
+   "kernel_ids": [
+    "rae66687cb9df03fe_predeq_sg2x4",
+    "r95aa6c37bb25ef99_prefill_bk64",
+    "r1f9367e50750eb01_unroll_hoist",
+    "r036a72bd97248ec8_s0tile_sgfullunroll"
+   ]
+  },
+  {
+   "module_path": "model.model.layers.9",
+   "kernel_ids": [
+    "rae66687cb9df03fe_predeq_sg2x4",
+    "r95aa6c37bb25ef99_prefill_bk64",
+    "r1f9367e50750eb01_unroll_hoist",
+    "r036a72bd97248ec8_s0tile_sgfullunroll"
+   ]
+  },
+  {
+   "module_path": "model.model.layers.10",
+   "kernel_ids": [
+    "r95aa6c37bb25ef99_prefill_bk64",
+    "r1f9367e50750eb01_unroll_hoist",
+    "r036a72bd97248ec8_s0tile_sgfullunroll"
+   ]
+  },
+  {
+   "module_path": "model.model.layers.12",
+   "kernel_ids": [
+    "r95aa6c37bb25ef99_prefill_bk64",
+    "r1f9367e50750eb01_unroll_hoist",
+    "r036a72bd97248ec8_s0tile_sgfullunroll"
+   ]
+  },
+  {
+   "module_path": "model.model.layers.14",
+   "kernel_ids": [
+    "r95aa6c37bb25ef99_prefill_bk64",
+    "r1f9367e50750eb01_unroll_hoist",
+    "r036a72bd97248ec8_s0tile_sgfullunroll"
+   ]
+  },
+  {
+   "module_path": "model.model.layers.2",
+   "kernel_ids": [
+    "r95aa6c37bb25ef99_prefill_bk64",
+    "r1f9367e50750eb01_unroll_hoist",
+    "r036a72bd97248ec8_s0tile_sgfullunroll"
+   ]
+  },
+  {
+   "module_path": "model.model.layers.5",
+   "kernel_ids": [
+    "r95aa6c37bb25ef99_prefill_bk64",
+    "r1f9367e50750eb01_unroll_hoist",
+    "r036a72bd97248ec8_s0tile_sgfullunroll"
+   ]
+  },
+  {
+   "module_path": "model.model.layers.8",
+   "kernel_ids": [
+    "r95aa6c37bb25ef99_prefill_bk64",
+    "r1f9367e50750eb01_unroll_hoist",
+    "r036a72bd97248ec8_s0tile_sgfullunroll"
+   ]
+  },
+  {
+   "module_path": "model.model.layers.15",
+   "kernel_ids": [
+    "rae66687cb9df03fe_predeq_sg2x4"
+   ]
+  }
+ ],
+ "source_files": [
+  "models/lfm2_5_1_2b_instruct_4bit.py"
+ ],
+ "resource_files": []
+}

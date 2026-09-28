@@ -1,0 +1,159 @@
+{
+ "kernel_id": "r1f9367e50750eb01_unroll_hoist",
+ "name": "at_r1f9367e50750eb01_unroll_hoist",
+ "input_names": [
+  "in0",
+  "in1",
+  "in2",
+  "in3",
+  "in4",
+  "in5",
+  "in6"
+ ],
+ "output_names": [
+  "out0",
+  "out1"
+ ],
+ "header": "#include <metal_simdgroup_matrix>\ninline float qmv_qdot16(const device uint32_t* w, thread const float* xt, float s, float b, float sum) {\n  float accum = 0.0f;\n  for (uint i = 0; i < 4u; ++i) {\n    uint word = w[i >> 1];\n    uint ws = (i & 1u) ? (word >> 16) : (word & 0xFFFFu);\n    accum += (xt[4u * i] * float(ws & 0x000Fu) + xt[4u * i + 1u] * float(ws & 0x00F0u) + xt[4u * i + 2u] * float(ws & 0x0F00u) + xt[4u * i + 3u] * float(ws & 0xF000u));\n  }\n  return s * accum + sum * b;\n}\ninline void mlx_deq8(uint q, bfloat16_t scale, bfloat16_t bias, threadgroup bfloat16_t* dst, uint ld) {\n  bfloat16_t sc0 = scale;\n  bfloat16_t sc1 = scale / static_cast<bfloat16_t>(16.0f);\n  for (uint i = 0; i < 4u; ++i) {\n    uint byte = (q >> (8u * i)) & 0xFFu;\n    dst[(2u * i) * ld] = sc0 * static_cast<bfloat16_t>(byte & 0x0Fu) + bias;\n    dst[(2u * i + 1u) * ld] = sc1 * static_cast<bfloat16_t>(byte & 0xF0u) + bias;\n  }\n}\ninline uint4 load_a8(const device ushort* p, uint base, uint k, uint st2, bool vec, bool valid) {\n  if (!valid) {\n    return uint4(0u);\n  }\n  if (vec) {\n    return *((const device uint4*)(p + base + k));\n  }\n  uint w[4];\n  for (uint j = 0; j < 4u; ++j) {\n    uint lo = (uint)p[base + (k + 2u * j) * st2];\n    uint hi = (uint)p[base + (k + 2u * j + 1u) * st2];\n    w[j] = lo | (hi << 16);\n  }\n  return uint4(w[0], w[1], w[2], w[3]);\n}\n",
+ "grid": [
+  "ceil_div(in1.shape[0], 64) * 256",
+  "ceil_div(in0.shape[0] * in0.shape[1], 64)",
+  "1"
+ ],
+ "threadgroup": [
+  "256",
+  "1",
+  "1"
+ ],
+ "output_shapes": [
+  [
+   "in0.shape[0]",
+   "in0.shape[1]",
+   "in1.shape[0]"
+  ],
+  [
+   "in0.shape[0]",
+   "in0.shape[1]",
+   "in4.shape[0]"
+  ]
+ ],
+ "output_dtypes": [
+  "bfloat16",
+  "bfloat16"
+ ],
+ "template": [],
+ "fallback_predicate": null,
+ "ensure_row_contiguous": true,
+ "atomic_outputs": false,
+ "native_call": null,
+ "input_signature": null,
+ "input_signatures": [
+  [
+   [
+    [
+     1,
+     2047,
+     2048
+    ],
+    "bfloat16"
+   ],
+   [
+    [
+     8192,
+     256
+    ],
+    "uint32"
+   ],
+   [
+    [
+     8192,
+     32
+    ],
+    "bfloat16"
+   ],
+   [
+    [
+     8192,
+     32
+    ],
+    "bfloat16"
+   ],
+   [
+    [
+     8192,
+     256
+    ],
+    "uint32"
+   ],
+   [
+    [
+     8192,
+     32
+    ],
+    "bfloat16"
+   ],
+   [
+    [
+     8192,
+     32
+    ],
+    "bfloat16"
+   ]
+  ],
+  [
+   [
+    [
+     1,
+     1,
+     2048
+    ],
+    "bfloat16"
+   ],
+   [
+    [
+     8192,
+     256
+    ],
+    "uint32"
+   ],
+   [
+    [
+     8192,
+     32
+    ],
+    "bfloat16"
+   ],
+   [
+    [
+     8192,
+     32
+    ],
+    "bfloat16"
+   ],
+   [
+    [
+     8192,
+     256
+    ],
+    "uint32"
+   ],
+   [
+    [
+     8192,
+     32
+    ],
+    "bfloat16"
+   ],
+   [
+    [
+     8192,
+     32
+    ],
+    "bfloat16"
+   ]
+  ]
+ ],
+ "reference_sequence": null,
+ "stages": [],
+ "reassociates": false
+}
