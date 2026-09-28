@@ -10,8 +10,12 @@ Python state handed to the scope (a cache) is explicit: its arrays enter the
 compiled call as inputs and leave as outputs, and its plain attributes (an
 offset) are part of the call signature. A warm call writes the arrays and
 attributes the traced call produced back into the same objects, so a cache
-advances exactly as the original Python advanced it. A signature never seen,
-an offset included, runs the original module untouched.
+advances exactly as the original Python advanced it. A cache state never
+recorded (another offset, a grown buffer, a filled cache where an empty one
+was recorded) is traced once as its own signature if it is the same kind of
+cache, up to UNRECORDED_STATE_TRACES per scope; the kernels are substituted
+only where their verified operations and input shapes appear, and otherwise
+the original module runs untouched.
 
 A warm call is a signature, a cache lookup and one compiled call; everything
 that decides which variant applies runs once per new key. The compiled call
@@ -62,6 +66,24 @@ def execute_graph(function, arrays, state):
 
 
 GRAPH_CACHE_MAX = 64  # compiled call signatures kept per scope; each recorded cache position is one
+# Cache states a scope may trace beyond those recorded: enough for the chunks of
+# a long prompt, few enough that a decode loop (a new offset every token) stops
+# re-tracing and runs the original.
+UNRECORDED_STATE_TRACES = 8
+
+
+def _state_structure(signature):
+    """A recorded state signature with array shapes and numeric settings (an
+    offset, a preallocated length) left out: what the cache is, not where it is.
+    An empty slot and an array are one kind of field, since a cache starts empty."""
+    if signature is None or (isinstance(signature, list) and len(signature) == 3
+                             and signature[0] == "array"):
+        return "array or empty"
+    if isinstance(signature, list):
+        return [_state_structure(x) for x in signature]
+    if isinstance(signature, (int, float)) and not isinstance(signature, bool):
+        return type(signature).__name__
+    return signature
 
 
 def _python_snapshot(root):
@@ -296,6 +318,7 @@ class GraphWrapper(ReplayWrapper):
         object.__setattr__(self, "_graph_fallback_reason", "")
         object.__setattr__(self, "_graph_fallbacks", [])  # why a call signature runs the original
         object.__setattr__(self, "_graph_problem", None)
+        object.__setattr__(self, "_unrecorded_states", 0)
 
     @contextmanager
     def validate_graph(self):
@@ -374,20 +397,38 @@ class GraphWrapper(ReplayWrapper):
             _objects(variant["args"], args, objects)
             _objects(variant["kwargs"], kwargs, objects)
             if ([id(o) for o in objects] != [id(h) for h in holders]
-                    or any(json.dumps(state_signature(obj)) != recorded
-                           for obj, recorded in zip(objects, variant["object_signatures"]))
                     or _shared_containers([vars(obj) for obj in objects])):
+                continue
+            live = [json.dumps(state_signature(obj)) for obj in objects]
+            recorded = variant["object_signatures"]
+            unrecorded = live != recorded
+            # A cache at another position or length still holds the same kind of
+            # state. Tracing it is safe when the kernels' inputs come only from
+            # the arguments and weights: each replaces only the ops it was
+            # verified on, with the same input shapes (constants inside those
+            # ops compared by value), and a kernel whose ops no longer appear
+            # sends the whole call back to the original.
+            # Elsewhere only kernels marked position_free when bound (inputs from
+            # the scope's arguments and weights alone) are substituted; bundles
+            # from before the mark serve their recorded positions only.
+            if unrecorded and (not any(r.get("position_free") for r in variant["rules"])
+                               or self._unrecorded_states >= UNRECORDED_STATE_TRACES
+                               or [_state_structure(json.loads(x)) for x in live]
+                               != [_state_structure(json.loads(x)) for x in recorded]):
                 continue
             if any(not _matches({"$": "ref", "i": 0}, resolve_value(self.wrapped, path), [spec])
                    for path, spec in variant["weight_specs"].items()):
                 continue
-            return variant, self._make_function(variant, holders)
+            if unrecorded:
+                object.__setattr__(self, "_unrecorded_states", self._unrecorded_states + 1)
+            return variant, self._make_function(variant, holders, unrecorded)
         return False
 
-    def _make_function(self, variant, objects):
+    def _make_function(self, variant, objects, unrecorded=False):
         from . import graph_native
 
-        rules = [(rule, prepare_sequence(rule["sequence"])) for rule in variant["rules"]]
+        rules = [(rule, prepare_sequence(rule["sequence"])) for rule in variant["rules"]
+                 if not unrecorded or rule.get("position_free")]
         state_templates = []
         # Freeze the holders' Python structure; every array slot is supplied anew.
         slots = [_Slot(i) for i in range(len(_state_arrays([vars(obj) for obj in objects])))]

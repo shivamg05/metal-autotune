@@ -76,10 +76,16 @@ the result is compiled once and reused for calls of the same shapes. `replay`
 means generated Python re-runs the module's recorded operations with the
 replacement spliced in; it is kept for scopes graph substitution cannot
 preserve, such as one whose compiled identity is not bitwise the original
-or one that reaches state it was not handed. Both graph and replay serve
-only the cache positions the job recorded: a job that records position N
-optimizes position N. A `graph_fallback` row names why a scope moved to
-replay, `delivery_settled` lists the split before the search, and `graph_verified`
+or one that reaches state it was not handed. Replay serves only the cache
+positions the job recorded. Graph delivery also serves other positions and
+cache sizes of the same kind of cache: it re-traces the scope once per new
+cache state (at most 8 per scope) and there substitutes only kernels marked
+`position_free` when bound, those whose inputs are computed from the scope's
+arguments and own weights alone, and only where their verified operations
+appear with their verified input shapes; if one does not, the call runs the
+original. Timing still covers only what the job measured.
+A `graph_fallback` row names why a scope moved to replay, `delivery_settled`
+lists the split before the search, and `graph_verified`
 records that both the inspected and the compiled calculation contained exactly
 the expected substitutions. Every method passes the same correctness and
 whole-model timing checks, and the artifact carries whichever was measured.

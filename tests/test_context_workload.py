@@ -273,6 +273,45 @@ def test_a_kernel_binds_inside_the_step_and_the_bundle_rebuilds_it(tmp_path, mon
     assert "1 of 1 workloads match" in proc.stdout
 
 
+def test_graph_kernels_serve_cache_positions_the_job_never_recorded(tmp_path, monkeypatch):
+    """Bound at one cache position (4 tokens held), the layers decode from an
+    empty cache. The kernel covers both multiplies: x * wk reads only the
+    layer's input and weight, so every position substitutes it; the other
+    multiplies what the cache returned, so it runs only at the recorded
+    position. Every output matches the original bit for bit, the cache
+    advancing and growing its buffer as the original's does. After a cap of
+    new positions a layer stops tracing, so a decode loop cannot re-trace
+    every token."""
+    from contextlib import ExitStack
+    from autotuner_runtime.graph import UNRECORDED_STATE_TRACES
+    runner = _runner(tmp_path, context=4, monkeypatch=monkeypatch)
+    try:
+        runner.trace_workloads()
+        region = next(r for r in runner.build_regions() if r.ops == ("array.__mul__",))
+        assert runner._bind_and_promote(
+            RegionRun(region=region), MUL_KERNEL,
+            LadderResult("tentative_ship", None, {}, 1.0, 2.0, 1.0, 0.0, [])), runner.log.rows()[-1]
+    finally:
+        runner.tracer.uninstall()
+    patched, original = runner.model.model, runner.baseline_model.model
+    wrappers = [_resolve(runner.model, f"model.layers.{i}") for i in (0, 1)]
+    patched_cache, original_cache = patched.make_cache(), original.make_cache()
+    served, substituted = [], []
+    for step in range(UNRECORDED_STATE_TRACES + 4):
+        token = mx.array([[step % 32]])
+        with ExitStack() as stack:
+            evidence = [stack.enter_context(w.validate_graph()) for w in wrappers]
+            y = patched(token, cache=patched_cache)
+        served.append(all(any(row["hits"] for call in e for row in call) for e in evidence))
+        substituted.append(sum(row["hits"] for call in evidence[0] for row in call))
+        assert mx.array_equal(y, original(token, cache=original_cache)).item(), step
+        assert [c.offset for c in patched_cache] == [c.offset for c in original_cache] == [step + 1] * 2
+        assert [c.keys.shape for c in patched_cache] == [c.keys.shape for c in original_cache]
+    # positions 0-3 and 5-8 are new, position 4 was recorded; then the cap holds
+    assert served == [True] * (UNRECORDED_STATE_TRACES + 1) + [False] * 3
+    assert substituted == [1, 1, 1, 1, 2, 1, 1, 1, 1, 0, 0, 0]
+
+
 def test_context_step_restores_all_position_fields():
     """A rotating cache moves two positions per token; both must reset."""
     fx = _fixture()

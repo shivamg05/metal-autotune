@@ -58,13 +58,25 @@ exactly the step that was measured. It's what the benchmark uses. For real
 generation, where your code owns the cache and it keeps growing, use
 `load().inference_model`.
 
-As the cache grows past the positions the run tested:
+A kernel only ever runs on the input shapes it was verified on, such as a
+prompt chunk of exactly 2,047 tokens. Where the cache stands when that call
+arrives is a different matter:
 
-- **Replaced parts that touch the cache** (e.g. an attention block that reads
-  or writes it) fall back to the original code at any position or cache layout
-  that wasn't tested.
-- **Replaced parts that don't** (e.g. weight projections) keep using their
-  kernels as the cache grows.
+- **Kernels whose inputs come only from the layer's own input and weights**
+  (e.g. a projection of the layer's input) run at any cache position,
+  including the later chunks of a long prompt, as long as those inputs have a
+  verified shape. A layer checks each new cache state by re-tracing it once. A
+  cache that keeps a fixed size (a convolution or state-space layer's) looks
+  the same at every token and is traced once. One that grows (a KV cache)
+  looks new at every token, so each layer traces at most 8 new positions and
+  then runs the original, rather than re-trace every token.
+- **Kernels fed by the cache or by the position** (e.g. anything after
+  attention reads the cache, or an input built from the cache offset) run
+  only at the positions the run recorded: such an input could hold a value
+  that never changed while the kernel was being checked. Elsewhere the
+  original operations run in their place.
+- **Scopes the tool delivered by replay** (the report names them), and
+  bundles exported before this rule, serve only the recorded positions.
 
 The final multi-step measurement already includes those fallbacks.
 

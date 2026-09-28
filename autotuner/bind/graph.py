@@ -41,8 +41,9 @@ def graph_scope_reason(trace, scope):
         return "the scope computes results the step never uses beside ones it does; compiling it would run them"
     # State reached through an explicit argument (a cache inside a cache
     # list) compiles with it; state reached any other way does not. A cache
-    # position is part of the call signature: like a replay variant, the
-    # compiled scope serves the positions it was recorded at.
+    # position is part of the call signature: the compiled scope serves the
+    # positions it was recorded at, and elsewhere only the kernels marked
+    # position_free.
     explicit = [receivers[oid].get("path") for oid in scope.obj_ids]
     produced = {a for node in nodes for a in node.out_arrays}
     for node in nodes:
@@ -108,6 +109,35 @@ def _rule(trace, scope, splice):
                          "output_ids": [names[a] for a in splice.output_ids]}}
 
 
+def _position_free(nodes, scope, trace):
+    """Which arrays are computed from the scope's arguments and own weights
+    alone. A kernel whose inputs all are sees the same kind of values at any
+    cache position, so it may run where the cache stands elsewhere. An input
+    that comes from the cache (a state call's result) or from an array the
+    scope built out of Python numbers (positions from an offset) may hold a
+    value that was constant wherever the kernel was checked; that kernel stays
+    at the recorded positions."""
+    producers = {aid: node for node in nodes for aid in node.out_arrays}
+    path = scope_tree_path(scope.address)
+    # the module's own weights; arrays a cache object carries are state, not weights
+    own = {aid for aid, weight in trace.weight_paths.items()
+           if not path or weight.startswith(path + ".")}
+    sources = set(scope.arg_ids) | own
+    known = {}
+
+    def free(aid):
+        if aid in sources:
+            return True
+        if aid not in known:
+            node = producers.get(aid)
+            known[aid] = False  # a cycle cannot occur; this also stops a revisit
+            known[aid] = (node is not None and not state_method(node.op) and bool(node.in_arrays)
+                          and all(free(a) for a in node.in_arrays))
+        return known[aid]
+
+    return free
+
+
 def emit_graph_wrapper_variants(variants, class_name):
     if not variants:
         raise NotReplayable("a graph wrapper requires a recorded call")
@@ -126,6 +156,7 @@ def emit_graph_wrapper_variants(variants, class_name):
         _validate_splices(nodes, splices, scope.address)
         specs = trace.span_specs(nodes[0].seq, nodes[-1].seq)
         rules = {}
+        free = _position_free(nodes, scope, trace)
         for splice in splices:
             rule = _rule(trace, scope, splice)
             key = json.dumps(rule, sort_keys=True)
@@ -133,6 +164,8 @@ def emit_graph_wrapper_variants(variants, class_name):
                 rules[key]["count"] += 1
             else:
                 rules[key] = rule
+            rules[key]["position_free"] = (rules[key].get("position_free", True)
+                                           and all(free(a) for a in splice.input_ids))
             if splice.kernel.kernel_id not in kernel_ids:
                 kernel_ids.append(splice.kernel.kernel_id)
         receivers = {node.scalar_args.get("receiver", {}).get("id"): node.scalar_args.get("receiver", {})

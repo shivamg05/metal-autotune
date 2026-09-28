@@ -322,10 +322,13 @@ def test_a_cache_with_history_compiles_at_its_recorded_position():
     for _ in range(3):
         assert bitwise_equal(model(x), want) and model.cache.offset == 4
     assert len(patched._graph_evidence) == 1
-    model.cache.offset = 6  # a position never recorded runs the original
+    model.cache.offset = 6  # a position never recorded; no kernel could run there
     with patched.validate_graph() as calls:
-        model(x)
-    assert calls == [] and not patched._graph_fallbacks
+        got = model(x)
+    model.layer, model.cache.offset = patched.wrapped, 6
+    plain = model(x)
+    model.layer = patched
+    assert calls == [] and bitwise_equal(got, plain) and not patched._graph_fallbacks
 
 
 class KVLike:
@@ -367,7 +370,8 @@ def test_a_fresh_cache_compiles_and_the_call_advances_it():
     """Prefill: the cache arrives empty at position 0. The compiled scope
     fills it and advances the position exactly as the Python did; a fresh
     cache in the same state reuses the trace; the advanced cache, at a
-    position never recorded, runs the original module, which advances it."""
+    position never recorded, is the same kind of cache, so the scope traces it
+    too, substitutes the kernel, and matches the original bit for bit."""
     model = Prefill()
     x = mx.arange(32, dtype=mx.float32)
     trace, want = record(model, [x])
@@ -386,8 +390,10 @@ def test_a_fresh_cache_compiles_and_the_call_advances_it():
     again = KVLike()
     patched(x, again)
     with patched.validate_graph() as calls:
-        got = patched(x, again)  # position 1: unrecorded, so the original runs
-    assert calls == [] and bitwise_equal(got, stepped) and again.offset == 2
+        got = patched(x, again)  # position 1: unrecorded, traced once as its own state
+    assert [row["hits"] for call in calls for row in call] == [1]
+    assert bitwise_equal(got, stepped) and again.offset == 2
+    assert bitwise_equal(again.keys[:2], cache.keys[:2])
     assert not patched._graph_fallbacks
 
 
@@ -612,3 +618,44 @@ def test_a_scope_called_twice_with_one_signature_binds(tmp_path, monkeypatch):
         assert installation and installation[-1]["method"] == "graph"
     finally:
         runner.tracer.uninstall()
+
+
+class Positions(nn.Module):
+    """Adds the token's position, built from the cache offset with arange: the
+    shapes are the same at every position, only the values differ."""
+
+    def __call__(self, x, cache):
+        position = mx.arange(cache.offset, cache.offset + 1).astype(mx.float32)
+        cache.update_and_fetch(x)
+        return x + position
+
+
+class PositionModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.cache = KVLike()
+        self.inner = Positions()
+
+    def __call__(self, x):
+        return self.inner(x, self.cache)
+
+
+def test_a_kernel_fed_by_the_cache_position_stays_at_its_recorded_position():
+    """A kernel whose input is built from the offset could hard-code the value
+    it was checked with, so it is not position free: at another position the
+    scope does not substitute it, and the output follows the new position."""
+    model = PositionModel()
+    x = mx.arange(32, dtype=mx.float32)
+    trace, want = record(model, [x])
+    n = next(n for n in trace.nodes if n.op == "array.__add__")
+    hardcoded = replace(ADD, kernel_id="graph_add_pos0", name="graph_add_pos0",
+                        source="uint i = thread_position_in_grid.x; out[i] = a[i] + 0.0f;")
+    patched = wrap(model.inner, trace, [Splice(hardcoded, n.seq, n.seq, n.in_arrays, n.out_arrays)],
+                   "inner@0")
+    assert [r["position_free"] for v in type(patched).GRAPH_VARIANTS for r in v["rules"]] == [False]
+    assert bitwise_equal(patched(x, KVLike()), want)  # position 0: recorded, substituted
+    later = KVLike()
+    model.inner(x, later)  # the cache now stands at position 1
+    with patched.validate_graph() as calls:
+        got = patched(x, later)
+    assert calls == [] and bitwise_equal(got, x + 1.0)
