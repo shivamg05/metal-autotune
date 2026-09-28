@@ -114,26 +114,25 @@ def test_cooling_returns_mlx_cached_memory(tmp_path):
     assert cooling["cache_cleared_gb"] > 0
 
 
-def test_scheduled_cooling_returns_cached_memory_even_when_no_sleep_follows(tmp_path):
-    """Search comparisons schedule their cooldown; judge thinking can outlast it."""
-    import mlx.core as mx
+def test_scheduled_cooling_returns_cached_memory_even_when_no_sleep_follows(tmp_path, monkeypatch):
+    """Search comparisons schedule their cooldown; judge thinking can outlast
+    it. The pool is a stand-in so other tests' GPU work cannot race it; the
+    slept path above uses MLX's real pool."""
+    pool = {"bytes": 3 * 10**9}
+    monkeypatch.setattr(mx, "get_cache_memory", lambda: pool["bytes"])
+    monkeypatch.setattr(mx, "clear_cache", lambda: pool.update(bytes=0))
     clock = [100.0]
     slept = []
     session = Session(log_path=tmp_path / "session.jsonl", sleep=slept.append, now=lambda: clock[0])
-    x = mx.random.normal((64, 1024, 1024))
-    y = x * 2
-    mx.eval(y)
-    del x, y
-    assert mx.get_cache_memory() > 0
     session._debt_s = 1.0
     session.defer_settle()
-    assert mx.get_cache_memory() == 0
+    assert pool["bytes"] == 0
     clock[0] += 60.0  # the judge thought for longer than the 3 s cooldown
     session.wait_ready()
     assert slept == []
     scheduled = [json.loads(line) for line in (tmp_path / "session.jsonl").read_text().splitlines()
                  if '"cooling_scheduled"' in line][0]
-    assert scheduled["cache_cleared_gb"] > 0
+    assert scheduled["cache_cleared_gb"] == 3.0
 
 
 def test_failed_artifact_validation_preserves_existing_artifact(tmp_path):
