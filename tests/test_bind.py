@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 import mlx.core as mx
+import mlx.nn as nn
 import pytest
 
 from autotuner.bind.certify import certify_identity, screen_scope
@@ -294,3 +295,57 @@ def test_screen_accepts_replayable_scope():
     trace, _ = tracer().trace(model, [x])
     layer_stack = next(sc.stack for sc in trace.scope_calls if sc.address == "layers.0@0")
     assert screen_scope(trace, layer_stack) is None
+
+
+class _Modulated(nn.Module):
+    """A block handed its modulation as a tuple of arrays, as diffusion
+    transformer blocks are."""
+
+    def __init__(self):
+        super().__init__()
+        self.lin = nn.Linear(16, 16)
+
+    def __call__(self, h, mod):
+        shift, scale = mod
+        return self.lin(h) * (1 + scale) + shift
+
+
+class _Outer(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.block = _Modulated()
+
+    def __call__(self, x, s, t):
+        return self.block(x, (s, t))
+
+
+def test_arrays_inside_a_tuple_argument_are_replayed_and_guarded():
+    model = _Outer()
+    x, s, t = (mx.random.normal(shape, key=mx.random.key(i)) for i, shape in enumerate([(4, 16), (16,), (16,)]))
+    trace, _ = tracer().trace(model, [x, s, t])
+    emitted = emit_wrapper(trace, scope_call_at(trace, "block@0"), [], "Tupled")
+    assert "isinstance(a1, tuple) and len(a1) == 2" in emitted.source and "a1[1].shape == (16,)" in emitted.source
+    base = flat(model(x, s, t))
+    wide = mx.random.normal((4, 16), key=mx.random.key(9))  # broadcasts, but not the recorded shape
+    base_wide = flat(model(x, s, wide))
+
+    class Spy(nn.Module):
+        def __init__(self, real):
+            super().__init__()
+            self.real, self.calls = real, 0
+
+        def __call__(self, *args, **kwargs):
+            self.calls += 1
+            return self.real(*args, **kwargs)
+
+    wrapper = build_wrapper_class(emitted)(model.block)
+    spy = Spy(model.block)
+    wrapper.wrapped = spy
+    occupant = install(model, "block", wrapper)
+    try:
+        assert all(mx.array_equal(a, b).item() for a, b in zip(flat(model(x, s, t)), base))
+        assert spy.calls == 0  # the replay ran
+        assert all(mx.array_equal(a, b).item() for a, b in zip(flat(model(x, s, wide)), base_wide))
+        assert spy.calls == 1  # a tuple member of another shape goes to the original module
+    finally:
+        uninstall(model, "block", occupant)

@@ -416,6 +416,38 @@ def _object_refs(template: object, base: str):
             yield from _object_refs(v, f"{base}[{k!r}]")
 
 
+def _array_refs(template: object, base: str, containers: tuple = ()):
+    """(ArrayRef, access expression, enclosing containers) for every array
+    inside a call argument: a bare array, or one inside a tuple, list or dict
+    (a block's modulation tuple). Each container is (expression, kind, length
+    or keys), outermost first, so a guard can test the path before indexing."""
+    if isinstance(template, ArrayRef):
+        yield template, base, containers
+    elif isinstance(template, (list, tuple)):
+        inside = containers + ((base, type(template).__name__, len(template)),)
+        for i, v in enumerate(template):
+            yield from _array_refs(v, f"{base}[{i}]", inside)
+    elif isinstance(template, dict):
+        inside = containers + ((base, "dict", tuple(template)),)
+        for k, v in template.items():
+            yield from _array_refs(v, f"{base}[{k!r}]", inside)
+
+
+def _literal_leaves(template: object, base: str):
+    """(access expression, value) for the plain values beside arrays inside a
+    container argument, which the guard compares like any recorded literal."""
+    if isinstance(template, (ArrayRef, ObjectRef)):
+        return
+    if isinstance(template, (list, tuple)):
+        for i, v in enumerate(template):
+            yield from _literal_leaves(v, f"{base}[{i}]")
+    elif isinstance(template, dict):
+        for k, v in template.items():
+            yield from _literal_leaves(v, f"{base}[{k!r}]")
+    else:
+        yield base, template
+
+
 def _replay_guard(trace: Trace, scope: ScopeCall) -> list[str]:
     """Only replay the shapes, dtypes, and scalar choices that were recorded."""
     checks = _variant_checks(trace, scope)
@@ -443,16 +475,19 @@ def _emit_replay(
     # defaults; keyword arguments default to the recorded literal, or None
     # for an array or an object (a cache) the body reaches by name
     sig_parts = []
+    def bind(template, base):
+        for ref, expr, _ in _array_refs(template, base):
+            if scope.arg_ids[ref.index] not in em.bound:
+                em.lines.append(f"{em.name(scope.arg_ids[ref.index])} = {expr}")
+                em.bound.add(scope.arg_ids[ref.index])
+
     for i, entry in enumerate(scope.args_template):
         sig_parts.append(f"a{i}")
-        if isinstance(entry, ArrayRef):
-            em.lines.append(f"{em.name(scope.arg_ids[entry.index])} = a{i}")
-            em.bound.add(scope.arg_ids[entry.index])
+        bind(entry, f"a{i}")
     for k, v in scope.kwargs_template.items():
-        if isinstance(v, ArrayRef):
+        if any(_array_refs(v, k)):
             sig_parts.append(f"{k}=None")
-            em.lines.append(f"{em.name(scope.arg_ids[v.index])} = {k}")
-            em.bound.add(scope.arg_ids[v.index])
+            bind(v, k)
         elif any(_object_refs(v, k)):
             sig_parts.append(f"{k}=None")
         else:
@@ -549,13 +584,23 @@ def _variant_checks(trace: Trace, scope: ScopeCall) -> tuple[str, ...]:
     arguments = [(f"a{i}", entry) for i, entry in enumerate(scope.args_template)]
     arguments += sorted(scope.kwargs_template.items())
     for name, entry in arguments:
-        if isinstance(entry, ArrayRef):
-            aid = scope.arg_ids[entry.index]
-            if aid not in specs:
-                raise NotReplayable(f"scope argument {name} has no recorded shape or dtype")
-            shape, dtype = specs[aid]
-            checks.extend([f"{name} is not None", f"{name}.shape == {_literal(tuple(shape))}",
-                           f"{name}.dtype == mx.{dtype}"])
+        refs = list(_array_refs(entry, name))
+        if refs:
+            tested = set()
+            for ref, expr, containers in refs:
+                for base, kind, size in containers:
+                    if base not in tested:
+                        tested.add(base)
+                        checks.append(f"isinstance({base}, dict) and tuple({base}) == {size!r}" if kind == "dict"
+                                      else f"isinstance({base}, {kind}) and len({base}) == {size}")
+                aid = scope.arg_ids[ref.index]
+                if aid not in specs:
+                    raise NotReplayable(f"scope argument {expr} has no recorded shape or dtype")
+                shape, dtype = specs[aid]
+                checks.extend([f"{expr} is not None" if not containers else f"isinstance({expr}, mx.array)",
+                               f"{expr}.shape == {_literal(tuple(shape))}", f"{expr}.dtype == mx.{dtype}"])
+            checks.extend(f"{expr} is None" if value is None else f"{expr} == {_literal(value)}"
+                          for expr, value in _literal_leaves(entry, name))
         elif entry is None:
             checks.append(f"{name} is None")  # == would ask an array to compare itself with None
         elif not any(_object_refs(entry, name)):
