@@ -275,7 +275,9 @@ def test_a_constant_a_call_reads_as_a_number_is_recorded_as_that_number():
     """mflux passes scale=1 / mx.sqrt(head_dim), an array, where attention
     takes a float; the call reads it as a number. Recorded as that number,
     a span cut around the call replays compiled on its own. As an array it
-    became a compiled input the call could not read, and pricing crashed."""
+    became a compiled input the call could not read, and pricing crashed;
+    counted as step work, its calls ended regions that a compiled step does
+    not contain, and installing a kernel there found nothing to replace."""
     from autotuner.trace.replay import compile_replay
     tr = tracer()
 
@@ -289,6 +291,10 @@ def test_a_constant_a_call_reads_as_a_number_is_recorded_as_that_number():
     (sdpa,) = [n for n in trace.nodes if n.op == "mx.fast.scaled_dot_product_attention"]
     assert sdpa.scalar_args["kwargs"]["scale"] == 0.25 and len(sdpa.in_arrays) == 3
     assert not trace.in_pass_evaluation
+    # a compiled step computes the scale while it is built; its graph holds
+    # no such calls, so no region may end on them
+    made_scale = {n.seq for n in trace.nodes if n.op != "mx.fast.scaled_dot_product_attention"}
+    assert made_scale and made_scale <= trace.dead
     run = compile_replay([sdpa], sdpa.in_arrays, sdpa.out_arrays)
     (again,) = run(dict(zip(sdpa.in_arrays, (q, k, v))))
     assert mx.array_equal(again, out).item()

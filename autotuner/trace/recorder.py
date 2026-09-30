@@ -261,11 +261,14 @@ class Recorder:
         evaluates it too. Any other read is. A constant an MLX call reads as
         a number while it runs (that scale passed as scale=) is recorded as
         the number the call received, so a replayed or compiled span passes
-        the number too, never an array it would have to read."""
+        the number too, never an array it would have to read. The calls that
+        made a constant are not step work: a compiled step computes them once
+        while it is built and its graph holds none of them, so nothing marks
+        them live and no region, price or floor counts them."""
         if self.recording:
             ids = [self._ids.get(id(arr)) for arr in flatten_arrays(values)]
-            self.evaluated.update(aid for aid in ids if aid is not None)
             if None in ids or self._computed_from_state(ids):
+                self.evaluated.update(aid for aid in ids if aid is not None)
                 self.in_pass_evaluation = True
                 self.eval_sites.append(tuple(self._addr_stack))
             elif number is not None and self._call_numbers:

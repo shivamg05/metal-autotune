@@ -66,7 +66,11 @@ The `trace` row's `never_evaluated` count is work the model builds but never
 runs (MLX is lazy; a result nothing returns, keeps, evaluates or reads never
 executes), such as the logits of a prompt-processing call the library drops.
 It is left out of regions, prices and the step floor, and
-`coverage.discovery.never_evaluated_ops` totals it.
+`coverage.discovery.never_evaluated_ops` totals it. The count includes the
+calls that compute a constant the model only reads back as a number (an
+attention scale `1 / mx.sqrt(head_dim)` passed as `scale=`): the call is
+recorded with the number, and a compiled step holds none of those calls. No
+region crosses one.
 
 How a win gets installed: the `installation` row names the method for each
 module it touches. `direct` means the replacement covers the whole module
