@@ -49,6 +49,15 @@ def write_manifest(tmp_path, fixture, shape, extra=""):
     return p
 
 
+CHAIN_KERNEL = {
+    "source": FUSED_CHAIN_SOURCE,
+    "parent_kernel_id": "scaffold",
+    "grid": ["in0.shape[0] * in0.shape[1]", "1", "1"],
+    "threadgroup": ["min(in0.shape[0] * in0.shape[1], 256)", "1", "1"],
+    "output_shapes": [["in0.shape[0]", "in0.shape[1]"]],
+}
+
+
 def winning_chain_judge(region):
     if len(region.ops) != 8:
         return yielding_judge(region)  # only the full chain gets the real attempt
@@ -266,6 +275,10 @@ def test_used_work_dir_refused(tmp_path):
         JobRunner(manifest, tmp_path / "work", judge_factory=yielding_judge)
 
 
+# what setup measures; a resumed job restores these instead
+SETUP_MEASUREMENTS = ("baseline", "delivery_settled", "peaks", "aa_floor", "step_floor")
+
+
 def only_the_chain(monkeypatch):
     """Open only the planted chain: the other thirteen candidates each cost
     a starting kernel and two child processes and prove nothing here."""
@@ -275,26 +288,142 @@ def only_the_chain(monkeypatch):
                         lambda regions, **k: [r for r in regions if len(r.ops) == 8])
 
 
-def test_persistent_judge_transport_error_stops_job(tmp_path, monkeypatch):
-    """Repeated connection failures must not keep opening new regions."""
+def test_an_unreachable_judge_pauses_the_job_and_a_resume_finishes_it(tmp_path, monkeypatch):
+    """Three failed judge calls in a row (a Mac waking from sleep before its
+    network is back) pause the job at a safe point instead of failing it,
+    without spending attempts; resuming with a reachable judge finishes it."""
     class DeadTransport:
         def seed(self, meta):
-            raise RuntimeError("claude CLI judge exited 3: no such model")
+            raise RuntimeError("claude judge exited 1: Can't reach the API server (ENOTFOUND)")
 
         def next(self, meta, verdict):
-            raise RuntimeError("unreachable")
+            raise RuntimeError("claude judge exited 1: Can't reach the API server (ENOTFOUND)")
 
     only_the_chain(monkeypatch)
-    manifest = write_manifest(tmp_path, "planted_win.py", (64, 1024))
-    runner = JobRunner(manifest, tmp_path / "work",
-                       judge_factory=lambda region: DeadTransport(),
+    monkeypatch.setattr(JobRunner, "_model_win", lambda self, e2e: True)
+    manifest = write_manifest(tmp_path, "planted_win.py", (64, 1024), "baseline: plain")
+    work = tmp_path / "work"
+    runner = JobRunner(manifest, work, judge_factory=lambda region: DeadTransport(),
                        session=Session(sleep=lambda s: None))
-    with pytest.raises(RuntimeError, match="judge unavailable"):
-        runner.run()
-    assert runner.report.session["status"] == "failed"
-    assert runner.total_hypotheses == 0
-    assert any(row.get("action") == "error" for row in runner.log.rows()
-               if row["kind"] == "judge")
+    report = runner.run()
+    assert report.session["status"] == "paused" and "could not be reached" in report.session["reason"]
+    assert runner.total_hypotheses == 0 and (work / "resume_state.pkl").is_file()
+    assert sum(row.get("action") == "error" for row in runner.log.rows() if row["kind"] == "judge") == 3
+
+    # the region's queue was started empty before the failures: the reachable
+    # judge plans and proposes in one reply
+    item = {"id": "h1", "kind": "on-chip", "assoc_tag": "preserving",
+            "hypothesis": "keep the chain's intermediates in registers"}
+    reachable = ScriptedJudge([{"mutations": [{"op": "insert", "item": item}],
+                                "kernel": dict(CHAIN_KERNEL, item_id="h1")}])
+    resumed = JobRunner(manifest, work, judge_factory=lambda region: reachable,
+                        session=Session(sleep=lambda s: None), resume=True)
+    report = resumed.run()
+    assert report.session["status"] == "search_complete" and len(report.accepted) == 1
+    rows = resumed.log.rows()
+    after = rows[max(i for i, row in enumerate(rows) if row["kind"] == "resumed"):]
+    # setup is restored, not measured again (the final check still times the model)
+    assert not any(row["kind"] in SETUP_MEASUREMENTS for row in after)
+
+
+def test_a_paused_job_resumes_where_it_stopped(tmp_path, monkeypatch):
+    """Paused right after its first kernel ships and resumed in a new runner,
+    a job continues the same region from its saved queue and history,
+    measures nothing twice, and ends with the same kernel, attempts and
+    outputs as the same job never paused."""
+    only_the_chain(monkeypatch)
+    monkeypatch.setattr(JobRunner, "_model_win", lambda self, e2e: True)
+    manifest = write_manifest(tmp_path, "planted_win.py", (64, 1024), "baseline: plain")
+    straight = JobRunner(manifest, tmp_path / "straight", judge_factory=winning_chain_judge,
+                         session=Session(sleep=lambda s: None))
+    expected = straight.run()
+
+    work = tmp_path / "paused"
+
+    def pausing(region):
+        judge = winning_chain_judge(region)
+        propose = judge.next
+
+        def next_then_pause(meta, verdict):
+            reply = propose(meta, verdict)
+            if reply.kernel is not None:
+                (work / "pause.request").write_text("test\n")  # stops after this attempt
+            return reply
+
+        judge.next = next_then_pause
+        return judge
+
+    first = JobRunner(manifest, work, judge_factory=pausing, session=Session(sleep=lambda s: None))
+    paused = first.run()
+    assert paused.session["status"] == "paused" and len(paused.accepted) == 1
+    assert not (work / "pause.request").exists()
+
+    # the rest of the script: the scripted judge yields once its steps run out
+    resumed = JobRunner(manifest, work, judge_factory=lambda region: ScriptedJudge([]),
+                        session=Session(sleep=lambda s: None), resume=True)
+    report = resumed.run()
+    assert report.session["status"] == "search_complete"
+    assert [a["kernel"] for a in report.accepted] == [a["kernel"] for a in expected.accepted]
+    assert resumed.total_hypotheses == straight.total_hypotheses
+    assert [h["verdict"] for h in report.hypotheses] == [h["verdict"] for h in expected.hypotheses]
+    x = mx.random.normal((64, 1024), key=mx.random.key(3))
+    assert mx.array_equal(resumed.model(x), straight.model(x)).item()
+    rows = resumed.log.rows()
+    after = rows[max(i for i, row in enumerate(rows) if row["kind"] == "resumed"):]
+    assert not any(row["kind"] in SETUP_MEASUREMENTS for row in after)
+
+
+def test_an_interrupted_job_resumes_from_its_last_save(tmp_path, monkeypatch):
+    """Ctrl-C in the worst spot, right after a win's checkpoint is written and
+    before the next save: the resumed job has lost that attempt, repeats it,
+    keeps the orphaned checkpoint, and ends like the same job never stopped."""
+    only_the_chain(monkeypatch)
+    monkeypatch.setattr(JobRunner, "_model_win", lambda self, e2e: True)
+    manifest = write_manifest(tmp_path, "planted_win.py", (64, 1024), "baseline: plain")
+    straight = JobRunner(manifest, tmp_path / "straight", judge_factory=winning_chain_judge,
+                         session=Session(sleep=lambda s: None))
+    expected = straight.run()
+
+    work = tmp_path / "killed"
+    save_checkpoint = JobRunner._save_checkpoint
+
+    def save_then_interrupt(self, accepted):
+        save_checkpoint(self, accepted)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(JobRunner, "_save_checkpoint", save_then_interrupt)
+    first = JobRunner(manifest, work, judge_factory=winning_chain_judge, session=Session(sleep=lambda s: None))
+    with pytest.raises(KeyboardInterrupt):
+        first.run()
+    assert json.loads((work / "report.json").read_text())["session"]["status"] == "interrupted"
+    monkeypatch.setattr(JobRunner, "_save_checkpoint", save_checkpoint)
+
+    def rest_of_the_script(region):
+        # the job saved before asking for the kernel it lost, so a fresh judge
+        # (the real ones keep nothing between calls) is asked for it again
+        judge = winning_chain_judge(region)
+        if len(region.ops) == 8:
+            judge = ScriptedJudge([{"mutations": [], "kernel": {
+                "source": FUSED_CHAIN_SOURCE, "parent_kernel_id": "scaffold",
+                "grid": ["in0.shape[0] * in0.shape[1]", "1", "1"],
+                "threadgroup": ["min(in0.shape[0] * in0.shape[1], 256)", "1", "1"],
+                "output_shapes": [["in0.shape[0]", "in0.shape[1]"]]}},
+                {"mutations": [], "kernel": None}])
+        return judge
+
+    resumed = JobRunner(manifest, work, judge_factory=rest_of_the_script,
+                        session=Session(sleep=lambda s: None), resume=True)
+    report = resumed.run()
+    assert report.session["status"] == "search_complete"
+    assert [a["kernel"] for a in report.accepted] == [a["kernel"] for a in expected.accepted]
+    assert [h["verdict"] for h in report.hypotheses] == [h["verdict"] for h in expected.hypotheses]
+    x = mx.random.normal((64, 1024), key=mx.random.key(3))
+    assert mx.array_equal(resumed.model(x), straight.model(x)).item()
+    rows = resumed.log.rows()
+    after = rows[max(i for i, row in enumerate(rows) if row["kind"] == "resumed"):]
+    assert not any(row["kind"] in SETUP_MEASUREMENTS for row in after)
+    # the interrupted job's checkpoint is kept; the repeated win is saved beside it
+    assert sorted(p.name for p in (work / "checkpoints").iterdir()) == ["accepted-0001", "accepted-0002"]
 
 
 def test_failed_first_item_lets_the_judge_insert_a_fix(tmp_path, monkeypatch):

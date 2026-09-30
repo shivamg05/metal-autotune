@@ -108,7 +108,7 @@ _KERNEL_CALL = re.compile(
 @dataclass
 class SizedWrapper:
     """A scope's replay with its size read from one argument dimension. The
-    scope serves sizes lo..hi and each kernel its own range inside that; both
+    scope serves a set of sizes and each kernel its own set inside that; both
     are placeholders until the checks set them (finalize)."""
 
     scope_path: str
@@ -119,27 +119,46 @@ class SizedWrapper:
     sizes: list[int]                  # the size at each recording, primary first
     generalized: int                  # integers that became size expressions
 
-    def finalize(self, class_name: str, scope_range: tuple[int, int],
-                 kernel_ranges: dict[str, tuple[int, int] | None]) -> EmittedWrapper:
+    def finalize(self, class_name: str, scope_sizes, kernel_sizes: dict) -> EmittedWrapper:
         """The shipped class: served sizes written into the code, a kernel
-        with no range left on its original operations."""
-        lo, hi = scope_range
+        with no sizes left on its original operations."""
         source = self.template.replace("class Layer(", f"class {class_name}(", 1)
-        source = source.replace("__SCOPE_LO__", str(lo)).replace("__SCOPE_HI__", str(hi))
+        source = source.replace("__SCOPE_SIZES__", size_test(scope_sizes))
 
         def call(match):
             kid = match["kid"].strip("'")
-            span = kernel_ranges.get(kid)
+            sizes = kernel_sizes.get(kid)
             indent = match["indent"]
-            if span is None:
+            if not sizes:
                 return f"{indent}_outs = None  # {kid}: not checked at other sizes"
             return (f"{indent}_s = self._specs[{match['kid']}]\n{indent}_ins = {match['ins']}\n"
-                    f"{indent}_outs = _kernels.try_sized(_s, _ins) if {span[0]} <= {SIZE_NAME} <= {span[1]} else None")
+                    f"{indent}_outs = _kernels.try_sized(_s, _ins) if {size_test(sizes)} else None")
 
         source = _KERNEL_CALL.sub(call, source)
-        served = [k for k in self.kernel_ids if kernel_ranges.get(k) is not None]
+        served = [k for k in self.kernel_ids if kernel_sizes.get(k)]
         return EmittedWrapper(class_name=class_name, scope_path=self.scope_path, source=source,
                               span_map=[], kernel_ids=served)
+
+
+def runs(sizes) -> list[list[int]]:
+    """Sorted sizes as contiguous [first, last] runs."""
+    out = []
+    for n in sorted(set(sizes)):
+        if out and out[-1][1] == n - 1:
+            out[-1][1] = n
+        else:
+            out.append([n, n])
+    return out
+
+
+def size_test(sizes) -> str:
+    """The generated code's test for a set of sizes: a range when it is one
+    contiguous run, else the exact sizes."""
+    parts = runs(sizes)
+    if len(parts) == 1:
+        lo, hi = parts[0]
+        return f"{SIZE_NAME} == {lo}" if lo == hi else f"{lo} <= {SIZE_NAME} <= {hi}"
+    return f"{SIZE_NAME} in {tuple(sorted(set(sizes)))!r}"
 
 
 def _size_argument(variants) -> tuple[str, list, int]:
@@ -195,6 +214,6 @@ def sized_wrapper(variants: list[tuple], scope_path: str) -> SizedWrapper:
         raise NotReplayable("the replay has no argument guard to read a size from")
     source = (source[:header.end()] + f"        {_size_read(expr, containers, dim)}\n"
               + source[header.end():])
-    source = source.replace("        if not (", "        if not (__SCOPE_LO__ <= _n <= __SCOPE_HI__ and ", 1)
+    source = source.replace("        if not (", "        if not (__SCOPE_SIZES__ and ", 1)
     kernel_ids = list(dict.fromkeys(s.kernel.kernel_id for s in variants[0][2]))
     return SizedWrapper(scope_path, source, kernel_ids, expr, dim, sizes, generalized)

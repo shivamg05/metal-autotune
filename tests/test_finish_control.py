@@ -60,7 +60,7 @@ def test_regression_still_blocks_sequences(tmp_path,monkeypatch):
 def test_finish_goes_to_final_checks_without_opening_region(tmp_path):
     r=bare_runner(tmp_path)
     r.manifest.budget_per_region=40;r.manifest.budget_total=200;r.manifest.defaulted=[]
-    r.gpu_busy_at_start=None;r.pending_regions=[];r.installed={'saved':object()}
+    r.gpu_busy_at_start=None;r.pending_regions=[];r.installed={'saved':(object(),{},{})}
     r.session=SimpleNamespace(idled_s=0)
     r.load_model=r.trace_workloads=lambda:None
     r.build_regions=lambda:[]

@@ -100,6 +100,26 @@ class FinalBenchmark:
 
 
 @dataclass(frozen=True)
+class SizeSet:
+    """The sizes check_optimizations_for covers: every size from lo to hi,
+    or exactly the listed ones (a model whose sizes come from a few settings,
+    such as image resolutions)."""
+
+    lo: int
+    hi: int
+    listed: tuple[int, ...] = ()
+
+    def sizes(self) -> tuple[int, ...]:
+        return self.listed or tuple(range(self.lo, self.hi + 1))
+
+    def recordings(self, primary: int) -> list[int]:
+        """Where the model is recorded besides the primary size: every listed
+        size, or both ends and the middle of a range."""
+        points = self.listed or (self.lo, (self.lo + self.hi) // 2, self.hi)
+        return [n for n in dict.fromkeys(points) if n != primary]
+
+
+@dataclass(frozen=True)
 class Manifest:
     model_path: Path
     workloads: tuple[Workload, ...]
@@ -113,11 +133,11 @@ class Manifest:
     baseline: str = "compiled"     # "compiled" | "plain": what a win is measured against
     final_benchmark: FinalBenchmark = field(default_factory=FinalBenchmark)
     use_library_inference: bool | None = None  # None resolves once from model/workload support
-    # check_optimizations_for, one named dim -> (lo, hi): after the search,
-    # shipped kernels also run at every size in this range they are checked
+    # check_optimizations_for, one named dim -> SizeSet: after the search,
+    # shipped kernels also run at every size of the set they are checked
     # correct and faster at. Unset, an MLX-LM prompt workload gets it
     # automatically (serve_auto); false turns that off.
-    serve: Mapping[str, tuple[int, int]] = field(default_factory=dict)
+    serve: Mapping[str, "SizeSet"] = field(default_factory=dict)
     serve_auto: bool = True
 
     def named_dims(self) -> frozenset[str]:
@@ -132,8 +152,8 @@ class Manifest:
 
 
 def _parse_shape(raw: Any, where: str) -> tuple[int | str, ...]:
-    if not isinstance(raw, list) or not raw:
-        raise ManifestError(f"{where}: shape must be a non-empty list, got {raw!r}")
+    if not isinstance(raw, list):
+        raise ManifestError(f"{where}: shape must be a list ([] for a single number), got {raw!r}")
     dims: list[int | str] = []
     for d in raw:
         if isinstance(d, bool) or not isinstance(d, (int, str)):
@@ -295,17 +315,28 @@ def load(path: str | Path) -> Manifest:
         raw_serve = {}
         defaulted.append(SERVE_KEY)
     if not isinstance(raw_serve, dict) or len(raw_serve) > 1:
-        raise ManifestError(f"{SERVE_KEY} must map one named dim to [smallest, largest] size, or be false")
-    serve: dict[str, tuple[int, int]] = {}
+        raise ManifestError(f"{SERVE_KEY} must map one named dim to [smallest, largest] or "
+                            "{sizes: [...]}, or be false")
+    serve: dict[str, SizeSet] = {}
     for dim, span in raw_serve.items():
         if dim not in named:
             raise ManifestError(f"{SERVE_KEY} names dim {dim!r} which appears in no workload shape")
+        if isinstance(span, dict):
+            if set(span) != {"sizes"} or not isinstance(span["sizes"], list):
+                raise ManifestError(f"{SERVE_KEY}.{dim}: exact sizes are {{sizes: [a, b, c, ...]}}")
+            listed = tuple(sorted({_parse_positive_int(v, f"{SERVE_KEY}.{dim}.sizes") for v in span["sizes"]}))
+            primary_size = raw_primary_dims.get(dim)
+            if len(set(listed) | ({primary_size} - {None})) < 3:
+                raise ManifestError(f"{SERVE_KEY}.{dim}.sizes: give at least three sizes, the optimized one "
+                                    "included, so the code for other sizes can be derived and checked")
+            serve[dim] = SizeSet(listed[0], listed[-1], listed)
+            continue
         if not isinstance(span, list) or len(span) != 2:
-            raise ManifestError(f"{SERVE_KEY}.{dim}: must be [smallest, largest]")
+            raise ManifestError(f"{SERVE_KEY}.{dim}: must be [smallest, largest] or {{sizes: [...]}}")
         lo, hi = (_parse_positive_int(v, f"{SERVE_KEY}.{dim}") for v in span)
         if hi - lo < 2:
             raise ManifestError(f"{SERVE_KEY}.{dim}: the largest size must exceed the smallest by at least 2")
-        serve[dim] = (lo, hi)
+        serve[dim] = SizeSet(lo, hi)
 
     tolerances: tuple[float, float] | None = None
     if "tolerances" in raw:

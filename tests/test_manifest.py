@@ -7,6 +7,7 @@ import re
 import pytest
 
 from autotuner.manifest import (
+    SizeSet,
     DEFAULT_BUDGET_PER_REGION,
     DEFAULT_BUDGET_TOTAL,
     DEFAULT_SWEEP_SIZES,
@@ -147,7 +148,7 @@ def test_bad_manifests_fail_with_pointed_messages(tmp_path, mutation, message):
 @pytest.mark.parametrize(
     "inputs, message",
     [
-        ("[{shape: [], dtype: int32}]", "non-empty list"),
+        ("[{shape: 5, dtype: int32}]", "must be a list"),
         ("[{shape: [0], dtype: int32}]", ">= 1"),
         ("[{shape: [2], dtype: f16}]", "unknown dtype"),
         ("[{shape: [2], dtype: float16, low: 0, high: 5}]", "integer dtypes only"),
@@ -274,7 +275,7 @@ primary: {T: 1024}
 check_optimizations_for: {T: [256, 4096]}
 """
     m = load(write_manifest(tmp_path, body))
-    assert dict(m.serve) == {"T": (256, 4096)} and not m.serve_auto
+    assert dict(m.serve) == {"T": SizeSet(256, 4096)} and not m.serve_auto
     assert m.sweep["T"] == (1024,)  # the search is checked at the primary size only, as without it
 
 
@@ -296,3 +297,31 @@ def test_check_optimizations_for_is_validated(tmp_path, value, primary, needle):
             f"{primary}check_optimizations_for: {value}\n")
     with pytest.raises(ManifestError, match=re.escape(needle)):
         load(write_manifest(tmp_path, body))
+
+
+def test_check_optimizations_for_takes_exact_sizes(tmp_path):
+    body = """
+model: ./model.py
+workloads:
+  - inputs: [{shape: [1, T, 128], dtype: bfloat16}]
+primary: {T: 2304}
+check_optimizations_for: {T: {sizes: [4096, 1024, 3072, 1024]}}
+"""
+    m = load(write_manifest(tmp_path, body))
+    assert m.serve["T"] == SizeSet(1024, 4096, (1024, 3072, 4096))
+    assert m.serve["T"].recordings(2304) == [1024, 3072, 4096] and m.serve["T"].sizes() == (1024, 3072, 4096)
+    with pytest.raises(ManifestError, match="at least three sizes"):
+        load(write_manifest(tmp_path, body.replace("[4096, 1024, 3072, 1024]", "[2304, 1024]")))
+
+
+def test_a_scalar_input_has_an_empty_shape(tmp_path):
+    """A model can take a bare number (a diffusion timestep): shape []."""
+    body = """
+model: ./model.py
+workloads:
+  - inputs: [{shape: [1, 64, 8], dtype: bfloat16}, {shape: [], dtype: float32}]
+"""
+    m = load(write_manifest(tmp_path, body))
+    assert m.workloads[0].inputs[1].shape == ()
+    from autotuner.workload import materialize
+    assert materialize(m.workloads[0], m.primary, 0)[1].shape == ()

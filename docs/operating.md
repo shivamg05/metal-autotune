@@ -67,6 +67,7 @@ part of running the job, not something to wait for the person to request.
 | `env_warning`, `memory_warning` | Explain the observed condition and its possible effect on this run. Do not claim that measurements are invalid, or that recovery happened, without evidence. |
 | `region_closed` or `region_skip` | State why the spot finished or was skipped, attempts used when recorded, and whether it contributed an accepted improvement. This can share the next region's opening update. |
 | `stage` or `search_finish_requested` | Name the phase now starting and what it does. When search ends, say which validation or packaging step remains. An accepted checkpoint is not yet the finished artifact. |
+| `paused` | Report why it paused, what has been accepted so far, and the `autotune resume` command. For an unreachable judge, include the judge's error. |
 | `sequence_comparison`, `artifact_checked`, `job_failed`, or optimizer process exit | Report the measured consecutive-step result when available. Announce a finished bundle only after successful export and validation; confirm process exit and final report status. For failure, name the stage/reason, preserved checkpoints and missing final checks. A successful no-win run has a report and no artifact. |
 
 In `run.jsonl`, the event name is the **`kind`** field, for example
@@ -145,8 +146,38 @@ candidate evaluation, or preparation phase finishes safely first. No new region
 is opened once the request is seen. The job then runs final correctness and
 performance checks and exports only a confirmed win. Watch for
 `search_finish_requested`, followed by the final timing stages. This command
-writes a request for a running job; it does not resume an exited job. Killing
-the process or pressing Ctrl-C interrupts it instead of finalizing it.
+writes a request for a running job; it does not restart an exited one (see
+below). Killing the process or pressing Ctrl-C interrupts it instead of
+finalizing it.
+
+### Pause and resume
+
+When the operator needs the Mac (sleep, a restart, other GPU work), pause
+instead of killing the job:
+
+```sh
+uv run autotune pause --work-dir <work-dir>
+uv run autotune resume --work-dir <work-dir>   # when they are back
+```
+
+The job saves its state after setup, between regions and before every judge
+call. A pause request stops it at the next of those points, after the attempt
+it is on: the process exits with the report's status `paused` and a `paused`
+row naming why. Report that the run is paused, what it has accepted so far,
+and the resume command. Three unreachable judge calls in a row also pause the
+job (`paused`, reason "the judge could not be reached"): report the judge's
+error, since the operator has to restore the network or the login before
+resuming. A pause waits for the attempt in progress, which on FLUX took a median of 10
+minutes and up to an hour; if the operator can't wait, Ctrl-C is fine: the
+last save is from before that attempt, so `resume` repeats it. A crash or
+killed process works the same way.
+
+On resume, watch for `stage` rows starting with "resuming", then `resumed`
+(what was restored and reinstalled) and `region_resumed` if it stopped inside a
+region; nothing measured during setup is measured again. `resume` refuses when
+the manifest changed or the recording no longer matches the saved regions, and
+warns when the tool's code changed; report either. Runs from before pause and
+resume existed have no saved state and cannot be resumed.
 
 An inconclusive single-step check now continues to the consecutive-step
 benchmark when correctness and the regression veto pass. Export still requires

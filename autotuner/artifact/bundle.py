@@ -402,8 +402,14 @@ def _result_lines(metadata: dict, report: dict) -> list[str]:
     serve = report.get("check_optimizations_for") or {}
     if serve.get("kernels") and not serve.get("withdrawn"):
         dim = serve["dim"]
-        spans = [f"`{kid}` at {dim} {span[0]}–{span[1]}" if span[0] != span[1] else f"`{kid}` at {dim} {span[0]} only"
-                 for kid, row in serve["kernels"].items() if (span := row.get(f"{dim}_range"))]
+
+        def said(parts):
+            text = [f"{a}–{b}" if a != b else str(a) for a, b in parts]
+            return text[0] + (" only" if parts == [[parts[0][0]] * 2] else "") if len(text) == 1 else \
+                ", ".join(text[:-1]) + " and " + text[-1]
+
+        spans = [f"`{kid}` at {dim} {said(parts)}"
+                 for kid, row in serve["kernels"].items() if (parts := row.get(f"{dim}_sizes"))]
         if spans:
             lines.append(f"- Other sizes of `{dim}`: each kernel also runs wherever it was checked correct and "
                          f"faster ({'; '.join(spans)}); elsewhere the original code runs.")

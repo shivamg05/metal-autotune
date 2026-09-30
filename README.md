@@ -139,6 +139,14 @@ the final checks and packages the result:
 uv run autotune finish --work-dir runs/YOUR_RUN
 ```
 
+Need the Mac back (sleep, restart, other GPU work)? Pause, and pick it up later
+where it stopped:
+
+```sh
+uv run autotune pause --work-dir runs/YOUR_RUN
+uv run autotune resume --work-dir runs/YOUR_RUN
+```
+
 ## Use the optimized model
 
 Copy the `artifact/` folder into your app and install its `requirements.txt`.

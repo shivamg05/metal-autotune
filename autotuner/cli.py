@@ -64,14 +64,28 @@ def main(argv=None) -> int:
                           "Overrides --judge.")
     finish = sub.add_parser("finish", help="stop new search attempts and finish validation/export")
     finish.add_argument("--work-dir", required=True)
+    pause = sub.add_parser("pause", help="stop a running job at its next safe point, resumable")
+    pause.add_argument("--work-dir", required=True)
+    resume = sub.add_parser("resume", help="continue a paused or stopped job from its saved state")
+    resume.add_argument("--work-dir", required=True)
+    for name in ("--judge", "--model", "--judge-effort", "--judge-cmd"):
+        resume.add_argument(name, default=None, help="override the setting the job was started with")
     args = parser.parse_args(argv)
-    if args.command == "finish":
+    if args.command in ("finish", "pause"):
         work = Path(args.work_dir).resolve()
         if not (work / "run.jsonl").is_file():
             parser.error(f"no run.jsonl in {work}")
-        (work / "finish-search.request").write_text("operator requested final validation\n")
-        print("Finish requested: the running job will finish its current work, then validate and export if confirmed.")
+        if args.command == "finish":
+            (work / "finish-search.request").write_text("operator requested final validation\n")
+            print("Finish requested: the running job will finish its current work, then validate and export if confirmed.")
+        else:
+            from .resume import PAUSE_REQUEST
+            (work / PAUSE_REQUEST).write_text("operator requested a pause\n")
+            print("Pause requested: the job stops at its next safe point (after the attempt it is on) and "
+                  f"exits as paused. Resume with: autotune resume --work-dir {args.work_dir}")
         return 0
+    if args.command == "resume":
+        return _resume(args, parser)
 
     try:
         args.artifact = _output_paths(args.work_dir, args.artifact)
@@ -79,6 +93,30 @@ def main(argv=None) -> int:
         parser.error(str(error))
     with _run_lock():
         return _execute(args, parser)
+
+
+def _resume(args, parser) -> int:
+    """Start the job saved in a work directory again, with the settings it
+    was started with unless overridden."""
+    from .resume import STATE, file_digest, code_identity, read_job
+    work = Path(args.work_dir)
+    job = read_job(work)
+    if job is None or not (work / STATE).is_file():
+        parser.error(f"{work} has no saved job state to resume ({STATE}, job.json); only jobs started "
+                     "with pause and resume support can be resumed")
+    if file_digest(job["manifest"]) != job["manifest_sha256"]:
+        parser.error(f"the manifest {job['manifest']} changed since the job started; restore it to resume")
+    if code_identity() != job["code"]:
+        print(f"warning: the tool's code changed since the job started ({job['code']} -> {code_identity()}); "
+              "resuming with the current code", flush=True)
+    judge = job["judge"]
+    for key in ("judge", "model", "judge_effort", "judge_cmd"):
+        if getattr(args, key) is not None:
+            judge[key] = getattr(args, key)
+    resumed = argparse.Namespace(manifest=job["manifest"], work_dir=str(work), artifact=Path(job["artifact"]),
+                                 resume=True, **judge)
+    with _run_lock():
+        return _execute(resumed, parser)
 
 
 def _execute(args, parser):
@@ -121,13 +159,24 @@ def _execute(args, parser):
     print(f"judge: {label}")
     print(f"run log: {Path(args.work_dir) / 'run.jsonl'} (one JSON line per event; tail it)")
     print(f"candidates: {Path(args.work_dir) / 'candidates.log'} (one line per attempt)")
+    resuming = getattr(args, "resume", False)
     runner = JobRunner(
         args.manifest,
         args.work_dir,
         judge_factory=lambda region: judge,
+        **({"resume": True} if resuming else {}),
     )
+    if not resuming:
+        from .resume import write_job
+        write_job(args.work_dir, args.manifest, {"judge": args.judge, "model": args.model,
+                                                 "judge_effort": args.judge_effort, "judge_cmd": args.judge_cmd},
+                  args.artifact)
     try:
         report = runner.run()
+        if report.session.get("status") == "paused":
+            print(f"job paused: {report.session.get('reason')}\n"
+                  f"resume with: autotune resume --work-dir {args.work_dir}")
+            return 0
         artifact = None
         if report.accepted and runner.final_ok:
             artifact = runner.emit_artifact(args.artifact)

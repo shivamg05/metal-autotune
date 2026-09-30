@@ -31,8 +31,8 @@ kernels, wrappers, runtime, and measurement report under
 `<work-dir>/checkpoints/accepted-0001/` (then `0002`, etc.). These are recovery
 packages: final comparison and fresh-process artifact validation are still
 pending, and the checkpoint report says so. A later crash does not erase them.
-There is no automatic resume command; retain the checkpoint and logs if the
-run stops, and report them to the maintainer.
+A job that stops can usually be resumed instead (`autotune resume`, see
+[pause and resume](usage.md#3-run-it)); keep the checkpoints and logs either way.
 `session.jsonl` records each cooling pause before sleeping, with its duration,
 then records completion. Long pauses also appear on stdout. The default cooldown
 is three times the accounted work. Every pause, whether slept or scheduled,
@@ -119,6 +119,8 @@ these checks:
   outputs poisoned and three runs bitwise equal. Inputs are the recorded
   boundary inputs cut or repeated to the size. This sweep takes no cooling
   pauses; nothing in it is timed.
+- **Listed sizes (`{sizes: [...]}`) are each timed** and served where the
+  kernel wins; over a range:
 - **A grid of about ten sizes, then twelve random sizes, in the sandbox:** the
   region clock's paired loop and relative margin (1% or three standard
   deviations) decide where the kernel wins or clearly loses. It is served out

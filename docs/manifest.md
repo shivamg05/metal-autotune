@@ -215,6 +215,18 @@ primary: {T: 1024}                               # the size the search optimizes
 check_optimizations_for: {T: [256, 4096]}        # also check 256 to 4,096
 ```
 
+When only a few sizes ever occur, list them instead of a range. An image
+model's image-token count comes from the resolution, so 512, 768, 768x1024 and
+1,024 pixels are all it ever sees:
+
+```yaml
+primary: {T: 2304}                                       # 768 x 768
+check_optimizations_for: {T: {sizes: [1024, 3072, 4096]}}  # 512 x 512, 768 x 1024, 1024 x 1024
+```
+
+Listed sizes are each recorded, checked and timed; nothing between them is
+used. Give at least three sizes, the optimized one included.
+
 After the search the tool records the model at both ends and the middle of the
 range and writes new code for each layer it changed, with sizes read from the
 layer's input instead of written in. Then it checks, and uses only what
@@ -224,11 +236,12 @@ passed:
   every size in the range.
 - Each kernel gives bit-identical results to the operations it replaces, at
   every size it will run at, with the GPU's out-of-bounds checking on.
-- Each kernel is faster than those operations. It is timed at about ten sizes
-  spread over the range, and the range stops at the first of those it doesn't
-  win at. Speed zig-zags between sizes (kernels work in tiles of rows), so it is
-  also timed at twelve random sizes inside that range, and it is never used at
-  or past a size where it was clearly slower.
+- Each kernel is faster than those operations. Over a range it is timed at
+  about ten sizes spread over it, and the range stops at the first of those it
+  doesn't win at. Speed zig-zags between sizes (kernels work in tiles of rows),
+  so it is also timed at twelve random sizes inside that range, and it is never
+  used at or past a size where it was clearly slower. Listed sizes are each
+  timed.
 
 A kernel that is wrong or slower at some sizes simply isn't used there; the
 original operations run instead. Sizes outside the range, and layers whose code
@@ -262,12 +275,12 @@ means a nested field.
 | `workloads[].name` | `workload0`, `workload1`, … | Report label. Must be unique and non-empty, with no `@`. |
 | `workloads[].context` | none | Tokens already in the cache. `0` = empty cache. Only allowed with one workload and one integer input. |
 | `workloads[].inputs` | required | Positional arguments to the model, in order. At least one. |
-| `workloads[].inputs[].shape` | required | List of positive sizes or dimension names, e.g. `[1, L]`. |
+| `workloads[].inputs[].shape` | required | List of positive sizes or dimension names, e.g. `[1, L]`; `[]` for a single number, such as a diffusion timestep. |
 | `workloads[].inputs[].dtype` | required | Input type; see the list below. |
 | `workloads[].inputs[].low` / `high` | `0` / `100` | Range for random integers, `low` included, `high` excluded. `low` must be less than `high`. Integer dtypes only. |
 | `primary` | largest sweep size | Size to optimize for, per named dimension. |
 | `sweep` | `[1, 13, 50, 4096]` | Sizes to check for correctness, per named dimension. Set this yourself when you use named dimensions. None by default for a `check_optimizations_for` dimension. |
-| `check_optimizations_for` | automatic for MLX-LM prompts | One named dimension and `[smallest, largest]` size to also run the kernels at, where each is checked correct and faster; `false` keeps them at the optimized size. See [other sizes](#other-sizes-where-else-the-kernels-run). |
+| `check_optimizations_for` | automatic for MLX-LM prompts | One named dimension and `[smallest, largest]`, or `{sizes: [...]}` for exact sizes, to also run the kernels at where each is checked correct and faster; `false` keeps them at the optimized size. See [other sizes](#other-sizes-where-else-the-kernels-run). |
 | `budget.per_region` | `25` | Max attempts on one region. |
 | `budget.total` | `250` | Max attempts for the whole run. |
 | `tolerances` | depends on output dtype | `{rtol: …, atol: …}`, both required. See [correctness](#notes). |

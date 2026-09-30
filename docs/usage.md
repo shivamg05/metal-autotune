@@ -82,12 +82,36 @@ uv run autotune finish --work-dir runs/YOUR_RUN
 ```
 
 Whatever is in progress finishes first. Don't just kill the process: you'd lose
-the final checks and be left with only the recovery checkpoints. There's no
-resume command.
+the final checks and be left with only the recovery checkpoints.
+
+**Pausing.** To stop now and continue later, say before the Mac sleeps:
+
+```sh
+uv run autotune pause --work-dir runs/YOUR_RUN    # stops after the current attempt
+uv run autotune resume --work-dir runs/YOUR_RUN   # later
+```
+
+The job saves its state after setup, between regions and before each judge
+call. `pause` stops it at the next of those points; it exits with status
+`paused`. That waits for the attempt in progress, which can take a while (on
+FLUX, half take over 10 minutes and the longest took an hour). In a hurry,
+press Ctrl-C and resume later: you lose only that attempt, and the resumed job
+tries it again. `resume` starts a new process with the same manifest and judge
+(`--judge`, `--model`, `--judge-effort` and `--judge-cmd` override them),
+records the model again (a few seconds), reinstalls the accepted kernels and
+checks the outputs still match, then carries on in the same region with the
+same budget. Setup isn't measured again. It refuses if the manifest file
+changed since the job started.
+
+The job also pauses itself if the judge can't be reached three times in a row
+(no network, an expired login); those calls don't use up attempts. Fix the
+cause and resume. After Ctrl-C, a crash or a killed process, `resume` continues
+from the last saved point in the same way. Sleeping the Mac without pausing is not safe: the job
+may lose its network or be stopped.
 
 ## 4. Read the result
 
-A run ends in one of three ways:
+A run ends in one of three ways (or stops as `paused`, to be resumed):
 
 - **Verified artifact.** You have a faster model. See [Using an artifact](artifacts.md).
 - **No confirmed improvement.** The run worked, but nothing it found beat the

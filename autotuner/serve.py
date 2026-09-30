@@ -51,22 +51,21 @@ class ScopePlan:
     checked: dict = field(default_factory=dict)   # size -> None (same calculation) or why not
     to_dim: tuple | None = None        # (a, b): the manifest dim is a * size + b
 
-    def span(self) -> tuple[int, int] | None:
-        """The contiguous run of checked sizes around the primary size."""
+    def served(self, exact: bool) -> tuple[int, ...]:
+        """The checked sizes the scope serves: for a range, the contiguous run
+        around the primary size; for exact sizes, every one that passed.
+        Nothing when the primary size itself did not pass."""
         primary = self.sized.sizes[0]
         if self.checked.get(primary, "unchecked") is not None:
-            return None
+            return ()
+        if exact:
+            return tuple(sorted(n for n, why in self.checked.items() if why is None))
         lo = hi = primary
         while self.checked.get(lo - 1, "unchecked") is None:
             lo -= 1
         while self.checked.get(hi + 1, "unchecked") is None:
             hi += 1
-        return lo, hi
-
-
-def serve_points(lo: int, hi: int, primary: int) -> list[int]:
-    """Where the model is recorded for generalizing: both ends and the middle."""
-    return [n for n in dict.fromkeys((lo, (lo + hi) // 2, hi)) if n != primary]
+        return tuple(range(lo, hi + 1))
 
 
 def _corresponding(primary_trace, primary_scope, trace, scope):
@@ -292,10 +291,11 @@ def served_range(correct: list[int], clock: dict[int, dict], primary: int,
     return ends[0], ends[1]
 
 
-def in_dim(plan_or_map, span):
-    """A range of a scope's size in the manifest dim's units."""
+def in_dim(plan_or_map, sizes):
+    """Served sizes of a scope as runs in the manifest dim's units."""
+    from .bind.sized import runs
     fit = plan_or_map.to_dim if isinstance(plan_or_map, ScopePlan) else plan_or_map
-    if span is None or fit is None:
+    if not sizes or fit is None:
         return None
     a, b = fit
-    return sorted((a * span[0] + b, a * span[1] + b))
+    return runs(a * n + b for n in sizes)

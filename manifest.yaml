@@ -1,21 +1,29 @@
-model: models/lfm2_5_1_2b_instruct_4bit.py   # Liquid's LFM2.5-1.2B-Instruct, pretrained 4-bit weights
-baseline: compiled
-use_library_inference: true    # time MLX-LM's own generate path
-# On-device retrieval or agent request: a system prompt plus a retrieved
-# document or tool definitions, about 2,000 tokens, then the first token of
-# the answer. This is the wait before the reply starts (about 1.7 s on an M4).
-# Random token IDs stand in for the text; this is not a quality test.
+model: models/flux2_klein_4b_mflux.py   # FLUX.2 Klein 4B's denoiser as mflux runs it, 4-bit; random weights (the model file says why)
+use_library_inference: false  # measure one denoiser call: one step of an mflux generation (4 per image)
+# One denoising step of a 768x768 mflux generation, with the arguments mflux
+# passes (recorded from real generations): the image as 48x48 = 2,304 latent
+# tokens, the prompt's text features (mflux pads or cuts every prompt to 512
+# tokens), the timestep as a bare number, and both tokens' position ids.
+# Random values stand in for them. T, the image-token count, is the one size
+# that changes with the resolution: (height / 16) x (width / 16).
 workloads:
-  - name: rag_prompt_2048
-    context: 0                  # empty cache: the prompt is read from scratch
+  - name: denoise_768
     inputs:
-      - shape: [1, 2048]
+      - shape: [1, T, 128]       # image latent tokens (count x channels)
+        dtype: bfloat16
+      - shape: [1, 512, 7680]    # text features (512 tokens x joint_attention_dim)
+        dtype: bfloat16
+      - shape: []                # timestep
+        dtype: float32
+      - shape: [1, T, 4]         # image token positions (t, row, column, layer)
         dtype: int32
         low: 0
-        high: 64402             # the tokenizer's real token IDs
-budget: {per_region: 30, total: 180}   # candidate-attempt limits, not a time limit
-final_benchmark:
-  # Time a whole MLX-LM request that reads the prompt and writes one token.
-  steps: 1
-  pairs: 8
-  warmup_steps: 3
+        high: 64
+      - shape: [1, 512, 4]       # text token positions
+        dtype: int32
+        low: 0
+        high: 512
+primary: {T: 2304}               # 768 x 768, the size the search optimizes
+check_optimizations_for: {T: {sizes: [1024, 3072, 4096]}}   # also 512 x 512, 768 x 1024, 1024 x 1024
+baseline: compiled       # mflux compiles each step on an M3 or newer, so the compiled model is the bar
+budget: {per_region: 12, total: 60}   # candidate-attempt limits, not a time limit

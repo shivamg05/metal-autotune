@@ -7,6 +7,7 @@ import pytest
 
 from autotuner.loop import JobRunner, RegionRun
 from autotuner.bind.sized import NotSizeGeneric, generalize
+from autotuner.manifest import SizeSet
 from autotuner.serve import served_range
 from autotuner_runtime import kernels
 from tests.test_install import WIN, _runner, elementwise
@@ -42,8 +43,8 @@ def test_a_kernel_runs_at_sizes_the_job_never_recorded(served, monkeypatch):
     _ship(served, elementwise("rmax_s1", "out0[i] = (in0[i] != in0[i]) ? in0[i] : metal::max(in0[i], 0.0f);"))
     assert served._serve_sizes()
     report = served.report.serve
-    assert report["scopes"]["chain"]["range"] == [4, 96]
-    assert report["kernels"]["rmax_s1"]["range"] == [4, 96]
+    assert report["scopes"]["chain"]["sizes"] == [[4, 96]]
+    assert report["kernels"]["rmax_s1"]["sizes"] == [[4, 96]]
     source = served.emitted["chain"].source
     assert "(ReplayWrapper)" in source
     assert "_kernels.try_sized(_s, _ins) if 4 <= _n <= 96 else None" in source
@@ -64,7 +65,7 @@ def test_sizes_where_the_kernel_is_wrong_run_the_original(served, monkeypatch):
                                          "(in0[i] != in0[i]) ? in0[i] : metal::max(in0[i], 0.0f);"))
     assert served._serve_sizes()
     kernel = served.report.serve["kernels"]["rmax_s2"]
-    assert kernel["range"] == [16, 96] and kernel["wrong_count"] == 12
+    assert kernel["sizes"] == [[16, 96]] and kernel["wrong_count"] == 12
 
     calls = _counting(monkeypatch)
     for rows in (7, 16):
@@ -123,7 +124,7 @@ def test_generated_code_that_computes_something_else_is_never_served(served, mon
     monkeypatch.setattr(serve, "plan_scopes", tampered)
     assert served._serve_sizes() is None
     scope = served.report.serve["scopes"]["chain"]
-    assert scope["range"] is None and scope["first_difference"][1] == "different leaf"  # the 2.5
+    assert scope["sizes"] == [] and scope["first_difference"][1] == "different leaf"  # the 2.5
     assert served.emitted["chain"] is searched
 
 
@@ -149,7 +150,7 @@ def test_an_mlx_lm_prompt_run_checks_every_prompt_length_by_default(tmp_path):
     runner = _prompt_runner(tmp_path)
     try:
         runner.load_model()
-        assert dict(runner.manifest.serve) == {"prompt_tokens": (3, 2049)}
+        assert dict(runner.manifest.serve) == {"prompt_tokens": SizeSet(3, 2049)}
         assert runner.manifest.primary["prompt_tokens"] == 12
         runner.trace_workloads()
         # the optimized prompt is unchanged; the ends and middle of the range are recorded too
@@ -167,3 +168,27 @@ def test_check_optimizations_for_false_keeps_the_single_size(tmp_path):
         assert not runner.manifest.serve and not runner.serve_tensors
     finally:
         runner.tracer.uninstall()
+
+
+def test_exact_sizes_serve_only_those_sizes(tmp_path, monkeypatch):
+    """A model whose sizes come from a few settings (image resolutions) lists
+    them: each is recorded, checked and timed, and only those run the kernel."""
+    monkeypatch.setattr(JobRunner, "_model_win", lambda self, e2e: True)
+    monkeypatch.setattr(JobRunner, "_serve_grid", lambda self, job, grid: {n: {"win": n != 32} for n in grid})
+    r = _runner(tmp_path, "[L, 1024]", "primary: {L: 64}\n        check_optimizations_for: {L: {sizes: [8, 32, 96]}}")
+    try:
+        _ship(r, elementwise("rmax_s5", "out0[i] = (in0[i] != in0[i]) ? in0[i] : metal::max(in0[i], 0.0f);"))
+        assert sorted(t[0].shape[0] for t in r.serve_tensors.values()) == [8, 32, 96]
+        assert r._serve_sizes()
+        report = r.report.serve
+        assert report["scopes"]["chain"]["sizes"] == [[8, 8], [32, 32], [64, 64], [96, 96]]
+        assert report["kernels"]["rmax_s5"]["sizes"] == [[8, 8], [64, 64], [96, 96]]  # 32 was timed slower
+        source = r.emitted["chain"].source
+        assert "_n in (8, 32, 64, 96)" in source and "_n in (8, 64, 96)" in source
+        calls = _counting(monkeypatch)
+        for rows in (8, 32, 37, 96):
+            x = mx.random.normal((rows, 1024), key=mx.random.key(rows))
+            assert mx.array_equal(r.model(x), r.baseline_model(x)).item()
+        assert calls == [(8, 1024), (96, 1024)]  # 32 slower, 37 not listed: the original ops
+    finally:
+        r.tracer.uninstall()

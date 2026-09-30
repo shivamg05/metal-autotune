@@ -26,6 +26,8 @@ def bare_runner(tmp_path):
     runner.shipped_tags = {}
     runner.emitted = {}
     runner._compiled_baseline = None
+    runner._resume_state = runner._search_state = None  # a fresh job, not a resumed one
+    runner.installed = {}
     # what a checkpoint's bundle reads: the model file, the baseline, the traced inputs
     runner.manifest = SimpleNamespace(model_path=FIXTURES / "planted_win.py", workloads=(),
                                       final_benchmark=FinalBenchmark(), tolerances=None)
@@ -52,7 +54,7 @@ def test_judge_readiness_failure_prevents_runner_creation(tmp_path, monkeypatch,
     assert "claude auth login" in capsys.readouterr().err
 
 
-def test_dead_judge_stops_job_and_preserves_accepted_work(tmp_path):
+def test_dead_judge_pauses_job_and_preserves_accepted_work(tmp_path):
     from autotuner.loop import RegionRun
     runner = bare_runner(tmp_path)
     runner.tracer = SimpleNamespace(uninstall=lambda: None)
@@ -68,10 +70,9 @@ def test_dead_judge_stops_job_and_preserves_accepted_work(tmp_path):
             runner._empty_reply(run, None, "CLI login expired", None, None)
         pytest.fail("continued search with unavailable judge")
     runner._run = search
-    with pytest.raises(RuntimeError, match="3 consecutive transport errors"):
-        runner.run()
+    runner.run()  # a pause is an outcome, not a failure: resume asks the judge again
     report = json.loads((tmp_path / "report.json").read_text())
-    assert report["session"]["status"] == "failed"
+    assert report["session"]["status"] == "paused" and "could not be reached" in report["session"]["reason"]
     assert report["accepted"] == [{"kernel": "previous_win"}]
     assert checkpoint.read_text() == "saved kernel"
     assert runner.total_hypotheses == run.hypotheses == 0
@@ -110,6 +111,9 @@ def test_checkpoint_preserves_exact_code_and_model_measurements(tmp_path):
     runner.report.accepted.append(accepted)
     second = runner._save_checkpoint({**accepted, "kernel": "next"})
     assert second != saved and (saved / "apply.py").exists()
+    # a job resumed after a crash may not know `second` was saved: it must not overwrite it
+    third = runner._save_checkpoint({**accepted, "kernel": "after resume"})
+    assert third.name == "accepted-0003" and "next" in (second / "report.json").read_text()
     # a checkpoint is a whole bundle too: the model source travels with the code
     assert (saved / "model" / "tests" / "fixtures" / "planted_win.py").exists()
     assert json.loads((saved / "bundle.json").read_text())["patches"] == [

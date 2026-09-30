@@ -24,6 +24,7 @@ from pathlib import Path
 import mlx.core as mx
 
 from . import manifest as manifest_mod
+from . import resume as resume_mod
 from .bind.certify import certify_identities, find_scope_call, screen_scope
 from .bind.emit import (EmittedWrapper, NotReplayable, Splice, compose_scope_variants,
                         emit_wrapper, emit_wrapper_variants)
@@ -61,7 +62,6 @@ from .trace import Tracer
 from .trace.recorder import ArrayRef
 from .trace.walk import flatten_arrays
 from .regions.sweep import SweepDivergence, locate_span
-from .serve import serve_points
 from .trace.serialize import nodes_to_json
 from .trace.types import Trace
 from .workload import context_tokens, materialize, workload_seeds
@@ -125,7 +125,7 @@ class RegionRun:
     last_kernel: str | None = None    # the kernel the latest verdict was about
     attempts: dict[str, dict] = field(default_factory=dict)  # kernel id -> its verdict
     hypotheses: int = 0
-    errors: int = 0         # consecutive transport failures; three stop the job
+    errors: int = 0         # consecutive transport failures; three pause the job
     refused: int = 0        # consecutive replies with nothing to evaluate
     empty_replies: int = 0  # all such replies, to name each one once
     close_rule: str | None = None
@@ -139,15 +139,21 @@ class JobRunner:
 
     def __init__(self, manifest_path: str | Path, work_dir: str | Path,
                  judge_factory, session: Session | None = None,
-                 clock_pairs: int = CLOCK_PAIRS):
+                 clock_pairs: int = CLOCK_PAIRS, resume: bool = False):
         self.manifest = manifest_mod.load(manifest_path)
         self.work_dir = Path(work_dir)
         self.work_dir.mkdir(parents=True, exist_ok=True)
-        if (self.work_dir / "run.jsonl").exists():
+        # a resumed job continues this directory's logs from its saved state
+        self._resume_state = resume_mod.load(self.work_dir) if resume else None
+        if resume and self._resume_state is None:
+            raise RuntimeError(f"{self.work_dir} has no saved state ({resume_mod.STATE}) to resume from")
+        if (self.work_dir / "run.jsonl").exists() and not resume:
             # run.jsonl appends; a reused dir would interleave two jobs' rows
             raise RuntimeError(
                 f"{self.work_dir} holds a previous run (run.jsonl exists); "
                 "pass a fresh --work-dir or move the old one aside")
+        self._search_state: dict | None = None  # the search's position, saved at every safe point
+        self._resumable = True  # this job saves its state at safe points
         self.judge_factory = judge_factory
         self.clock_pairs = clock_pairs
         self.baseline = self.manifest.baseline  # settled by _clock_steps once the traces are in
@@ -281,7 +287,7 @@ class JobRunner:
             self.context = named
         self.manifest = replace(m, workloads=(named,), primary=MappingProxyType({**m.primary, dim: tokens}),
                                 sweep=MappingProxyType({**m.sweep, dim: (tokens,)}),
-                                serve=MappingProxyType({dim: (lo, hi)}))
+                                serve=MappingProxyType({dim: manifest_mod.SizeSet(lo, hi)}))
         self.report.constants["check_optimizations_for"] = {dim: [lo, hi], "set": "automatically"}
         self.log.append("other_sizes_default", dim=dim, range=[lo, hi], optimized=tokens)
 
@@ -340,10 +346,10 @@ class JobRunner:
                 self.sweep_tensors[label] = materialize(w, dims, seeds[0])
                 self.sweep_traces[label], _ = self.tracer.trace(self.model, self.sweep_tensors[label])
                 self.log.append("trace", workload=label, nodes=len(self.sweep_traces[label].nodes))
-            for dim, (lo, hi) in getattr(self.manifest, "serve", {}).items():
+            for dim, sizes in getattr(self.manifest, "serve", {}).items():
                 if dim not in w.named_dims():
                     continue
-                for size in serve_points(lo, hi, self.manifest.primary[dim]):
+                for size in sizes.recordings(self.manifest.primary[dim]):
                     label = f"{w.name}@serve:{dim}={size}"
                     self.serve_tensors[label] = materialize(w, {**self.manifest.primary, dim: size}, seeds[0])
                     trace, _ = self.tracer.trace(self.model, self.serve_tensors[label])
@@ -1403,6 +1409,9 @@ class JobRunner:
             if rule:
                 run.close_rule = rule
                 return
+            # before each judge call: the verdict the call carries is the resume point
+            run.last_verdict = verdict
+            self._safe_point(f"region {region.fingerprint}, attempt {run.hypotheses + 1}")
             front = queue.peek_ready()
             meta = self._meta(run, queue, _item_view(front) if front else None)
             resp, failure = self._ask_judge(run, "next", lambda: judge.next(meta, verdict))
@@ -1536,8 +1545,8 @@ class JobRunner:
         """Bookkeeping for a reply that left nothing to evaluate: babble, a
         transport failure, or a refusal (a yield, refused plan edits, a
         kernel for an item that is not ready, a refused seed). Returns the
-        verdict the next call carries; repeated transport failures stop the
-        job. A babble costs an attempt, since the transport already asked
+        verdict the next call carries; three transport failures in a row pause
+        the job, resumably. A babble costs an attempt, since the transport already asked
         once more; a refusal is asked again once for free, then charged."""
         if failure == "babble":
             self._spend(run)
@@ -1549,8 +1558,9 @@ class JobRunner:
             verdict = {"hypothesis_id": hyp, "outcome": "failed", "failed_gate": "judge_error",
                        "detail": {"reason": failure}}
             if run.errors >= 3:
-                raise RuntimeError(f"judge unavailable after 3 consecutive transport errors; "
-                                   f"stopping the job instead of opening another region. Last error: {failure}")
+                # the network or the judge's service is down (a Mac waking from sleep):
+                # stop where a resumed job can ask again, rather than fail
+                raise resume_mod.Paused(f"the judge could not be reached 3 times in a row; last error: {failure}")
             return verdict, None
         run.refused += 1
         if run.refused > 1:
@@ -1583,7 +1593,7 @@ class JobRunner:
                             latency_s=round(time.perf_counter() - t0, 1), action="babble")
             return None, "babble"
         except Exception as e:
-            # Preserve the diagnostic; repeated transport failures stop the job
+            # Preserve the diagnostic; repeated transport failures pause the job
             # in _empty_reply without consuming optimization attempts.
             self.log.append("judge", fingerprint=run.region.fingerprint, phase=phase,
                             latency_s=round(time.perf_counter() - t0, 1),
@@ -2159,7 +2169,10 @@ class JobRunner:
 
     def _save_checkpoint(self, accepted: dict) -> Path:
         """Durable recovery package; final timing and fresh-process export are pending."""
-        path = self.work_dir / "checkpoints" / f"accepted-{len(self.report.accepted) + 1:04d}"
+        # after the highest existing one: a job resumed after a crash may not know a
+        # checkpoint saved after its last safe point, and must not overwrite it
+        taken = [int(p.name.split("-")[1]) for p in (self.work_dir / "checkpoints").glob("accepted-[0-9][0-9][0-9][0-9]")]
+        path = self.work_dir / "checkpoints" / f"accepted-{max([len(self.report.accepted), *taken]) + 1:04d}"
         snapshot = copy.deepcopy(self.report)
         snapshot.accepted.append({**accepted, "checkpoint": str(path)})
         snapshot.session.update(status="accepted_checkpoint", final_validation="pending",
@@ -2213,6 +2226,12 @@ class JobRunner:
             report = self._run()
             report.session["status"] = "search_complete"
             return report
+        except resume_mod.Paused as pause:
+            # state was saved at the safe point this stopped at
+            self.report.session.update(status="paused", reason=str(pause), error=None)
+            self.log.append("paused", reason=str(pause), stage=self.report.session.get("stage"))
+            print(f"paused: {pause}. Resume with: autotune resume --work-dir {self.work_dir}", flush=True)
+            return self.report
         except BaseException as error:
             status = "interrupted" if isinstance(error, KeyboardInterrupt) else "failed"
             detail = f"{type(error).__name__}: {error}"
@@ -2239,68 +2258,21 @@ class JobRunner:
             defaulted=list(self.manifest.defaulted),
             gpu_utilization_pct=self.gpu_busy_at_start,
         )
-        self._phase("loading model")
-        self.load_model()
-        self._phase("tracing workloads and finding legal regions")
-        self.trace_workloads()
-        regions = self.build_regions()
-        self._phase("measuring baseline and selecting regions")
-        ranked = self.capture_and_price(regions)
+        if getattr(self, "_resume_state", None) is not None:
+            self._restore()
+        else:
+            self._phase("loading model")
+            self.load_model()
+            self._phase("tracing workloads and finding legal regions")
+            self.trace_workloads()
+            regions = self.build_regions()
+            self._phase("measuring baseline and selecting regions")
+            ranked = self.capture_and_price(regions)
+            self._search_state = {"ranked": ranked, "shipped": [], "run": None, "accepted_before": 0}
         self._phase("searching kernels")
         self.report.write(self.work_dir / "report.json")  # partial: peaks, coverage, strands
-
-        shipped_regions: list[Region] = []
-        while ranked or self.pending_regions:
-            if self._finish_requested():
-                break
-            if self.total_hypotheses >= self.manifest.budget_total:
-                break
-            if not ranked:
-                ranked = self._next_regions()
-                if not ranked:
-                    break
-            region = ranked.pop(0)
-            free = free_members(region, [r for r in shipped_regions if r is not region])
-            if not free:
-                self.log.append("region_covered", fingerprint=region.fingerprint,
-                                reason="every copy touches a cut already shipped")
-                continue
-            if len(free) < region.copies:
-                # a shipped bigger cut owns the other copies; this region goes
-                # on at the copies still free, priced at that count
-                self.log.append("region_trimmed", fingerprint=region.fingerprint,
-                                copies_before=region.copies, copies_free=len(free))
-                region.members = free
-                for w in region.workloads:
-                    n = sum(m.workload == w for m in free)
-                    region.t_orig_ms[w] = region.t_rep_ms.get(w, 0.0) * n
-                    region.p[w] = region.p_rep.get(w, 0.0) * n
-            accepted_before = len(self.report.accepted)
-            roof = region.roofline
-            self.log.append(
-                "region_open", fingerprint=region.fingerprint, ops=list(region.ops),
-                copies=region.copies, p=dict(region.p),
-                bound=roof.bound if roof else None, s_max=roof.s_max if roof else None,
-                roofline_ms=roof.t_roofline_ms if roof else None,
-                t_orig_ms=dict(region.t_orig_ms), t_rep_ms=dict(region.t_rep_ms),
-            )
-            self.candidates.append(_region_line(region, "open"))
-            judge = self.judge_factory(region)
-            run = self.open_region(region, judge)
-            if run.scaffold is not None and run.close_rule is None:
-                self.hypothesis_cycle(run, judge)
-            if run.shipped is not None and region not in shipped_regions:
-                shipped_regions.append(region)
-            self._record_region_closed(run)
-
-            if self._finish_requested() or self.total_hypotheses >= self.manifest.budget_total:
-                break
-            if len(self.report.accepted) > accepted_before:
-                ranked = self._refresh_after_ship(ranked, shipped_regions)
-
-            # The completed region releases unshipped overlapping alternatives.
-            # Remaining ranked targets block overlaps until their own search ends.
-            ranked = rank(ranked + self._next_regions(blockers=ranked))
+        self._search()
+        ranked = self._search_state["ranked"]
 
         selection = self.report.coverage.setdefault("selection", {})
         selection["unsearched"] = len(ranked) + len(self.pending_regions)
@@ -2337,6 +2309,136 @@ class JobRunner:
         self.report.session["idled_s"] = round(self.session.idled_s, 1)
         self.report.write(self.work_dir / "report.json")
         return self.report
+
+    def _search(self) -> None:
+        """Open ranked regions until the budget or the queue runs out, from the
+        saved position: a region the job stopped inside is finished first."""
+        state = self._search_state
+        if state["run"] is not None:
+            run = state["run"]
+            run.errors = 0  # a fresh process asks a reachable judge again
+            self.log.append("region_resumed", fingerprint=run.region.fingerprint,
+                            attempts=run.hypotheses, attempts_left_job=self.manifest.budget_total - self.total_hypotheses)
+            self.hypothesis_cycle(run, self.judge_factory(run.region))
+            if not self._close_region(run):
+                return
+        while state["ranked"] or self.pending_regions:
+            self._safe_point("between regions")
+            if self._finish_requested():
+                break
+            if self.total_hypotheses >= self.manifest.budget_total:
+                break
+            if not state["ranked"]:
+                state["ranked"] = self._next_regions()
+                if not state["ranked"]:
+                    break
+            region = state["ranked"].pop(0)
+            free = free_members(region, [r for r in state["shipped"] if r is not region])
+            if not free:
+                self.log.append("region_covered", fingerprint=region.fingerprint,
+                                reason="every copy touches a cut already shipped")
+                continue
+            if len(free) < region.copies:
+                # a shipped bigger cut owns the other copies; this region goes
+                # on at the copies still free, priced at that count
+                self.log.append("region_trimmed", fingerprint=region.fingerprint,
+                                copies_before=region.copies, copies_free=len(free))
+                region.members = free
+                for w in region.workloads:
+                    n = sum(m.workload == w for m in free)
+                    region.t_orig_ms[w] = region.t_rep_ms.get(w, 0.0) * n
+                    region.p[w] = region.p_rep.get(w, 0.0) * n
+            state["accepted_before"] = len(self.report.accepted)
+            roof = region.roofline
+            self.log.append(
+                "region_open", fingerprint=region.fingerprint, ops=list(region.ops),
+                copies=region.copies, p=dict(region.p),
+                bound=roof.bound if roof else None, s_max=roof.s_max if roof else None,
+                roofline_ms=roof.t_roofline_ms if roof else None,
+                t_orig_ms=dict(region.t_orig_ms), t_rep_ms=dict(region.t_rep_ms),
+            )
+            self.candidates.append(_region_line(region, "open"))
+            judge = self.judge_factory(region)
+            run = self.open_region(region, judge)
+            state["run"] = run
+            if run.scaffold is not None and run.close_rule is None:
+                self.hypothesis_cycle(run, judge)
+            if not self._close_region(run):
+                break
+
+    def _close_region(self, run) -> bool:
+        """Record a finished region and re-rank what is left. False when the
+        job should stop searching (finish requested, budget spent)."""
+        state = self._search_state
+        region = run.region
+        if run.shipped is not None and region not in state["shipped"]:
+            state["shipped"].append(region)
+        self._record_region_closed(run)
+        state["run"] = None
+        if self._finish_requested() or self.total_hypotheses >= self.manifest.budget_total:
+            return False
+        if len(self.report.accepted) > state["accepted_before"]:
+            state["ranked"] = self._refresh_after_ship(state["ranked"], state["shipped"])
+        # The completed region releases unshipped overlapping alternatives.
+        # Remaining ranked targets block overlaps until their own search ends.
+        state["ranked"] = rank(state["ranked"] + self._next_regions(blockers=state["ranked"]))
+        return True
+
+    def _safe_point(self, where: str) -> None:
+        """No GPU work in flight and every verdict recorded: save the state a
+        resumed job continues from, and stop here if a pause was asked for."""
+        if not getattr(self, "_resumable", False):
+            return  # a runner assembled without the constructor (a test's partial runner)
+        resume_mod.save(self, where)
+        if resume_mod.pause_requested(self.work_dir):
+            raise resume_mod.Paused(f"pause requested ({where})")
+
+    def _restore(self) -> None:
+        """Rebuild what a new process cannot load (the model, its recording,
+        the installed wrappers) and restore the rest from the saved state."""
+        state = self._resume_state
+        self._phase("resuming: loading model")
+        self.load_model()
+        self._phase("resuming: recording the model")
+        self.trace_workloads()
+        recorded = {r.fingerprint: r for r in self.build_regions()}
+        self.tracer.uninstall()
+        search = state["search"]
+        saved = list(state["pending_regions"]) + list(search["ranked"]) + list(search["shipped"]) \
+            + list(state["shipped_regions"].values()) + ([search["run"].region] if search["run"] else [])
+        for region in saved:
+            fresh = recorded.get(region.fingerprint)
+            spans = {(m.workload, m.start_seq, m.end_seq) for m in fresh.members} if fresh else set()
+            if not spans >= {(m.workload, m.start_seq, m.end_seq) for m in region.members}:
+                raise RuntimeError(f"cannot resume: the model no longer records region {region.fingerprint} "
+                                   "as it was saved; the model, manifest or tool changed")
+        for name in resume_mod.SAVED:
+            if name in state:
+                setattr(self, name, state[name])
+        self._search_state = search
+        if state["compiled_baseline"]:
+            outermost = {e.scope_path: (e, {}) for e in self.baseline_wrappers}
+            self._compiled_baseline = self._copy_incumbent({}, outermost)
+        for path, emitted in self.emitted.items():
+            variants, kernels = state["installed"][path]
+            original = _resolve(self.model, path)
+            swap_install(self.model, path, _load_class(emitted)(original, kernels))
+            self.installed[path] = (original, variants, kernels)
+        mx.clear_cache()
+        from autotuner_runtime.state import correctness_call
+        for w in self.manifest.workloads:
+            tensors = self.tensors[w.name]
+            check = self.session.off_clock(lambda: preserving_check(
+                lambda: correctness_call(self.baseline_model, tensors),
+                lambda: correctness_call(self.model, tensors), w.name + ":resumed",
+                exact=self._requires_exact(), tolerances=self.manifest.tolerances))
+            if not check.passed:
+                raise RuntimeError(f"cannot resume: the restored model's outputs differ from the "
+                                   f"untouched model's on {w.name}: {check.reason}")
+        self.report.session.setdefault("resumed", []).append(
+            {"at": state["where"], "attempts_used": self.total_hypotheses, "installed": sorted(self.emitted)})
+        self.log.append("resumed", at=state["where"], attempts_used=self.total_hypotheses,
+                        installed=sorted(self.emitted), accepted=len(self.report.accepted))
 
     def _record_region_closed(self, run):
         self.report.add_region(
@@ -2468,21 +2570,24 @@ class JobRunner:
     # -- after the search: kernels at the served sizes -------------------------
 
     def _serve_sizes(self) -> list | None:
-        """manifest serve: give each scope that generalizes generated code that
-        reads its size, checked against the original at every size, in place
-        of its searched wrapper. Returns what _unserve restores, or None."""
+        """check_optimizations_for: give each scope that generalizes generated
+        code that reads its size, checked against the original at every size
+        it serves, in place of its searched wrapper. Returns what _unserve
+        restores, or None."""
         from .serve import check_replays, in_dim, plan_scopes
+        from .bind.sized import runs
         if not getattr(self.manifest, "serve", None) or not self._kernels_installed():
             return None
-        dim, (lo, hi) = next(iter(self.manifest.serve.items()))
-        self._phase("checking kernels at the served sizes")
+        dim, sizes = next(iter(self.manifest.serve.items()))
+        exact = bool(sizes.listed)
+        self._phase("checking kernels at the other sizes")
         started = time.monotonic()
         workloads = [w for w in self.manifest.workloads if dim in w.named_dims()]
         primary = self.manifest.primary[dim]
         plans, refused = plan_scopes(self.installed, self.traces, self.serve_traces, {w.name for w in workloads},
-                                     [primary] + serve_points(lo, hi, primary))
-        report = self.report.serve = {"dim": dim, "range": [lo, hi], "scopes": {}, "kernels": {},
-                                      "not_generalized": refused}
+                                     [primary] + sizes.recordings(primary))
+        report = self.report.serve = {"dim": dim, "sizes": list(sizes.listed) or [sizes.lo, sizes.hi],
+                                      "exact": exact, "scopes": {}, "kernels": {}, "not_generalized": refused}
         for path, reason in refused.items():
             self.log.append("serve_refused", scope=path, reason=reason)
         if plans:
@@ -2491,29 +2596,26 @@ class JobRunner:
             candidates = {}
             for plan in plans:
                 original, _variants, specs = self.installed[plan.path]
-                candidate = plan.sized.finalize(f"C_{_safe(plan.path)}", (min(plan.sized.sizes), max(plan.sized.sizes)), {})
+                candidate = plan.sized.finalize(f"C_{_safe(plan.path)}", plan.sized.sizes, {})
                 candidates[plan.path] = _load_class(candidate)(original, specs)
             self.session.off_clock(lambda: check_replays(
                 self.model, plans, candidates,
                 lambda size: self.model(*materialize(workload, {**self.manifest.primary, dim: size}, seed)),
-                range(lo, hi + 1), swap_install, swap_uninstall))
+                sorted(set(sizes.sizes()) | {primary}), swap_install, swap_uninstall))
         restore = []
-        kernel_ranges = self._serve_kernels([plan for plan in plans if plan.span()])
+        kernel_sizes = self._serve_kernels([plan for plan in plans if plan.served(exact)], exact)
         for plan in plans:
-            span = plan.span()
+            served = plan.served(exact)
             report["scopes"][plan.path] = {
                 "call": plan.address, "size": f"{plan.sized.size_arg}.shape[{plan.sized.size_dim}]",
                 "recorded_sizes": plan.sized.sizes, "generalized_integers": plan.sized.generalized,
-                "range": list(span) if span else None, f"{dim}_range": in_dim(plan, span),
+                "sizes": runs(served), f"{dim}_sizes": in_dim(plan, served),
                 "first_difference": next(([n, why] for n, why in sorted(plan.checked.items()) if why), None)}
-            if span is None:
+            if not served:
                 continue
-            primary = plan.sized.sizes[0]
-            ranges = {}
-            for kid in plan.sized.kernel_ids:
-                served = kernel_ranges.get(kid) or (primary, primary)
-                ranges[kid] = (max(served[0], span[0]), min(served[1], span[1]))
-            emitted = plan.sized.finalize(f"S_{_safe(plan.path)}", span, ranges)
+            kernels = {kid: tuple(sorted(set(kernel_sizes.get(kid) or (plan.sized.sizes[0],)) & set(served)))
+                       for kid in plan.sized.kernel_ids}
+            emitted = plan.sized.finalize(f"S_{_safe(plan.path)}", served, kernels)
             original, _variants, specs = self.installed[plan.path]
             occupant = swap_install(self.model, plan.path, _load_class(emitted)(original, specs))
             restore.append((plan.path, occupant, self.emitted.get(plan.path)))
@@ -2524,31 +2626,32 @@ class JobRunner:
         self.report.write(self.work_dir / "report.json")
         return restore or None
 
-    SERVE_GRID = 10     # timing points per kernel, both ends of its range included
+    SERVE_GRID = 10     # timing points per kernel over a range, both ends included
     SERVE_SAMPLES = 12  # random sizes timed inside the range the grid picks: a clear loss cuts it
     SERVE_BATCH = 256   # sizes per correctness worker: a hang loses one batch
 
-    def _serve_kernels(self, plans) -> dict:
-        """Each bit-exact kernel's served range, in its scopes' size: the
-        sizes it is right at (every one checked in the sandbox) and wins at
-        (a timing grid). Kernels left out keep their recorded size only."""
-        from .ladder.sizes import SizesSpec, shape_at
-        from .sandbox.protocol import require_responsive, run_job as run_worker
+    def _serve_kernels(self, plans, exact: bool) -> dict:
+        """Each bit-exact kernel's served sizes, in its scopes' size: the sizes
+        it is right at (every one checked in the sandbox) and wins at. Over a
+        range the wins come from a timing grid plus random samples; exact sizes
+        are each timed. Kernels left out keep their recorded size only."""
+        from .ladder.sizes import shape_at
         from .serve import in_dim, served_range
+        from .bind.sized import runs
         report, dim = self.report.serve["kernels"], self.report.serve["dim"]
         found: dict[str, dict] = {}
         for plan in plans:
+            served = set(plan.served(exact))
             for splice in plan.splices:
                 info = found.setdefault(splice.kernel.kernel_id, {
                     "spec": splice.kernel, "fingerprint": splice.fingerprint, "primary": plan.sized.sizes[0],
                     "to_dim": plan.to_dim,
-                    "template": plan.kernel_shapes.get(splice.kernel.kernel_id), "span": plan.span()})
-                span = plan.span()
+                    "template": plan.kernel_shapes.get(splice.kernel.kernel_id), "sizes": served})
                 if (info["template"] != plan.kernel_shapes.get(splice.kernel.kernel_id)
                         or info["primary"] != plan.sized.sizes[0]):
                     info["template"] = None
-                info["span"] = (max(info["span"][0], span[0]), min(info["span"][1], span[1]))
-        ranges = {}
+                info["sizes"] &= served
+        chosen = {}
         for kid, info in found.items():
             spec, fingerprint, template, primary = info["spec"], info["fingerprint"], info["template"], info["primary"]
             why = None
@@ -2570,7 +2673,7 @@ class JobRunner:
                 if instance is None:
                     why = "no saved inputs at its recorded size"
             if why is not None:
-                report[kid] = {"range": [primary, primary], f"{dim}_range": in_dim(info["to_dim"], (primary, primary)),
+                report[kid] = {"sizes": [[primary, primary]], f"{dim}_sizes": in_dim(info["to_dim"], (primary,)),
                                "reason": why}
                 continue
             label, member = instance
@@ -2580,43 +2683,61 @@ class JobRunner:
                        input_ids=tuple(member.input_ids), output_ids=tuple(member.output_ids),
                        inputs_path=str(self.store._path(fingerprint, label, 0, "inputs")), shapes=template,
                        weight_inputs=tuple(a in trace.weights for a in member.input_ids))
-            lo, hi = info["span"]
-            steps = self.SERVE_GRID - 1
-            grid = sorted({lo, hi, primary} | {round(lo * (hi / lo) ** (i / steps)) for i in range(1, steps)})
-            clock = self._serve_grid(job, grid)
-            candidate = served_range(list(range(lo, hi + 1)), clock, primary, grid)
-            if candidate:
-                # speed between grid points zig-zags with the kernels' tiles:
-                # time random sizes inside the range too, and cut at any loss
-                inside = [n for n in range(candidate[0], candidate[1] + 1) if n not in clock]
-                picks = sorted(random.Random(kid).sample(inside, min(self.SERVE_SAMPLES, len(inside))))
-                clock.update(self._serve_grid(job, picks))
+            if exact:
+                # a few sizes: time every one, serve those it is right and faster at
+                candidates = sorted(info["sizes"])
+                clock = self._serve_grid(job, candidates)
+                wins = [n for n in candidates if clock.get(n, {}).get("win") or n == primary]
+                correct, wrong = self._serve_correct(job, wins)
+                served = tuple(n for n in wins if n in correct)
+                grid = candidates
+            else:
+                lo, hi = min(info["sizes"]), max(info["sizes"])
+                steps = self.SERVE_GRID - 1
+                grid = sorted({lo, hi, primary} | {round(lo * (hi / lo) ** (i / steps)) for i in range(1, steps)})
+                clock = self._serve_grid(job, grid)
                 candidate = served_range(list(range(lo, hi + 1)), clock, primary, grid)
-            correct = []
-            sizes = list(range(candidate[0], candidate[1] + 1)) if candidate else []
-            wrong = {}
-            for start in range(0, len(sizes), self.SERVE_BATCH):
-                batch = tuple(sizes[start:start + self.SERVE_BATCH])
-                checked = run_worker(SizesSpec(sizes=batch, phase="validate", **job), "validate",
-                                     timeout_s=120.0 + 10.0 * len(batch))
-                require_responsive(checked)
-                results = checked.detail.get("results", {})
-                if checked.detail.get("validation"):
-                    wrong.update({n: "shader validation reported an invalid device access" for n in batch})
-                    continue
-                for n in batch:
-                    reason = results.get(str(n), checked.detail.get("reason", "not checked"))
-                    (correct.append(n) if reason is None else wrong.__setitem__(n, reason))
-            served = served_range(correct, clock, primary, grid)
-            ranges[kid] = served
-            report[kid] = {"range": list(served) if served else [primary, primary],
-                           f"{dim}_range": in_dim(info["to_dim"], served or (primary, primary)),
+                if candidate:
+                    # speed between grid points zig-zags with the kernels' tiles:
+                    # time random sizes inside the range too, and cut at any loss
+                    inside = [n for n in range(candidate[0], candidate[1] + 1) if n not in clock]
+                    picks = sorted(random.Random(kid).sample(inside, min(self.SERVE_SAMPLES, len(inside))))
+                    clock.update(self._serve_grid(job, picks))
+                    candidate = served_range(list(range(lo, hi + 1)), clock, primary, grid)
+                correct, wrong = self._serve_correct(job, list(range(candidate[0], candidate[1] + 1)) if candidate else [])
+                span = served_range(sorted(correct), clock, primary, grid)
+                served = tuple(range(span[0], span[1] + 1)) if span else ()
+            chosen[kid] = served
+            report[kid] = {"sizes": runs(served or (primary,)), f"{dim}_sizes": in_dim(info["to_dim"], served or (primary,)),
                            "grid": {n: row for n, row in sorted(clock.items()) if n in grid},
                            "samples": {n: row for n, row in sorted(clock.items()) if n not in grid},
-                           "checked": [sizes[0], sizes[-1]] if sizes else None,
+                           "checked": runs(correct | set(wrong)),
                            "wrong": dict(sorted(wrong.items())[:20]), "wrong_count": len(wrong)}
             self.log.append("serve_kernel", kernel=kid, **report[kid])
-        return ranges
+        return chosen
+
+    def _serve_correct(self, job: dict, sizes: list[int]) -> tuple[set, dict]:
+        """Which sizes the kernel is right at, checked in the sandbox in batches
+        (a hang loses one batch); and why the others are not."""
+        from .ladder.sizes import SizesSpec
+        from .sandbox.protocol import require_responsive, run_job as run_worker
+        correct, wrong = set(), {}
+        for start in range(0, len(sizes), self.SERVE_BATCH):
+            batch = tuple(sizes[start:start + self.SERVE_BATCH])
+            checked = run_worker(SizesSpec(sizes=batch, phase="validate", **job), "validate",
+                                 timeout_s=120.0 + 10.0 * len(batch))
+            require_responsive(checked)
+            results = checked.detail.get("results", {})
+            if checked.detail.get("validation"):
+                wrong.update({n: "shader validation reported an invalid device access" for n in batch})
+                continue
+            for n in batch:
+                reason = results.get(str(n), checked.detail.get("reason", "not checked"))
+                if reason is None:
+                    correct.add(n)
+                else:
+                    wrong[n] = reason
+        return correct, wrong
 
     def _serve_grid(self, job: dict, grid: list[int]) -> dict[int, dict]:
         """Each grid size's clock, the kernel against its operations, in the sandbox."""
