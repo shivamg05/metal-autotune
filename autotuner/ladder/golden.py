@@ -130,7 +130,7 @@ def _audit_fp32_ops(recorder, *, retain_graph=True, seeds=()):
     original = recorder._append_node
     had_override = "_append_node" in vars(recorder)
 
-    def checked(op_name, args, kwargs, out_objs, receiver=None):
+    def checked(op_name, args, kwargs, out_objs, receiver=None, numbers=None):
         path = compiled_path(op_name)
         trusted_activation = (path is not None and path.rsplit(".", 1)[0] in
                               ("mlx.nn", "mlx.nn.layers.activations") and
@@ -151,7 +151,7 @@ def _audit_fp32_ops(recorder, *, retain_graph=True, seeds=()):
             for out in out_objs:
                 known[id(out)] = weakref.ref(out)
         if retain_graph:
-            return original(op_name, args, kwargs, out_objs, receiver=receiver)
+            return original(op_name, args, kwargs, out_objs, receiver=receiver, numbers=numbers)
 
     # Observe operations before state_exit folds their nodes into one state
     # call. Otherwise a cache method can hide fp16 math behind an fp32 output.

@@ -245,6 +245,55 @@ def test_a_constant_that_cannot_be_carried_still_aborts(constant):
         tr.trace(Model(), [mx.random.normal((4, 4), key=mx.random.key(0))])
 
 
+def test_reading_a_constant_is_not_a_mid_step_evaluation():
+    """mflux's attention scale, 1 / mx.sqrt(head_dim), is read back as a float
+    every call. It comes from Python numbers alone, so mx.compile evaluates it
+    too: the step still compiles. A read of anything computed from the input
+    or a weight is still flagged."""
+    tr = tracer()
+
+    class Scaled:
+        def __init__(self, read):
+            self.weight = mx.ones((16,))
+            self.read = read
+
+        def __call__(self, x):
+            return x * float(self.read(self, x))
+
+    constant = Scaled(lambda self, x: 1 / mx.sqrt(x.shape[-1]))
+    x = mx.random.normal((4, 16), key=mx.random.key(0))
+    trace, _ = tr.trace(constant, [x])
+    assert not trace.in_pass_evaluation and not trace.eval_sites
+    step = mx.compile(lambda x: constant(x))
+    assert mx.allclose(step(x), constant(x)).item()
+    for read in (lambda self, x: x.sum(), lambda self, x: self.weight.sum() / x.shape[-1]):
+        trace, _ = tr.trace(Scaled(read), [x])
+        assert trace.in_pass_evaluation and trace.eval_sites
+
+
+def test_a_constant_a_call_reads_as_a_number_is_recorded_as_that_number():
+    """mflux passes scale=1 / mx.sqrt(head_dim), an array, where attention
+    takes a float; the call reads it as a number. Recorded as that number,
+    a span cut around the call replays compiled on its own. As an array it
+    became a compiled input the call could not read, and pricing crashed."""
+    from autotuner.trace.replay import compile_replay
+    tr = tracer()
+
+    class Attention:
+        def __call__(self, q, k, v):
+            scale = 1 / mx.sqrt(q.shape[-1])
+            return mx.fast.scaled_dot_product_attention(q, k, v, scale=scale)
+
+    q, k, v = (mx.random.normal((1, 2, 8, 16), key=mx.random.key(i)) for i in range(3))
+    trace, out = tr.trace(Attention(), [q, k, v])
+    (sdpa,) = [n for n in trace.nodes if n.op == "mx.fast.scaled_dot_product_attention"]
+    assert sdpa.scalar_args["kwargs"]["scale"] == 0.25 and len(sdpa.in_arrays) == 3
+    assert not trace.in_pass_evaluation
+    run = compile_replay([sdpa], sdpa.in_arrays, sdpa.out_arrays)
+    (again,) = run(dict(zip(sdpa.in_arrays, (q, k, v))))
+    assert mx.array_equal(again, out).item()
+
+
 def test_after_an_in_pass_evaluation_no_constant_is_trusted():
     """Once the model has evaluated arrays, a computed value and host data
     look the same from outside, so the recorder records neither."""

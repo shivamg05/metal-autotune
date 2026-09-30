@@ -32,6 +32,8 @@ SKIP_FUNCTIONS = frozenset({
 # armed marks in-pass evaluation. __setitem__ and the in-place ops mutate their
 # first argument; the recorder renames the mutated object (SSA).
 EVAL_METHODS = frozenset({"item", "tolist", "__bool__", "__int__", "__float__", "__index__"})
+# the reads that turn an array into the one number a call receives in its place
+NUMBER_METHODS = frozenset({"item", "__int__", "__float__", "__index__"})
 MUTATING_METHODS = frozenset({
     "__setitem__", "__iadd__", "__isub__", "__imul__", "__itruediv__",
     "__ifloordiv__", "__imod__", "__ipow__", "__imatmul__", "__iand__",

@@ -24,6 +24,7 @@ import mlx.nn as nn
 
 from .optable import (
     EVAL_METHODS,
+    NUMBER_METHODS,
     MUTATING_METHODS,
     array_method_names,
     array_property_names,
@@ -171,8 +172,12 @@ class Patcher:
         recorder = self.recorder
 
         def wrapper(*args, **kwargs):
-            result = orig(*args, **kwargs)
-            recorder.maybe_record(op_name, args, kwargs, result)
+            recorder.call_enter()
+            try:
+                result = orig(*args, **kwargs)
+            finally:
+                numbers = recorder.call_exit()
+            recorder.maybe_record(op_name, args, kwargs, result, numbers=numbers)
             return result
 
         wrapper.__name__ = getattr(orig, "__name__", parts[-1])
@@ -187,8 +192,9 @@ class Patcher:
 
         if short in EVAL_METHODS:
             def wrapper(self_arr, *args, **kwargs):
-                recorder.note_evaluation(self_arr)
-                return orig(self_arr, *args, **kwargs)
+                result = orig(self_arr, *args, **kwargs)
+                recorder.note_evaluation(self_arr, number=result if short in NUMBER_METHODS else None)
+                return result
         else:
             mutates = short in MUTATING_METHODS
 

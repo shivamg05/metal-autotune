@@ -142,6 +142,13 @@ into it, and every whole-model number is measured against it. The artifact
 carries it. `baseline: plain` in the manifest keeps the plain model as the
 baseline instead; kernels are then measured against their scope compiled with
 the cuts it carried before (`incumbent_compiled_scopes` on the accepted row).
+A directly called model is compiled whole unless the recording shows state
+that `mx.compile` cannot see: arrays the model keeps after the step, a cache
+write, or reading back a value computed from the step's inputs or weights
+(`.item()` or `float(x)` on one, as a branch does). The `baseline` row names
+which. Reading a constant computed from Python numbers alone, such as an
+attention scale `1 / mx.sqrt(head_dim)`, does not count: compile evaluates it
+too. The same rule keeps a scope that reads such a value off graph delivery.
 Each region's report row says its `delivery` and which `library_arm` its
 clocks ran (a graph scope's library ops run as one compiled graph, the way the
 deployed scope will).

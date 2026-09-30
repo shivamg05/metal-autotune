@@ -120,6 +120,7 @@ class Recorder:
         self.in_pass_evaluation = False
         self.eval_sites: list[tuple[str, ...]] = []
         self.evaluated: set[int] = set()
+        self._call_numbers: list[dict[int, object]] = []  # per open op call: id(array) -> number read
         self._addr_stack: list[str] = []
         self._pending_scopes: list[tuple] = []
         self.scope_calls: list[ScopeCall] = []
@@ -252,16 +253,46 @@ class Recorder:
 
     # -- hooks called by the patch surface -----------------------------------
 
-    def note_evaluation(self, *values) -> None:
+    def note_evaluation(self, *values, number=None) -> None:
         """The model evaluated these arrays itself: that work is live even
-        when nothing recorded reads the result."""
+        when nothing recorded reads the result. Reading a constant, a value
+        computed from Python numbers alone (mflux's 1 / mx.sqrt(head_dim)),
+        is not a mid-step evaluation: its value never changes and mx.compile
+        evaluates it too. Any other read is. A constant an MLX call reads as
+        a number while it runs (that scale passed as scale=) is recorded as
+        the number the call received, so a replayed or compiled span passes
+        the number too, never an array it would have to read."""
         if self.recording:
-            self.in_pass_evaluation = True
-            self.eval_sites.append(tuple(self._addr_stack))
-            for arr in flatten_arrays(values):
-                aid = self._ids.get(id(arr))
-                if aid is not None:
-                    self.evaluated.add(aid)
+            ids = [self._ids.get(id(arr)) for arr in flatten_arrays(values)]
+            self.evaluated.update(aid for aid in ids if aid is not None)
+            if None in ids or self._computed_from_state(ids):
+                self.in_pass_evaluation = True
+                self.eval_sites.append(tuple(self._addr_stack))
+            elif number is not None and self._call_numbers:
+                self._call_numbers[-1][id(values[0])] = number
+
+    def call_enter(self) -> None:
+        self._call_numbers.append({})
+
+    def call_exit(self) -> dict[int, object]:
+        return self._call_numbers.pop()
+
+    def _computed_from_state(self, ids) -> bool:
+        """Whether any of these arrays traces back to an input, a weight, a
+        state call or an array with no recorded producer."""
+        producer = {aid: n for n in self.nodes for aid in n.out_arrays}
+        roots = self.inputs | self.weights
+        pending, seen = list(ids), set()
+        while pending:
+            aid = pending.pop()
+            if aid in seen:
+                continue
+            seen.add(aid)
+            node = producer.get(aid)
+            if aid in roots or node is None or node.op.startswith(STATE_PREFIX):
+                return True
+            pending.extend(node.in_arrays)
+        return False
 
     def module_enter(self, instance: object, args: tuple = (), kwargs: dict | None = None) -> None:
         path = self._instance_paths.get(id(instance), f"?{type(instance).__name__}")
@@ -305,7 +336,8 @@ class Recorder:
         if all(math.isfinite(v) for v in _flat(value)):
             self._append_node(CONSTANT_OP, (value,), {"dtype": arr.dtype}, [arr])
 
-    def _templatize(self, args: tuple, kwargs: dict, objects: bool = False):
+    def _templatize(self, args: tuple, kwargs: dict, objects: bool = False,
+                    numbers: dict[int, object] | None = None):
         """Arrays become ArrayRefs. With objects=True (module calls), any
         other non-literal value becomes an ObjectRef, so a wrapper can pass
         a cache object through and call its methods where the record did."""
@@ -314,6 +346,8 @@ class Recorder:
         obj_ids: list[int] = []
 
         def template(obj: Any) -> Any:
+            if numbers and isinstance(obj, mx.array) and id(obj) in numbers:
+                return numbers[id(obj)]
             if isinstance(obj, mx.array):
                 if id(obj) not in self._ids:
                     self._record_constant(obj)
@@ -346,6 +380,7 @@ class Recorder:
         kwargs: dict,
         result: Any,
         mutates_first: bool = False,
+        numbers: dict[int, object] | None = None,
     ) -> None:
         if not self.recording:
             return
@@ -354,7 +389,7 @@ class Recorder:
             out_objs.insert(0, args[0])
         if not out_objs:
             return
-        self._append_node(op_name, args, kwargs, out_objs)
+        self._append_node(op_name, args, kwargs, out_objs, numbers=numbers)
 
     def state_enter(self, obj: object) -> None:
         """A call on a state holder begins: where the record stands, which
@@ -397,8 +432,8 @@ class Recorder:
                           flatten_arrays(result), receiver=receiver)
 
     def _append_node(self, op_name: str, args: tuple, kwargs: dict, out_objs: list,
-                     receiver: dict | None = None) -> None:
-        args_t, kwargs_t, in_ids, in_specs, _ = self._templatize(args, kwargs)
+                     receiver: dict | None = None, numbers: dict[int, object] | None = None) -> None:
+        args_t, kwargs_t, in_ids, in_specs, _ = self._templatize(args, kwargs, numbers=numbers)
         seq = len(self.nodes)
         out_ids = [self._register_output(a, seq) for a in out_objs]
         scalar_args: dict = {"args": args_t, "kwargs": kwargs_t}
