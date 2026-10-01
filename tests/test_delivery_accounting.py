@@ -297,3 +297,96 @@ else:
 
     finally:
         runner.tracer.uninstall()
+
+
+def test_a_library_inference_job_saves_and_restores_its_compiled_baseline(tmp_path, monkeypatch):
+    """The state a job saves before every attempt, on an mlx-lm job over a
+    cache: it pickles with the compiled baseline's scopes installed, and a
+    new runner restores it to the same installed scopes and the same
+    outputs, without clocking anything again."""
+    import autotuner.loop as loop
+    from autotuner import resume as resume_mod
+    from autotuner.measure.clocks import comparison_from_samples
+    fixture = Path(__file__).parent / "fixtures" / "llama_cache_model.py"
+    manifest = tmp_path / "manifest.yaml"
+    manifest.write_text(f"""model: {fixture}
+use_library_inference: true
+workloads:
+  - name: prompt
+    context: 0
+    inputs: [{{shape: [1, 6], dtype: int32, high: 64}}]
+final_benchmark: {{steps: 1, pairs: 4, warmup_steps: 1}}
+""")
+    monkeypatch.setattr(loop, "compare", lambda *a, **k: comparison_from_samples([2.0] * 8, [1.0] * 8))
+    quiet = Session(sleep=lambda seconds: None)
+    runner = JobRunner(manifest, tmp_path / "work", judge_factory=lambda region: None, clock_pairs=4, session=quiet)
+    try:
+        runner.load_model()
+        runner.trace_workloads()
+        runner.tracer.uninstall()
+        regions = runner.build_regions()
+        runner._clock_steps()
+        runner._settle_delivery(regions)
+        assert runner.baseline == "compiled" and runner.installed
+        runner.pending_regions = [r for r in regions if not r.rejected]
+        runner._search_state = {"ranked": [], "shipped": [], "run": None, "accepted_before": 0}
+        runner._safe_point("after setup")
+    finally:
+        runner.tracer.uninstall()
+    state = resume_mod.load(tmp_path / "work")
+    assert state["where"] == "after setup" and state["compiled_baseline"]
+    assert set(state["installed"]) == set(runner.installed)
+
+    resumed = JobRunner(manifest, tmp_path / "work", judge_factory=lambda region: None, clock_pairs=4,
+                        session=quiet, resume=True)
+    try:
+        resumed._restore()
+    finally:
+        resumed.tracer.uninstall()
+    assert resumed.baseline == "compiled" and set(resumed.installed) == set(runner.installed)
+    assert all(isinstance(resolve_value(resumed.model, p), GraphWrapper) for p in resumed.installed)
+    assert resumed._compiled_baseline is not None and resumed.step_ms == runner.step_ms
+    assert len(resumed.pending_regions) == len(runner.pending_regions)
+    assert [r["kind"] for r in resumed.log.rows()][-1] == "resumed"
+
+
+def test_a_decode_job_over_a_filled_cache_saves_and_restores(tmp_path, monkeypatch):
+    """The same save and restore for one decode step over a filled KV cache:
+    the step keeps state, so the baseline is plain, and the resumed runner
+    rebuilds the cache from the same tokens and passes its output check."""
+    import autotuner.loop as loop
+    from autotuner import resume as resume_mod
+    from autotuner.measure.clocks import comparison_from_samples
+    fixture = Path(__file__).parent / "fixtures" / "llama_cache_model.py"
+    manifest = tmp_path / "manifest.yaml"
+    manifest.write_text(f"""model: {fixture}
+workloads:
+  - name: decode
+    context: 5
+    inputs: [{{shape: [1, 1], dtype: int32, high: 64}}]
+""")
+    monkeypatch.setattr(loop, "compare", lambda *a, **k: comparison_from_samples([2.0] * 8, [1.0] * 8))
+    quiet = Session(sleep=lambda seconds: None)
+    runner = JobRunner(manifest, tmp_path / "work", judge_factory=lambda region: None, clock_pairs=4, session=quiet)
+    try:
+        runner.load_model()
+        runner.trace_workloads()
+        runner.tracer.uninstall()
+        regions = runner.build_regions()
+        runner._clock_steps()
+        runner._settle_delivery(regions)
+        runner.pending_regions = [r for r in regions if not r.rejected]
+        runner._search_state = {"ranked": [], "shipped": [], "run": None, "accepted_before": 0}
+        runner._safe_point("after setup")
+    finally:
+        runner.tracer.uninstall()
+    assert resume_mod.load(tmp_path / "work")["where"] == "after setup"
+    resumed = JobRunner(manifest, tmp_path / "work", judge_factory=lambda region: None, clock_pairs=4,
+                        session=quiet, resume=True)
+    try:
+        resumed._restore()
+    finally:
+        resumed.tracer.uninstall()
+    assert resumed.baseline == runner.baseline and resumed.step_ms == runner.step_ms
+    assert set(resumed.installed) == set(runner.installed)
+    assert [r["kind"] for r in resumed.log.rows()][-1] == "resumed"
