@@ -1,0 +1,337 @@
+{
+ "kernel_id": "r5bc62f2dc6ef1887_h9_tile_swizzle",
+ "name": "at_r5bc62f2dc6ef1887_h9_tile_swizzle",
+ "input_names": [
+  "in0",
+  "in1",
+  "in2",
+  "in3",
+  "in4",
+  "in5",
+  "in6",
+  "in7",
+  "in8",
+  "in9"
+ ],
+ "output_names": [
+  "out0",
+  "out1",
+  "out2",
+  "out3"
+ ],
+ "header": "#include <metal_stdlib>\n#include <metal_simdgroup_matrix>\nusing namespace metal;\n",
+ "grid": [
+  "1",
+  "1",
+  "1"
+ ],
+ "threadgroup": [
+  "1",
+  "1",
+  "1"
+ ],
+ "output_shapes": [
+  [
+   "1",
+   "2816",
+   "18432"
+  ],
+  [
+   "1",
+   "24",
+   "2816",
+   "128"
+  ],
+  [
+   "1",
+   "24",
+   "2816",
+   "128"
+  ],
+  [
+   "1",
+   "24",
+   "2816",
+   "128"
+  ]
+ ],
+ "output_dtypes": [
+  "bfloat16",
+  "bfloat16",
+  "bfloat16",
+  "bfloat16"
+ ],
+ "template": [],
+ "fallback_predicate": null,
+ "ensure_row_contiguous": true,
+ "atomic_outputs": false,
+ "native_call": null,
+ "input_signature": [
+  [
+   [
+    1,
+    2816,
+    3072
+   ],
+   "bfloat16"
+  ],
+  [
+   [
+    1,
+    1,
+    3072
+   ],
+   "bfloat16"
+  ],
+  [
+   [
+    1,
+    1,
+    3072
+   ],
+   "bfloat16"
+  ],
+  [
+   [
+    27648,
+    384
+   ],
+   "uint32"
+  ],
+  [
+   [
+    27648,
+    48
+   ],
+   "bfloat16"
+  ],
+  [
+   [
+    27648,
+    48
+   ],
+   "bfloat16"
+  ],
+  [
+   [
+    128
+   ],
+   "bfloat16"
+  ],
+  [
+   [
+    128
+   ],
+   "bfloat16"
+  ],
+  [
+   [
+    2816,
+    64
+   ],
+   "float32"
+  ],
+  [
+   [
+    2816,
+    64
+   ],
+   "float32"
+  ]
+ ],
+ "input_signatures": null,
+ "reference_sequence": null,
+ "stages": [
+  {
+   "inputs": [
+    "in0",
+    "in1",
+    "in2"
+   ],
+   "outputs": [
+    "tmp0"
+   ],
+   "kernel": {
+    "kernel_id": "r5bc62f2dc6ef1887_h9_tile_swizzle_stage0",
+    "name": "at_r5bc62f2dc6ef1887_h9_tile_swizzle_stage0",
+    "input_names": [
+     "in0",
+     "in1",
+     "in2"
+    ],
+    "output_names": [
+     "out0"
+    ],
+    "header": "#include <metal_stdlib>\n#include <metal_simdgroup_matrix>\nusing namespace metal;\n",
+    "grid": [
+     "256",
+     "2816",
+     "1"
+    ],
+    "threadgroup": [
+     "256",
+     "1",
+     "1"
+    ],
+    "output_shapes": [
+     [
+      "2816",
+      "3072"
+     ]
+    ],
+    "output_dtypes": [
+     "bfloat16"
+    ],
+    "template": [],
+    "fallback_predicate": null,
+    "ensure_row_contiguous": true,
+    "atomic_outputs": false,
+    "native_call": null,
+    "input_signature": null,
+    "input_signatures": null,
+    "reference_sequence": null,
+    "stages": [],
+    "reassociates": false
+   }
+  },
+  {
+   "inputs": [
+    "tmp0",
+    "in3",
+    "in4",
+    "in5"
+   ],
+   "outputs": [
+    "out0",
+    "out1",
+    "tmp1"
+   ],
+   "kernel": {
+    "kernel_id": "r5bc62f2dc6ef1887_h9_tile_swizzle_stage1",
+    "name": "at_r5bc62f2dc6ef1887_h9_tile_swizzle_stage1",
+    "input_names": [
+     "in0",
+     "in1",
+     "in2",
+     "in3"
+    ],
+    "output_names": [
+     "out0",
+     "out1",
+     "out2"
+    ],
+    "header": "#include <metal_stdlib>\n#include <metal_simdgroup_matrix>\nusing namespace metal;\n",
+    "grid": [
+     "55296",
+     "44",
+     "1"
+    ],
+    "threadgroup": [
+     "256",
+     "1",
+     "1"
+    ],
+    "output_shapes": [
+     [
+      "1",
+      "2816",
+      "18432"
+     ],
+     [
+      "1",
+      "24",
+      "2816",
+      "128"
+     ],
+     [
+      "2816",
+      "6144"
+     ]
+    ],
+    "output_dtypes": [
+     "bfloat16",
+     "bfloat16",
+     "bfloat16"
+    ],
+    "template": [],
+    "fallback_predicate": null,
+    "ensure_row_contiguous": true,
+    "atomic_outputs": false,
+    "native_call": null,
+    "input_signature": null,
+    "input_signatures": null,
+    "reference_sequence": null,
+    "stages": [],
+    "reassociates": false
+   }
+  },
+  {
+   "inputs": [
+    "tmp1",
+    "in6",
+    "in7",
+    "in8",
+    "in9"
+   ],
+   "outputs": [
+    "out2",
+    "out3"
+   ],
+   "kernel": {
+    "kernel_id": "r5bc62f2dc6ef1887_h9_tile_swizzle_stage2",
+    "name": "at_r5bc62f2dc6ef1887_h9_tile_swizzle_stage2",
+    "input_names": [
+     "in0",
+     "in1",
+     "in2",
+     "in3",
+     "in4"
+    ],
+    "output_names": [
+     "out0",
+     "out1"
+    ],
+    "header": "#include <metal_stdlib>\n#include <metal_simdgroup_matrix>\nusing namespace metal;\n",
+    "grid": [
+     "1536",
+     "2816",
+     "1"
+    ],
+    "threadgroup": [
+     "256",
+     "1",
+     "1"
+    ],
+    "output_shapes": [
+     [
+      "1",
+      "24",
+      "2816",
+      "128"
+     ],
+     [
+      "1",
+      "24",
+      "2816",
+      "128"
+     ]
+    ],
+    "output_dtypes": [
+     "bfloat16",
+     "bfloat16"
+    ],
+    "template": [],
+    "fallback_predicate": null,
+    "ensure_row_contiguous": true,
+    "atomic_outputs": false,
+    "native_call": null,
+    "input_signature": null,
+    "input_signatures": null,
+    "reference_sequence": null,
+    "stages": [],
+    "reassociates": false
+   }
+  }
+ ],
+ "reassociates": false
+}

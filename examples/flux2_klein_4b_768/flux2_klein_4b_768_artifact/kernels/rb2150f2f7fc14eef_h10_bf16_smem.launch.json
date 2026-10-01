@@ -1,0 +1,110 @@
+{
+ "kernel_id": "rb2150f2f7fc14eef_h10_bf16_smem",
+ "name": "at_rb2150f2f7fc14eef_h10_bf16_smem",
+ "input_names": [
+  "in0",
+  "in1",
+  "in2",
+  "in3",
+  "in4",
+  "in5",
+  "in6",
+  "in7"
+ ],
+ "output_names": [
+  "out0"
+ ],
+ "header": "",
+ "grid": [
+  "in3.shape[0] // 128 * 256",
+  "in2.shape[1] // 64",
+  "1"
+ ],
+ "threadgroup": [
+  "256",
+  "1",
+  "1"
+ ],
+ "output_shapes": [
+  [
+   "1",
+   "in2.shape[1]",
+   "in3.shape[0]"
+  ]
+ ],
+ "output_dtypes": [
+  "bfloat16"
+ ],
+ "template": [],
+ "fallback_predicate": "in2.shape[1] % 64 != 0 or in3.shape[0] % 128 != 0 or in2.shape[2] % 64 != 0 or in0.shape[2] % 64 != 0 or in2.shape[2] + in0.shape[2] != in3.shape[1] * 8 or in4.shape[1] * 64 != in3.shape[1] * 8",
+ "ensure_row_contiguous": true,
+ "atomic_outputs": false,
+ "native_call": null,
+ "input_signature": [
+  [
+   [
+    1,
+    2816,
+    9216
+   ],
+   "bfloat16"
+  ],
+  [
+   [
+    1,
+    2816,
+    9216
+   ],
+   "bfloat16"
+  ],
+  [
+   [
+    1,
+    2816,
+    3072
+   ],
+   "bfloat16"
+  ],
+  [
+   [
+    3072,
+    1536
+   ],
+   "uint32"
+  ],
+  [
+   [
+    3072,
+    192
+   ],
+   "bfloat16"
+  ],
+  [
+   [
+    3072,
+    192
+   ],
+   "bfloat16"
+  ],
+  [
+   [
+    1,
+    1,
+    3072
+   ],
+   "bfloat16"
+  ],
+  [
+   [
+    1,
+    2816,
+    3072
+   ],
+   "bfloat16"
+  ]
+ ],
+ "input_signatures": null,
+ "reference_sequence": null,
+ "stages": [],
+ "reassociates": false
+}

@@ -1,0 +1,460 @@
+{
+ "format_version": 1,
+ "entry": "models/flux2_klein_4b_mflux.py",
+ "baseline": "compiled",
+ "use_library_inference": false,
+ "baseline_scopes": [],
+ "measurement": {
+  "kind": "forward",
+  "generated_tokens": null
+ },
+ "mlx": "0.32.2",
+ "python": "3.12.13",
+ "declared_workloads": {
+  "denoise_768": [
+   {
+    "shape": [
+     1,
+     "T",
+     128
+    ],
+    "dtype": "bfloat16"
+   },
+   {
+    "shape": [
+     1,
+     512,
+     7680
+    ],
+    "dtype": "bfloat16"
+   },
+   {
+    "shape": [],
+    "dtype": "float32"
+   },
+   {
+    "shape": [
+     1,
+     "T",
+     4
+    ],
+    "dtype": "int32"
+   },
+   {
+    "shape": [
+     1,
+     512,
+     4
+    ],
+    "dtype": "int32"
+   }
+  ]
+ },
+ "workloads": {
+  "denoise_768": {
+   "file": "workloads/denoise_768.safetensors",
+   "role": "declared",
+   "shapes": [
+    [
+     1,
+     2304,
+     128
+    ],
+    [
+     1,
+     512,
+     7680
+    ],
+    [],
+    [
+     1,
+     2304,
+     4
+    ],
+    [
+     1,
+     512,
+     4
+    ]
+   ],
+   "dtypes": [
+    "bfloat16",
+    "bfloat16",
+    "float32",
+    "int32",
+    "int32"
+   ]
+  },
+  "denoise_768@serve:T=1024": {
+   "file": "workloads/denoise_768_serve_T_1024.safetensors",
+   "role": "sweep",
+   "shapes": [
+    [
+     1,
+     1024,
+     128
+    ],
+    [
+     1,
+     512,
+     7680
+    ],
+    [],
+    [
+     1,
+     1024,
+     4
+    ],
+    [
+     1,
+     512,
+     4
+    ]
+   ],
+   "dtypes": [
+    "bfloat16",
+    "bfloat16",
+    "float32",
+    "int32",
+    "int32"
+   ]
+  },
+  "denoise_768@serve:T=3072": {
+   "file": "workloads/denoise_768_serve_T_3072.safetensors",
+   "role": "sweep",
+   "shapes": [
+    [
+     1,
+     3072,
+     128
+    ],
+    [
+     1,
+     512,
+     7680
+    ],
+    [],
+    [
+     1,
+     3072,
+     4
+    ],
+    [
+     1,
+     512,
+     4
+    ]
+   ],
+   "dtypes": [
+    "bfloat16",
+    "bfloat16",
+    "float32",
+    "int32",
+    "int32"
+   ]
+  },
+  "denoise_768@serve:T=4096": {
+   "file": "workloads/denoise_768_serve_T_4096.safetensors",
+   "role": "sweep",
+   "shapes": [
+    [
+     1,
+     4096,
+     128
+    ],
+    [
+     1,
+     512,
+     7680
+    ],
+    [],
+    [
+     1,
+     4096,
+     4
+    ],
+    [
+     1,
+     512,
+     4
+    ]
+   ],
+   "dtypes": [
+    "bfloat16",
+    "bfloat16",
+    "float32",
+    "int32",
+    "int32"
+   ]
+  }
+ },
+ "context": null,
+ "correctness_rule": "baseline_tolerance",
+ "tolerances": null,
+ "tolerance_defaults": {
+  "float16": {
+   "rtol": 0.01,
+   "atol": 0.02
+  },
+  "bfloat16": {
+   "rtol": 0.02,
+   "atol": 0.04
+  },
+  "float32": {
+   "rtol": 1e-05,
+   "atol": 1e-06
+  }
+ },
+ "goldens": {},
+ "sequence_goldens": {},
+ "weight_policy": "model_source",
+ "weight_sources": [],
+ "checkpoint_resources_included": false,
+ "final_benchmark": {
+  "steps": 10,
+  "pairs": 4,
+  "warmup_steps": 3,
+  "steps_by_workload": {
+   "denoise_768": 10
+  },
+  "warmup_steps_per_sample": {
+   "denoise_768": 1
+  }
+ },
+ "patches": [
+  {
+   "module_path": "single_transformer_blocks.0",
+   "kernel_ids": [
+    "r5bc62f2dc6ef1887_h9_tile_swizzle",
+    "rb2150f2f7fc14eef_h10_bf16_smem"
+   ]
+  },
+  {
+   "module_path": "single_transformer_blocks.1",
+   "kernel_ids": [
+    "r5bc62f2dc6ef1887_h9_tile_swizzle",
+    "rb2150f2f7fc14eef_h10_bf16_smem"
+   ]
+  },
+  {
+   "module_path": "single_transformer_blocks.10",
+   "kernel_ids": [
+    "r5bc62f2dc6ef1887_h9_tile_swizzle",
+    "rb2150f2f7fc14eef_h10_bf16_smem"
+   ]
+  },
+  {
+   "module_path": "single_transformer_blocks.11",
+   "kernel_ids": [
+    "r5bc62f2dc6ef1887_h9_tile_swizzle",
+    "rb2150f2f7fc14eef_h10_bf16_smem"
+   ]
+  },
+  {
+   "module_path": "single_transformer_blocks.12",
+   "kernel_ids": [
+    "r5bc62f2dc6ef1887_h9_tile_swizzle",
+    "rb2150f2f7fc14eef_h10_bf16_smem"
+   ]
+  },
+  {
+   "module_path": "single_transformer_blocks.13",
+   "kernel_ids": [
+    "r5bc62f2dc6ef1887_h9_tile_swizzle",
+    "rb2150f2f7fc14eef_h10_bf16_smem"
+   ]
+  },
+  {
+   "module_path": "single_transformer_blocks.14",
+   "kernel_ids": [
+    "r5bc62f2dc6ef1887_h9_tile_swizzle",
+    "rb2150f2f7fc14eef_h10_bf16_smem"
+   ]
+  },
+  {
+   "module_path": "single_transformer_blocks.15",
+   "kernel_ids": [
+    "r5bc62f2dc6ef1887_h9_tile_swizzle",
+    "rb2150f2f7fc14eef_h10_bf16_smem"
+   ]
+  },
+  {
+   "module_path": "single_transformer_blocks.16",
+   "kernel_ids": [
+    "r5bc62f2dc6ef1887_h9_tile_swizzle",
+    "rb2150f2f7fc14eef_h10_bf16_smem"
+   ]
+  },
+  {
+   "module_path": "single_transformer_blocks.17",
+   "kernel_ids": [
+    "r5bc62f2dc6ef1887_h9_tile_swizzle",
+    "rb2150f2f7fc14eef_h10_bf16_smem"
+   ]
+  },
+  {
+   "module_path": "single_transformer_blocks.18",
+   "kernel_ids": [
+    "r5bc62f2dc6ef1887_h9_tile_swizzle",
+    "rb2150f2f7fc14eef_h10_bf16_smem"
+   ]
+  },
+  {
+   "module_path": "single_transformer_blocks.19",
+   "kernel_ids": [
+    "r5bc62f2dc6ef1887_h9_tile_swizzle",
+    "rb2150f2f7fc14eef_h10_bf16_smem"
+   ]
+  },
+  {
+   "module_path": "single_transformer_blocks.2",
+   "kernel_ids": [
+    "r5bc62f2dc6ef1887_h9_tile_swizzle",
+    "rb2150f2f7fc14eef_h10_bf16_smem"
+   ]
+  },
+  {
+   "module_path": "single_transformer_blocks.3",
+   "kernel_ids": [
+    "r5bc62f2dc6ef1887_h9_tile_swizzle",
+    "rb2150f2f7fc14eef_h10_bf16_smem"
+   ]
+  },
+  {
+   "module_path": "single_transformer_blocks.4",
+   "kernel_ids": [
+    "r5bc62f2dc6ef1887_h9_tile_swizzle",
+    "rb2150f2f7fc14eef_h10_bf16_smem"
+   ]
+  },
+  {
+   "module_path": "single_transformer_blocks.5",
+   "kernel_ids": [
+    "r5bc62f2dc6ef1887_h9_tile_swizzle",
+    "rb2150f2f7fc14eef_h10_bf16_smem"
+   ]
+  },
+  {
+   "module_path": "single_transformer_blocks.6",
+   "kernel_ids": [
+    "r5bc62f2dc6ef1887_h9_tile_swizzle",
+    "rb2150f2f7fc14eef_h10_bf16_smem"
+   ]
+  },
+  {
+   "module_path": "single_transformer_blocks.7",
+   "kernel_ids": [
+    "r5bc62f2dc6ef1887_h9_tile_swizzle",
+    "rb2150f2f7fc14eef_h10_bf16_smem"
+   ]
+  },
+  {
+   "module_path": "single_transformer_blocks.8",
+   "kernel_ids": [
+    "r5bc62f2dc6ef1887_h9_tile_swizzle",
+    "rb2150f2f7fc14eef_h10_bf16_smem"
+   ]
+  },
+  {
+   "module_path": "single_transformer_blocks.9",
+   "kernel_ids": [
+    "r5bc62f2dc6ef1887_h9_tile_swizzle",
+    "rb2150f2f7fc14eef_h10_bf16_smem"
+   ]
+  },
+  {
+   "module_path": "transformer_blocks.0.attn",
+   "kernel_ids": [
+    "r742618c4e21306aa_h2_bn128_head_epilogue"
+   ]
+  },
+  {
+   "module_path": "transformer_blocks.1.attn",
+   "kernel_ids": [
+    "r742618c4e21306aa_h2_bn128_head_epilogue"
+   ]
+  },
+  {
+   "module_path": "transformer_blocks.2.attn",
+   "kernel_ids": [
+    "r742618c4e21306aa_h2_bn128_head_epilogue"
+   ]
+  },
+  {
+   "module_path": "transformer_blocks.3.attn",
+   "kernel_ids": [
+    "r742618c4e21306aa_h2_bn128_head_epilogue"
+   ]
+  },
+  {
+   "module_path": "transformer_blocks.4.attn",
+   "kernel_ids": [
+    "r742618c4e21306aa_h2_bn128_head_epilogue"
+   ]
+  },
+  {
+   "module_path": "transformer_blocks.0.ff.linear_in",
+   "kernel_ids": [
+    "rf4ff944e9e62e804_h9_prepass_regprefetch"
+   ]
+  },
+  {
+   "module_path": "transformer_blocks.1.ff.linear_in",
+   "kernel_ids": [
+    "rf4ff944e9e62e804_h9_prepass_regprefetch"
+   ]
+  },
+  {
+   "module_path": "transformer_blocks.2.ff.linear_in",
+   "kernel_ids": [
+    "rf4ff944e9e62e804_h9_prepass_regprefetch"
+   ]
+  },
+  {
+   "module_path": "transformer_blocks.3.ff.linear_in",
+   "kernel_ids": [
+    "rf4ff944e9e62e804_h9_prepass_regprefetch"
+   ]
+  },
+  {
+   "module_path": "transformer_blocks.4.ff.linear_in",
+   "kernel_ids": [
+    "rf4ff944e9e62e804_h9_prepass_regprefetch"
+   ]
+  },
+  {
+   "module_path": "transformer_blocks.0.ff_context.linear_in",
+   "kernel_ids": [
+    "rf4ff944e9e62e804_h9_prepass_regprefetch"
+   ]
+  },
+  {
+   "module_path": "transformer_blocks.1.ff_context.linear_in",
+   "kernel_ids": [
+    "rf4ff944e9e62e804_h9_prepass_regprefetch"
+   ]
+  },
+  {
+   "module_path": "transformer_blocks.2.ff_context.linear_in",
+   "kernel_ids": [
+    "rf4ff944e9e62e804_h9_prepass_regprefetch"
+   ]
+  },
+  {
+   "module_path": "transformer_blocks.3.ff_context.linear_in",
+   "kernel_ids": [
+    "rf4ff944e9e62e804_h9_prepass_regprefetch"
+   ]
+  },
+  {
+   "module_path": "transformer_blocks.4.ff_context.linear_in",
+   "kernel_ids": [
+    "rf4ff944e9e62e804_h9_prepass_regprefetch"
+   ]
+  }
+ ],
+ "source_files": [
+  "models/flux2_klein_4b_mflux.py"
+ ],
+ "resource_files": []
+}

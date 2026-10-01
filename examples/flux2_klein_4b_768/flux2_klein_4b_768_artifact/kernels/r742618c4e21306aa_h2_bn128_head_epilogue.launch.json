@@ -1,0 +1,234 @@
+{
+ "kernel_id": "r742618c4e21306aa_h2_bn128_head_epilogue",
+ "name": "at_r742618c4e21306aa_h2_bn128_head_epilogue",
+ "input_names": [
+  "in0",
+  "in1",
+  "in2",
+  "in3",
+  "in4",
+  "in5",
+  "in6",
+  "in7",
+  "in8",
+  "in9",
+  "in10",
+  "in11",
+  "in12",
+  "in13",
+  "in14",
+  "in15",
+  "in16",
+  "in17",
+  "in18",
+  "in19",
+  "in20",
+  "in21"
+ ],
+ "output_names": [
+  "out0",
+  "out1",
+  "out2"
+ ],
+ "header": "inline void nr_apply(float4 x, float4 w, float2 cs, float2 sn, device bfloat16_t* dst) {\n  float ss = x.x * x.x + x.y * x.y + x.z * x.z + x.w * x.w;\n  ss = metal::simd_sum(ss);\n  float inv = metal::precise::rsqrt(ss / 128.0f + 1e-5f);\n  float y0 = float(static_cast<bfloat16_t>(w.x * (x.x * inv)));\n  float y1 = float(static_cast<bfloat16_t>(w.y * (x.y * inv)));\n  float y2 = float(static_cast<bfloat16_t>(w.z * (x.z * inv)));\n  float y3 = float(static_cast<bfloat16_t>(w.w * (x.w * inv)));\n  float r0 = y0 * cs.x + (-y1) * sn.x;\n  float r1 = y1 * cs.x + y0 * sn.x;\n  float r2 = y2 * cs.y + (-y3) * sn.y;\n  float r3 = y3 * cs.y + y2 * sn.y;\n  dst[0] = static_cast<bfloat16_t>(r0);\n  dst[1] = static_cast<bfloat16_t>(r1);\n  dst[2] = static_cast<bfloat16_t>(r2);\n  dst[3] = static_cast<bfloat16_t>(r3);\n}\n",
+ "grid": [
+  "(ceil_div(in0.shape[1], 64) * (in1.shape[0] // 128) + 3 * ceil_div(in8.shape[1], 64) * (in1.shape[0] // 128) + ceil_div(2 * in4.shape[1] * (in1.shape[0] // 128), 128)) * 256",
+  "1",
+  "1"
+ ],
+ "threadgroup": [
+  "256",
+  "1",
+  "1"
+ ],
+ "output_shapes": [
+  [
+   "1",
+   "in1.shape[0] // 128",
+   "in0.shape[1] + in8.shape[1]",
+   "128"
+  ],
+  [
+   "1",
+   "in1.shape[0] // 128",
+   "in0.shape[1] + in8.shape[1]",
+   "128"
+  ],
+  [
+   "1",
+   "in1.shape[0] // 128",
+   "in0.shape[1] + in8.shape[1]",
+   "128"
+  ]
+ ],
+ "output_dtypes": [
+  "bfloat16",
+  "bfloat16",
+  "bfloat16"
+ ],
+ "template": [],
+ "fallback_predicate": null,
+ "ensure_row_contiguous": true,
+ "atomic_outputs": false,
+ "native_call": null,
+ "input_signature": [
+  [
+   [
+    1,
+    2304,
+    3072
+   ],
+   "bfloat16"
+  ],
+  [
+   [
+    3072,
+    384
+   ],
+   "uint32"
+  ],
+  [
+   [
+    3072,
+    48
+   ],
+   "bfloat16"
+  ],
+  [
+   [
+    3072,
+    48
+   ],
+   "bfloat16"
+  ],
+  [
+   [
+    1,
+    2304,
+    3072
+   ],
+   "bfloat16"
+  ],
+  [
+   [
+    1,
+    2304,
+    3072
+   ],
+   "bfloat16"
+  ],
+  [
+   [
+    128
+   ],
+   "bfloat16"
+  ],
+  [
+   [
+    128
+   ],
+   "bfloat16"
+  ],
+  [
+   [
+    1,
+    512,
+    3072
+   ],
+   "bfloat16"
+  ],
+  [
+   [
+    3072,
+    384
+   ],
+   "uint32"
+  ],
+  [
+   [
+    3072,
+    48
+   ],
+   "bfloat16"
+  ],
+  [
+   [
+    3072,
+    48
+   ],
+   "bfloat16"
+  ],
+  [
+   [
+    3072,
+    384
+   ],
+   "uint32"
+  ],
+  [
+   [
+    3072,
+    48
+   ],
+   "bfloat16"
+  ],
+  [
+   [
+    3072,
+    48
+   ],
+   "bfloat16"
+  ],
+  [
+   [
+    3072,
+    384
+   ],
+   "uint32"
+  ],
+  [
+   [
+    3072,
+    48
+   ],
+   "bfloat16"
+  ],
+  [
+   [
+    3072,
+    48
+   ],
+   "bfloat16"
+  ],
+  [
+   [
+    128
+   ],
+   "bfloat16"
+  ],
+  [
+   [
+    128
+   ],
+   "bfloat16"
+  ],
+  [
+   [
+    2816,
+    64
+   ],
+   "float32"
+  ],
+  [
+   [
+    2816,
+    64
+   ],
+   "float32"
+  ]
+ ],
+ "input_signatures": null,
+ "reference_sequence": null,
+ "stages": [],
+ "reassociates": false
+}

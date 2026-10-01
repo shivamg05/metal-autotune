@@ -24,7 +24,7 @@ path.
 | [Qwen3.6-27B, 4-bit](qwen3_6_27b_4bit.py) ¹ | MLX-LM (`qwen3_5`), text only | none |
 | [Qwen3.8-27B, 4-bit](qwen3_8_27b_4bit.py) ¹ | MLX-LM (`qwen3_5`), text only | none |
 | [Llama 3 8B Instruct, 4-bit](llama8b.py) | MLX-LM (`llama`) | none |
-| [LFM2.5-1.2B-Instruct, 4-bit](lfm2_5_1_2b_instruct_4bit.py) ¹ | MLX-LM (`lfm2`) | none |
+| [LFM2.5-1.2B-Instruct, 4-bit](lfm2_5_1_2b_instruct_4bit.py) | MLX-LM (`lfm2`) | [`examples/lfm2_5_1_2b_prefill/manifest.yaml`](../examples/lfm2_5_1_2b_prefill/manifest.yaml), a 2,048-token prompt; its result is in that folder |
 | [LFM2.5-1.2B-Thinking, 4-bit](lfm2_5_1_2b_thinking_4bit.py) ¹ | MLX-LM (`lfm2`) | none |
 | [LFM2.5-1.2B-Thinking, 8-bit](lfm2_5_1_2b_thinking_8bit.py) ¹ | MLX-LM (`lfm2`) | none |
 | [LFM2.5-2.6B, 4-bit](lfm2_5_2_6b_4bit.py) ¹ | MLX-LM (`lfm2`) | none |
@@ -35,7 +35,7 @@ path.
 | [Whisper small, fp16 encoder](whisper_small_encoder.py) | MLX-Whisper, encoder calls | `whisper_small_encoder_30s.yaml` |
 | [Whisper large-v3-turbo, fp16 encoder](whisper_large_v3_turbo_encoder.py) ¹ | MLX-Whisper, encoder calls | none; input is `[1, 3000, 128]` (128 mel bins) |
 | [FLUX.2 transformer, random weights](flux2_4b.py) | Standalone MLX; one denoiser call | none; see [`manifest_flux.yaml`](../manifest_flux.yaml) for its inputs. No download, no image generation |
-| [FLUX.2 Klein 4B as mflux runs it, 4-bit](flux2_klein_4b_mflux.py) ¹ | mflux (`pip install mflux==0.20.0`); its own transformer, published weights | none yet |
+| [FLUX.2 Klein 4B as mflux runs it, 4-bit](flux2_klein_4b_mflux.py) | mflux (`pip install mflux==0.20.0`); mflux's own transformer with random weights, so nothing downloads | [`manifest.yaml`](../manifest.yaml), one 768 x 768 denoising step; its result is in [`examples/flux2_klein_4b_768`](../examples/flux2_klein_4b_768) |
 
 ¹ New targets. Their checkpoint configs have been checked, but they haven't yet
 been fully loaded and optimized end to end. See

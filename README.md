@@ -97,9 +97,9 @@ audio and image models:
 
 - **Language:** Qwen3, Qwen3.5, Llama 3, Mamba, RecurrentGemma
 - **Audio:** the Whisper encoder
-- **Image:** a FLUX transformer with random weights
+- **Image:** FLUX.2 Klein 4B as mflux runs it, and a standalone FLUX.2 transformer
 
-It also has newer targets, including LFM2.5, Qwen3.5-9B, Qwen3.8-27B and Muse Glimmer 30B.
+It also has newer targets, including Qwen3.5-9B, Qwen3.8-27B and Muse Glimmer 30B.
 These haven't been through a full optimization run yet. Stable Diffusion is
 there too, but needs extra setup. Weights download the first time you use a
 model and are never committed to the repo.
@@ -113,6 +113,16 @@ uv run autotune run models/workloads/qwen3_4b_prefill_128.yaml --judge claude-cl
 
 The catalog lists each model's dependencies and limits. If you just want to try
 the tool, the tiny example in the quickstart is still the easiest start.
+
+`examples/` holds two finished results, each with the artifact, the manifest
+that produced it, and a script that runs the model with and without it:
+
+- [FLUX.2 Klein 4B in mflux](examples/flux2_klein_4b_768): 1.11x faster over
+  10 consecutive 768 x 768 denoising steps, against mflux's own compiled step;
+  generates real images with the published weights.
+- [LFM2.5-1.2B prompt processing](examples/lfm2_5_1_2b_prefill): 1.06x faster
+  at reading a 2,048-token prompt, with outputs checked bit-identical to plain
+  MLX-LM at every prompt length from 3 to 2,049 tokens.
 
 ## Use your own model
 

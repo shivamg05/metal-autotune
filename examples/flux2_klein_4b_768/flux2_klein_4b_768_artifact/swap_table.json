@@ -1,0 +1,332 @@
+[
+ {
+  "scope_path": "single_transformer_blocks.0",
+  "wrapper_class": "W_r5bc62f2dc6ef1887_h9_tile_swizzle__rb2150f2f7fc14eef_h10_bf16_smem",
+  "kernel_ids": [
+   "r5bc62f2dc6ef1887_h9_tile_swizzle",
+   "rb2150f2f7fc14eef_h10_bf16_smem"
+  ],
+  "span_map": []
+ },
+ {
+  "scope_path": "single_transformer_blocks.1",
+  "wrapper_class": "W_r5bc62f2dc6ef1887_h9_tile_swizzle__rb2150f2f7fc14eef_h10_bf16_smem_2",
+  "kernel_ids": [
+   "r5bc62f2dc6ef1887_h9_tile_swizzle",
+   "rb2150f2f7fc14eef_h10_bf16_smem"
+  ],
+  "span_map": []
+ },
+ {
+  "scope_path": "single_transformer_blocks.10",
+  "wrapper_class": "W_r5bc62f2dc6ef1887_h9_tile_swizzle__rb2150f2f7fc14eef_h10_bf16_smem_3",
+  "kernel_ids": [
+   "r5bc62f2dc6ef1887_h9_tile_swizzle",
+   "rb2150f2f7fc14eef_h10_bf16_smem"
+  ],
+  "span_map": []
+ },
+ {
+  "scope_path": "single_transformer_blocks.11",
+  "wrapper_class": "W_r5bc62f2dc6ef1887_h9_tile_swizzle__rb2150f2f7fc14eef_h10_bf16_smem_4",
+  "kernel_ids": [
+   "r5bc62f2dc6ef1887_h9_tile_swizzle",
+   "rb2150f2f7fc14eef_h10_bf16_smem"
+  ],
+  "span_map": []
+ },
+ {
+  "scope_path": "single_transformer_blocks.12",
+  "wrapper_class": "W_r5bc62f2dc6ef1887_h9_tile_swizzle__rb2150f2f7fc14eef_h10_bf16_smem_5",
+  "kernel_ids": [
+   "r5bc62f2dc6ef1887_h9_tile_swizzle",
+   "rb2150f2f7fc14eef_h10_bf16_smem"
+  ],
+  "span_map": []
+ },
+ {
+  "scope_path": "single_transformer_blocks.13",
+  "wrapper_class": "W_r5bc62f2dc6ef1887_h9_tile_swizzle__rb2150f2f7fc14eef_h10_bf16_smem_6",
+  "kernel_ids": [
+   "r5bc62f2dc6ef1887_h9_tile_swizzle",
+   "rb2150f2f7fc14eef_h10_bf16_smem"
+  ],
+  "span_map": []
+ },
+ {
+  "scope_path": "single_transformer_blocks.14",
+  "wrapper_class": "W_r5bc62f2dc6ef1887_h9_tile_swizzle__rb2150f2f7fc14eef_h10_bf16_smem_7",
+  "kernel_ids": [
+   "r5bc62f2dc6ef1887_h9_tile_swizzle",
+   "rb2150f2f7fc14eef_h10_bf16_smem"
+  ],
+  "span_map": []
+ },
+ {
+  "scope_path": "single_transformer_blocks.15",
+  "wrapper_class": "W_r5bc62f2dc6ef1887_h9_tile_swizzle__rb2150f2f7fc14eef_h10_bf16_smem_8",
+  "kernel_ids": [
+   "r5bc62f2dc6ef1887_h9_tile_swizzle",
+   "rb2150f2f7fc14eef_h10_bf16_smem"
+  ],
+  "span_map": []
+ },
+ {
+  "scope_path": "single_transformer_blocks.16",
+  "wrapper_class": "W_r5bc62f2dc6ef1887_h9_tile_swizzle__rb2150f2f7fc14eef_h10_bf16_smem_9",
+  "kernel_ids": [
+   "r5bc62f2dc6ef1887_h9_tile_swizzle",
+   "rb2150f2f7fc14eef_h10_bf16_smem"
+  ],
+  "span_map": []
+ },
+ {
+  "scope_path": "single_transformer_blocks.17",
+  "wrapper_class": "W_r5bc62f2dc6ef1887_h9_tile_swizzle__rb2150f2f7fc14eef_h10_bf16_smem_10",
+  "kernel_ids": [
+   "r5bc62f2dc6ef1887_h9_tile_swizzle",
+   "rb2150f2f7fc14eef_h10_bf16_smem"
+  ],
+  "span_map": []
+ },
+ {
+  "scope_path": "single_transformer_blocks.18",
+  "wrapper_class": "W_r5bc62f2dc6ef1887_h9_tile_swizzle__rb2150f2f7fc14eef_h10_bf16_smem_11",
+  "kernel_ids": [
+   "r5bc62f2dc6ef1887_h9_tile_swizzle",
+   "rb2150f2f7fc14eef_h10_bf16_smem"
+  ],
+  "span_map": []
+ },
+ {
+  "scope_path": "single_transformer_blocks.19",
+  "wrapper_class": "W_r5bc62f2dc6ef1887_h9_tile_swizzle__rb2150f2f7fc14eef_h10_bf16_smem_12",
+  "kernel_ids": [
+   "r5bc62f2dc6ef1887_h9_tile_swizzle",
+   "rb2150f2f7fc14eef_h10_bf16_smem"
+  ],
+  "span_map": []
+ },
+ {
+  "scope_path": "single_transformer_blocks.2",
+  "wrapper_class": "W_r5bc62f2dc6ef1887_h9_tile_swizzle__rb2150f2f7fc14eef_h10_bf16_smem_13",
+  "kernel_ids": [
+   "r5bc62f2dc6ef1887_h9_tile_swizzle",
+   "rb2150f2f7fc14eef_h10_bf16_smem"
+  ],
+  "span_map": []
+ },
+ {
+  "scope_path": "single_transformer_blocks.3",
+  "wrapper_class": "W_r5bc62f2dc6ef1887_h9_tile_swizzle__rb2150f2f7fc14eef_h10_bf16_smem_14",
+  "kernel_ids": [
+   "r5bc62f2dc6ef1887_h9_tile_swizzle",
+   "rb2150f2f7fc14eef_h10_bf16_smem"
+  ],
+  "span_map": []
+ },
+ {
+  "scope_path": "single_transformer_blocks.4",
+  "wrapper_class": "W_r5bc62f2dc6ef1887_h9_tile_swizzle__rb2150f2f7fc14eef_h10_bf16_smem_15",
+  "kernel_ids": [
+   "r5bc62f2dc6ef1887_h9_tile_swizzle",
+   "rb2150f2f7fc14eef_h10_bf16_smem"
+  ],
+  "span_map": []
+ },
+ {
+  "scope_path": "single_transformer_blocks.5",
+  "wrapper_class": "W_r5bc62f2dc6ef1887_h9_tile_swizzle__rb2150f2f7fc14eef_h10_bf16_smem_16",
+  "kernel_ids": [
+   "r5bc62f2dc6ef1887_h9_tile_swizzle",
+   "rb2150f2f7fc14eef_h10_bf16_smem"
+  ],
+  "span_map": []
+ },
+ {
+  "scope_path": "single_transformer_blocks.6",
+  "wrapper_class": "W_r5bc62f2dc6ef1887_h9_tile_swizzle__rb2150f2f7fc14eef_h10_bf16_smem_17",
+  "kernel_ids": [
+   "r5bc62f2dc6ef1887_h9_tile_swizzle",
+   "rb2150f2f7fc14eef_h10_bf16_smem"
+  ],
+  "span_map": []
+ },
+ {
+  "scope_path": "single_transformer_blocks.7",
+  "wrapper_class": "W_r5bc62f2dc6ef1887_h9_tile_swizzle__rb2150f2f7fc14eef_h10_bf16_smem_18",
+  "kernel_ids": [
+   "r5bc62f2dc6ef1887_h9_tile_swizzle",
+   "rb2150f2f7fc14eef_h10_bf16_smem"
+  ],
+  "span_map": []
+ },
+ {
+  "scope_path": "single_transformer_blocks.8",
+  "wrapper_class": "W_r5bc62f2dc6ef1887_h9_tile_swizzle__rb2150f2f7fc14eef_h10_bf16_smem_19",
+  "kernel_ids": [
+   "r5bc62f2dc6ef1887_h9_tile_swizzle",
+   "rb2150f2f7fc14eef_h10_bf16_smem"
+  ],
+  "span_map": []
+ },
+ {
+  "scope_path": "single_transformer_blocks.9",
+  "wrapper_class": "W_r5bc62f2dc6ef1887_h9_tile_swizzle__rb2150f2f7fc14eef_h10_bf16_smem_20",
+  "kernel_ids": [
+   "r5bc62f2dc6ef1887_h9_tile_swizzle",
+   "rb2150f2f7fc14eef_h10_bf16_smem"
+  ],
+  "span_map": []
+ },
+ {
+  "scope_path": "transformer_blocks.0.attn",
+  "wrapper_class": "W_r742618c4e21306aa_h2_bn128_head_epilogue",
+  "kernel_ids": [
+   "r742618c4e21306aa_h2_bn128_head_epilogue"
+  ],
+  "span_map": []
+ },
+ {
+  "scope_path": "transformer_blocks.1.attn",
+  "wrapper_class": "W_r742618c4e21306aa_h2_bn128_head_epilogue_2",
+  "kernel_ids": [
+   "r742618c4e21306aa_h2_bn128_head_epilogue"
+  ],
+  "span_map": []
+ },
+ {
+  "scope_path": "transformer_blocks.2.attn",
+  "wrapper_class": "W_r742618c4e21306aa_h2_bn128_head_epilogue_3",
+  "kernel_ids": [
+   "r742618c4e21306aa_h2_bn128_head_epilogue"
+  ],
+  "span_map": []
+ },
+ {
+  "scope_path": "transformer_blocks.3.attn",
+  "wrapper_class": "W_r742618c4e21306aa_h2_bn128_head_epilogue_4",
+  "kernel_ids": [
+   "r742618c4e21306aa_h2_bn128_head_epilogue"
+  ],
+  "span_map": []
+ },
+ {
+  "scope_path": "transformer_blocks.4.attn",
+  "wrapper_class": "W_r742618c4e21306aa_h2_bn128_head_epilogue_5",
+  "kernel_ids": [
+   "r742618c4e21306aa_h2_bn128_head_epilogue"
+  ],
+  "span_map": []
+ },
+ {
+  "scope_path": "transformer_blocks.0.ff.linear_in",
+  "wrapper_class": "W_rf4ff944e9e62e804_h9_prepass_regprefetch",
+  "kernel_ids": [
+   "rf4ff944e9e62e804_h9_prepass_regprefetch"
+  ],
+  "span_map": []
+ },
+ {
+  "scope_path": "transformer_blocks.1.ff.linear_in",
+  "wrapper_class": "W_rf4ff944e9e62e804_h9_prepass_regprefetch",
+  "kernel_ids": [
+   "rf4ff944e9e62e804_h9_prepass_regprefetch"
+  ],
+  "span_map": []
+ },
+ {
+  "scope_path": "transformer_blocks.2.ff.linear_in",
+  "wrapper_class": "W_rf4ff944e9e62e804_h9_prepass_regprefetch",
+  "kernel_ids": [
+   "rf4ff944e9e62e804_h9_prepass_regprefetch"
+  ],
+  "span_map": []
+ },
+ {
+  "scope_path": "transformer_blocks.3.ff.linear_in",
+  "wrapper_class": "W_rf4ff944e9e62e804_h9_prepass_regprefetch",
+  "kernel_ids": [
+   "rf4ff944e9e62e804_h9_prepass_regprefetch"
+  ],
+  "span_map": []
+ },
+ {
+  "scope_path": "transformer_blocks.4.ff.linear_in",
+  "wrapper_class": "W_rf4ff944e9e62e804_h9_prepass_regprefetch",
+  "kernel_ids": [
+   "rf4ff944e9e62e804_h9_prepass_regprefetch"
+  ],
+  "span_map": []
+ },
+ {
+  "scope_path": "transformer_blocks.0.ff_context.linear_in",
+  "wrapper_class": "W_rf4ff944e9e62e804_h9_prepass_regprefetch_2",
+  "kernel_ids": [
+   "rf4ff944e9e62e804_h9_prepass_regprefetch"
+  ],
+  "span_map": [
+   [
+    "custom_kernel",
+    "f4ff944e9e62e804",
+    "rf4ff944e9e62e804_h9_prepass_regprefetch"
+   ]
+  ]
+ },
+ {
+  "scope_path": "transformer_blocks.1.ff_context.linear_in",
+  "wrapper_class": "W_rf4ff944e9e62e804_h9_prepass_regprefetch_2",
+  "kernel_ids": [
+   "rf4ff944e9e62e804_h9_prepass_regprefetch"
+  ],
+  "span_map": [
+   [
+    "custom_kernel",
+    "f4ff944e9e62e804",
+    "rf4ff944e9e62e804_h9_prepass_regprefetch"
+   ]
+  ]
+ },
+ {
+  "scope_path": "transformer_blocks.2.ff_context.linear_in",
+  "wrapper_class": "W_rf4ff944e9e62e804_h9_prepass_regprefetch_2",
+  "kernel_ids": [
+   "rf4ff944e9e62e804_h9_prepass_regprefetch"
+  ],
+  "span_map": [
+   [
+    "custom_kernel",
+    "f4ff944e9e62e804",
+    "rf4ff944e9e62e804_h9_prepass_regprefetch"
+   ]
+  ]
+ },
+ {
+  "scope_path": "transformer_blocks.3.ff_context.linear_in",
+  "wrapper_class": "W_rf4ff944e9e62e804_h9_prepass_regprefetch_2",
+  "kernel_ids": [
+   "rf4ff944e9e62e804_h9_prepass_regprefetch"
+  ],
+  "span_map": [
+   [
+    "custom_kernel",
+    "f4ff944e9e62e804",
+    "rf4ff944e9e62e804_h9_prepass_regprefetch"
+   ]
+  ]
+ },
+ {
+  "scope_path": "transformer_blocks.4.ff_context.linear_in",
+  "wrapper_class": "W_rf4ff944e9e62e804_h9_prepass_regprefetch_2",
+  "kernel_ids": [
+   "rf4ff944e9e62e804_h9_prepass_regprefetch"
+  ],
+  "span_map": [
+   [
+    "custom_kernel",
+    "f4ff944e9e62e804",
+    "rf4ff944e9e62e804_h9_prepass_regprefetch"
+   ]
+  ]
+ }
+]

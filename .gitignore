@@ -28,4 +28,4 @@ metalbench/generated/
 
 # outputs of the example run scripts
 examples/**/latents_*.safetensors
-examples/flux2_4b_256px/flux2_klein_4b_4bit.safetensors
+examples/flux2_klein_4b_768/*.png
