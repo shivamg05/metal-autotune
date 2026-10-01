@@ -79,3 +79,30 @@ optimization active. Live-provider tests are opt-in.
 
 Pull requests are welcome. Keep changes focused, preserve the invariants above,
 and include the relevant validation. Keep generated runs and weights out of Git.
+
+### Known gaps
+
+**A constant the model reads back as a number.** mflux computes its attention
+scale as `1 / mx.sqrt(head_dim)` and passes that array as `scale=`, which the
+call reads as a float. The recording stores the number in the call and treats
+the calls that computed it as work the step never runs
+([measurement](measurement.md)). Two things follow for any module that
+contains such calls:
+
+- During the search its kernels are held by replay delivery, not graph
+  delivery: `graph_scope_reason` declines any scope that mixes never-run calls
+  with live ones. That rule exists for a module output the step drops; here
+  the never-run calls are inside the module and a compiled step would not run
+  them, so graph delivery would be safe. Under a whole-step compiled baseline
+  (a directly called model such as mflux's FLUX.2) nothing is lost, because
+  the replayed module is compiled with the rest of the step. Under library
+  inference, where modules are compiled one by one, such a module runs
+  uncompiled, which costs the final number only where compiling a module is
+  itself a large gain: recurrent models (Mamba, RecurrentGemma), not
+  transformers. No model run so far is both.
+- No region crosses those calls, since a never-run call ends a region. On
+  FLUX.2 a region cannot run from the start of an attention layer into the
+  attention call itself; each side is still a candidate on its own.
+
+Fixing either means telling these calls apart from work a module computes and
+the step drops.
