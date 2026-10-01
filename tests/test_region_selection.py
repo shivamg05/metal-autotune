@@ -269,3 +269,65 @@ def test_group_pricing_sums_actual_shape_prices(monkeypatch):
     assert candidate.p["w"] == pytest.approx(0.06)
     assert candidate.prices["w@copy:1"].ms == 4.0
     assert candidate.prices["w@copy:1"].floor_ms == 2.0
+
+
+def test_a_longer_region_keeps_one_percent_less_of_its_score_per_op():
+    """The score says what an ideal kernel could remove, not how hard it is
+    to write: each op past the first costs 1% of it. Views and slices are
+    free for a kernel and are not counted."""
+    from autotuner.regions.rank import length_weight
+    one = region("one", 0, 0)
+    assert length_weight(one) == 1.0
+    assert length_weight(region("three", 0, 2)) == pytest.approx(0.98)
+    assert length_weight(region("ten", 0, 9)) == pytest.approx(0.91)
+    viewed = Region("viewed", ("mx.exp", "mx.reshape", "array.transpose", "array.__getitem__", "mx.exp"),
+                    [Stretch("w", 0, 4, (0,), (5,), ("@0",))])
+    assert length_weight(viewed) == pytest.approx(0.99)  # two real ops
+    assert length_weight(region("huge", 0, 300)) == 0.0
+
+    # equal physical headroom: the shorter region goes first, measured or estimated
+    long = region("long", 10, 20)
+    for r in (one, long):
+        r.p = {"w": 0.30}
+        r.roofline = roof(2.0)
+    assert rank([long, one]) == [one, long]
+    # a much larger prize still outranks a short region
+    long.p = {"w": 0.60}
+    assert rank([one, long]) == [long, one]
+    estimates = {"one": RegionEstimate(0.3, 0.10), "long": RegionEstimate(0.3, 0.10)}
+    assert select_frontier([long, one], estimates)[0] == [one, long]
+
+
+def test_regions_like_one_closed_without_a_win_go_to_the_back():
+    """A 49-op region closes without a win. Queued regions sharing more than
+    60% of its ops wait behind everything not yet tried, whatever they score;
+    a smaller piece of the same spot and a region elsewhere keep their turn."""
+    from autotuner.regions.rank import demote_similar, shared_ops
+    closed = region("closed", 0, 48)
+    twin = region("twin", 0, 39)          # 40 of 49 ops in common
+    piece = region("piece", 0, 28)        # 29 of 49: under 60%
+    single = region("single", 4, 4)       # the matmul inside it
+    elsewhere = region("elsewhere", 100, 104)
+    assert shared_ops(closed, twin) == pytest.approx(40 / 49)
+    assert shared_ops(closed, piece) == pytest.approx(29 / 49)
+    assert shared_ops(closed, elsewhere) == 0.0
+    queue = [twin, piece, single, elsewhere]
+    assert demote_similar(closed, queue) == [twin]
+    assert twin.demoted == "closed" and piece.demoted is None and single.demoted is None
+    assert demote_similar(closed, queue) == []  # already sent back
+
+    # the twin has the largest score and still goes last
+    for r, share in ((twin, 0.9), (piece, 0.5), (single, 0.4), (elsewhere, 0.1)):
+        r.p = {"w": share}
+        r.roofline = roof(2.0)
+    assert rank(queue)[-1] is twin and rank(queue)[0] is not twin
+    # and is not priced ahead of an untried region it overlaps
+    estimates = {r.fingerprint: RegionEstimate(r.p["w"], r.p["w"] / 2) for r in queue}
+    ready, deferred = select_frontier(queue, estimates)
+    # (the length weight puts the single op, 0.20, ahead of the 29-op piece, 0.25 x 0.72)
+    assert ready == [single, elsewhere] and deferred["twin"] == ["single"]
+
+    # every copy counts: a region with copies elsewhere shares less
+    spread = Region("spread", ("mx.exp",) * 49, [Stretch("w", 0, 48, (0,), (49,), ("@0",)),
+                                                   Stretch("w", 200, 248, (200,), (249,), ("@0",))])
+    assert shared_ops(closed, spread) == pytest.approx(0.5)

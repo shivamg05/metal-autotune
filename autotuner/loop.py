@@ -50,8 +50,8 @@ from .measure.sequences import compare_sequences
 from .regions.build import build_stretches, is_view, weight_like_ids
 from .regions.fingerprint import group_copies
 from .regions.price import PRICE_PAIRS, capture_boundaries, capture_instances, price_group
-from .regions.rank import (REGION_FLOOR_P, apply_floor, estimate_regions, free_members,
-                           rank, select_frontier)
+from .regions.rank import (REGION_FLOOR_P, SIMILAR_OPS, apply_floor, demote_similar, estimate_regions,
+                           free_members, length_weight, rank, select_frontier)
 from .regions.roofline import observed_peaks, step_floor, stretch_roofline
 from .regions.store import BoundaryStore
 from .regions.types import Region, Stretch
@@ -927,6 +927,7 @@ class JobRunner:
                 "fingerprint": r.fingerprint, "ops": list(r.ops), "copies": r.copies,
                 "p": dict(r.p), "region_ms": dict(r.t_rep_ms),
                 "ranking_basis": "estimated_removable_share",
+                "length_weight": length_weight(r),
                 "price_stability": dict(r.stability),
                 "estimate_basis": "boundary_probe_and_known_compute",
                 "compute_model_complete": "metal_kernel" not in r.ops,
@@ -2375,6 +2376,12 @@ class JobRunner:
             state["shipped"].append(region)
         self._record_region_closed(run)
         state["run"] = None
+        if run.shipped is None:
+            # no win here: its near-copies wait behind everything not yet tried
+            moved = demote_similar(region, state["ranked"] + self.pending_regions)
+            if moved:
+                self.log.append("similar_demoted", fingerprint=region.fingerprint, regions=len(moved),
+                                shared_ops_over=SIMILAR_OPS)
         if self._finish_requested() or self.total_hypotheses >= self.manifest.budget_total:
             return False
         if len(self.report.accepted) > state["accepted_before"]:

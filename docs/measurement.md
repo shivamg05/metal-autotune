@@ -14,7 +14,16 @@ Measured ranking uses Amdahl's law: the region's share of the step times the
 fraction of its cost that its estimated limit could remove. Both parts of that
 limit are clocked beside the spot in the same window: a kernel that only
 streams its bytes, and a large plain matmul at its dtype for the arithmetic
-(`measured_compute_gflops` in the pricing table).
+(`measured_compute_gflops` in the pricing table). That score says what an
+ideal kernel could remove, not how hard the kernel is to write, so it is
+weighted by length: a region keeps 1% less of it for each operation past the
+first (`length_weight` in the pricing table; a 3-op region keeps 98%, a 10-op
+one 91%). Reshapes, transposes and slices are free for a kernel and are not
+counted. When a region closes without a win, every queued region that shares
+more than 60% of its operations (operations in common, of the operations
+either covers) waits behind every region not yet tried (`similar_demoted`);
+without that the next region opened is the same one give or take an
+operation, and the budget goes to one spot.
 `price_stability` in the pricing report shows agreement between observations:
 closer to 1 means more consistent, while small values mean the ranking is noisy.
 It is a diagnostic, not a confidence interval or proof of no headroom.

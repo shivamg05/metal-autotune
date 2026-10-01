@@ -62,6 +62,9 @@ class Region:
     roofline: Roofline | None = None
     rooflines: dict[str, Roofline] = field(default_factory=dict)  # each workload has its own measured floor
     prices: dict[str, RegionPrice] = field(default_factory=dict)  # one paired price per captured shape group
+    # fingerprint of a region closed without a win that this one shares most
+    # of its ops with: it waits behind every region not yet tried
+    demoted: str | None = None
 
     @property
     def copies(self) -> int:

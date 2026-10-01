@@ -20,6 +20,39 @@ if TYPE_CHECKING:
 
 _BOUND_ORDER = {"memory": 0, "launch": 1, "compute": 2}
 REGION_FLOOR_P = 0.02
+LENGTH_PENALTY = 0.01  # score lost per op beyond the first: a longer kernel is harder to write
+SIMILAR_OPS = 0.60     # ops in common, of the ops in either, that make a queued region a repeat of a closed one
+
+
+def length_weight(region: Region) -> float:
+    """What a region's score keeps for its length: 1 for one op, LENGTH_PENALTY
+    less for each further one. The physical estimate says what an ideal kernel
+    could remove, not how hard that kernel is to write, and every op it spans
+    is one more the judge has to reproduce. Views and slices cost a kernel
+    nothing and are not counted."""
+    from .build import VIEW_OPS
+    ops = sum(op not in VIEW_OPS and op != "array.__getitem__" for op in region.ops)
+    return max(0.0, 1.0 - LENGTH_PENALTY * (max(ops, 1) - 1))
+
+
+def shared_ops(a: Region, b: Region) -> float:
+    """The recorded ops two regions both cover, as a fraction of the ops
+    either covers, over every copy."""
+    spots = [{(m.workload, seq) for m in r.members for seq in range(m.start_seq, m.end_seq + 1)} for r in (a, b)]
+    return len(spots[0] & spots[1]) / max(len(spots[0] | spots[1]), 1)
+
+
+def demote_similar(closed: Region, queue: list[Region], threshold: float = SIMILAR_OPS) -> list[Region]:
+    """A region closed without a win: send every queued region sharing more
+    than `threshold` of its ops to the back, behind everything not yet tried.
+    Without this the next region opened is the closed one give or take an op,
+    and a budget goes to one spot. Returns the regions newly sent back."""
+    moved = []
+    for region in queue:
+        if region is not closed and region.demoted is None and shared_ops(closed, region) > threshold:
+            region.demoted = closed.fingerprint
+            moved.append(region)
+    return moved
 
 
 def apply_floor(regions: list[Region], floor: float = REGION_FLOOR_P) -> list[Region]:
@@ -45,11 +78,13 @@ def rank(regions: list[Region]) -> list[Region]:
     estimate is a speedup we have achieved. For arbitrary Metal, the boundary
     probe contributes a generic estimate while its unknown arithmetic is omitted.
     Sum reductions across workloads,
-    matching the existing equal-weight combined-share convention.
+    matching the existing equal-weight combined-share convention. The score
+    is weighted by length (length_weight), and a region that repeats one
+    already closed without a win goes after every region that does not.
     """
     return sorted(
         regions,
-        key=lambda r: (-r.combined_removable_p, -r.combined_p,
+        key=lambda r: (r.demoted is not None, -r.combined_removable_p * length_weight(r), -r.combined_p,
                        _BOUND_ORDER.get(r.roofline.bound if r.roofline else "compute", 3),
                        r.fingerprint),
     )
@@ -123,7 +158,8 @@ def select_frontier(
     empty = RegionEstimate(0.0, 0.0)
     ordered = sorted(
         (region for region in regions if not region.rejected),
-        key=lambda r: (-estimates.get(r.fingerprint, empty).removable_p,
+        key=lambda r: (r.demoted is not None,
+                       -estimates.get(r.fingerprint, empty).removable_p * length_weight(r),
                        -estimates.get(r.fingerprint, empty).combined_p,
                        len(r.ops), r.fingerprint),
     )

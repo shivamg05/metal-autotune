@@ -437,3 +437,33 @@ def test_cli_generation_clock_is_not_called_forward_pass(capsys):
     message = capsys.readouterr().out
     assert "library generation (10 generated tokens)" in message
     assert "forward pass" not in message
+
+
+def test_a_region_closed_without_a_win_sends_its_near_copies_back(tmp_path):
+    """Queued regions sharing more than 60% of a closed, unshipped region's
+    ops, priced or not, are marked to wait behind everything not yet tried;
+    a shipped region marks nothing."""
+    from autotuner.loop import RegionRun
+    from autotuner.regions.types import Region, Stretch
+
+    def region(name, start, end):
+        return Region(name, ("mx.exp",) * (end - start + 1), [Stretch("w", start, end, (start,), (end + 1,), ("@0",))])
+
+    runner = bare_runner(tmp_path)
+    runner.candidates = []
+    runner.total_hypotheses = runner.manifest.budget_total = 12  # budget spent: closing stops the search here
+    closed, priced_twin, queued_twin = region("closed", 0, 48), region("priced_twin", 1, 48), region("queued_twin", 0, 40)
+    piece, elsewhere = region("piece", 0, 20), region("elsewhere", 100, 148)
+    runner._search_state = {"ranked": [priced_twin, elsewhere], "shipped": [], "run": None, "accepted_before": 0}
+    runner.pending_regions = [queued_twin, piece]
+    assert runner._close_region(RegionRun(region=closed)) is False
+    assert (priced_twin.demoted, queued_twin.demoted, piece.demoted, elsewhere.demoted) == ("closed", "closed", None, None)
+    row = runner.log.rows()[-1]
+    assert row["kind"] == "similar_demoted" and row["regions"] == 2 and row["shared_ops_over"] == 0.6
+
+    won = RegionRun(region=region("won", 200, 248))
+    won.shipped = SimpleNamespace(kernel_id="won_kernel")
+    near_win = region("near_win", 200, 247)
+    runner._search_state["ranked"].append(near_win)
+    runner._close_region(won)
+    assert near_win.demoted is None
